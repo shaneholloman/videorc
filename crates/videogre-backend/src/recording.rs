@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use tokio::fs;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::Mutex;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, sleep, timeout};
 use uuid::Uuid;
 
 use crate::devices::find_avfoundation_screen_index;
@@ -19,6 +19,8 @@ use crate::protocol::{
 };
 use crate::state::AppState;
 use crate::storage::{NewSession, default_preview_dir};
+
+const PREVIEW_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct ActiveRecording {
@@ -364,13 +366,7 @@ pub async fn create_preview_snapshot(
     let mut capture = resolve_capture_inputs(&ffmpeg_path, &session_params).await;
     capture.microphone_index = None;
     let args = preview_ffmpeg_args(&capture, &session_params, &output_path)?;
-    let output = Command::new(&ffmpeg_path)
-        .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .with_context(|| format!("Could not start {ffmpeg_path} for preview"))?;
+    let output = run_preview_command(&ffmpeg_path, &args).await?;
 
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -394,6 +390,62 @@ pub async fn create_preview_snapshot(
     };
     state.emit_event("preview.updated", &snapshot);
     Ok(snapshot)
+}
+
+#[derive(Debug)]
+struct PreviewCommandOutput {
+    status: ExitStatus,
+    stderr: Vec<u8>,
+}
+
+async fn run_preview_command(ffmpeg_path: &str, args: &[String]) -> Result<PreviewCommandOutput> {
+    run_preview_command_with_timeout(ffmpeg_path, args, PREVIEW_SNAPSHOT_TIMEOUT).await
+}
+
+async fn run_preview_command_with_timeout(
+    ffmpeg_path: &str,
+    args: &[String],
+    preview_timeout: Duration,
+) -> Result<PreviewCommandOutput> {
+    let mut child = Command::new(ffmpeg_path)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Could not start {ffmpeg_path} for preview"))?;
+
+    let stderr = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        if let Some(mut stderr) = stderr {
+            let _ = stderr.read_to_end(&mut bytes).await;
+        }
+        bytes
+    });
+
+    let status = match timeout(preview_timeout, child.wait()).await {
+        Ok(status) => {
+            status.with_context(|| format!("Could not wait for {ffmpeg_path} preview"))?
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let stderr = stderr_task.await.unwrap_or_default();
+            let message = String::from_utf8_lossy(&stderr).trim().to_string();
+            bail!(
+                "Preview snapshot timed out after {} seconds{}",
+                preview_timeout.as_secs(),
+                if message.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {message}")
+                }
+            );
+        }
+    };
+    let stderr = stderr_task.await.unwrap_or_default();
+
+    Ok(PreviewCommandOutput { status, stderr })
 }
 
 pub fn preview_file_path(preview_id: &str) -> PathBuf {
@@ -1116,6 +1168,16 @@ mod tests {
         params.output.video.fps = 120;
 
         assert!(validate_outputs(&params).is_err());
+    }
+
+    #[tokio::test]
+    async fn preview_command_times_out() {
+        let args = vec!["-c".to_string(), "sleep 5".to_string()];
+        let error = run_preview_command_with_timeout("sh", &args, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Preview snapshot timed out"));
     }
 
     #[test]

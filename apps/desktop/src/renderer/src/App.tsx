@@ -18,7 +18,7 @@ import {
   Wifi
 } from 'lucide-react'
 import type { Dispatch, ReactElement, ReactNode, SetStateAction } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
   BackendConnection,
@@ -236,6 +236,7 @@ export function App(): ReactElement {
   const [captureConfig, setCaptureConfig] = useState<CaptureConfig>(loadCaptureConfig)
   const [lastError, setLastError] = useState<string | null>(null)
   const [lastNotice, setLastNotice] = useState<string | null>(null)
+  const previewRequestPending = useRef(false)
 
   const sessionParams = useMemo<StartSessionParams>(
     () => ({
@@ -427,11 +428,12 @@ export function App(): ReactElement {
   }, [client, settings.ffmpegPath])
 
   const refreshPreview = useCallback(async () => {
-    if (!client || wsStatus !== 'connected') {
+    if (!client || wsStatus !== 'connected' || previewRequestPending.current) {
       return
     }
 
     try {
+      previewRequestPending.current = true
       setPreviewLoading(true)
       setLastNotice(null)
       const snapshot = await client.request<PreviewSnapshot>('preview.snapshot', {
@@ -443,6 +445,7 @@ export function App(): ReactElement {
     } catch (error) {
       setLastError(error instanceof Error ? error.message : String(error))
     } finally {
+      previewRequestPending.current = false
       setPreviewLoading(false)
     }
   }, [captureConfig.layout, captureConfig.sources, client, settings.ffmpegPath, wsStatus])
