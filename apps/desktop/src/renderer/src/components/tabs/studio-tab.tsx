@@ -114,7 +114,7 @@ export function StudioTab(): ReactElement {
                 onClick={stopSession}
               >
                 <StopCircle data-icon="inline-start" weight="fill" />
-                {stopRequestPending ? 'Stopping…' : 'Stop'}
+                {stopRequestPending ? 'Stopping…' : recording.state === 'stopping' ? 'Force stop' : 'Stop'}
               </Button>
             </div>
 

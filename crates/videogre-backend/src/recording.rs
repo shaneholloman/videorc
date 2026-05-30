@@ -21,6 +21,8 @@ use crate::state::AppState;
 use crate::storage::{NewSession, default_preview_dir};
 
 const PREVIEW_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
+const STOP_TERM_DELAY: Duration = Duration::from_millis(800);
+const STOP_KILL_DELAY: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 pub struct ActiveRecording {
@@ -31,6 +33,7 @@ pub struct ActiveRecording {
     pub stream_url: Option<String>,
     pub started_at: String,
     pub mode: String,
+    pub stop_requested: bool,
 }
 
 impl ActiveRecording {
@@ -196,6 +199,7 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
         stream_url,
         started_at: started_at.to_rfc3339(),
         mode: mode.to_string(),
+        stop_requested: false,
     };
     let running_state = if params.output.stream_enabled && !params.output.record_enabled {
         RecordingState::Streaming
@@ -265,22 +269,41 @@ pub async fn stop_recording(state: AppState) -> Result<RecordingStatus> {
     let pid = active.pid;
     let output_path = active.output_path.clone();
     let session_id = active.session_id.clone();
+    let mut force_stop_now = false;
+    active.stop_requested = true;
     if let Some(mut stdin) = active.stdin.take() {
         stdin
             .write_all(b"q\n")
             .await
             .context("Could not send stop command to FFmpeg")?;
         let _ = stdin.shutdown().await;
+    } else {
+        force_stop_now = true;
     }
 
     let status = active.status(
         RecordingState::Stopping,
-        Some(format!("Stopping {} session.", active.mode)),
+        Some(if force_stop_now {
+            format!("Force stopping {} session.", active.mode)
+        } else {
+            format!("Stopping {} session.", active.mode)
+        }),
     );
     drop(guard);
 
     state.emit_event("recording.status", status.clone());
-    tokio::spawn(stop_fallback(state.clone(), pid, session_id, output_path));
+    if force_stop_now {
+        state.emit_log("warn", "Stop requested again; sending SIGTERM to FFmpeg.");
+        let _ = send_process_signal(pid, "TERM").await;
+        tokio::spawn(stop_kill_fallback(
+            state.clone(),
+            pid,
+            session_id,
+            output_path,
+        ));
+    } else {
+        tokio::spawn(stop_fallback(state.clone(), pid, session_id, output_path));
+    }
     Ok(status)
 }
 
@@ -462,25 +485,58 @@ async fn stop_fallback(
         return;
     }
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(STOP_TERM_DELAY).await;
 
-    let still_running = state.recording.lock().await.as_ref().is_some_and(|active| {
-        active.pid == pid && active.session_id == session_id && active.output_path == output_path
-    });
-
-    if !still_running {
+    if !recording_matches(&state, pid, &session_id, &output_path).await {
         return;
     }
 
     state.emit_log(
         "warn",
-        "FFmpeg did not stop after stdin quit command; sending SIGTERM.",
+        "FFmpeg did not stop promptly after stdin quit command; sending SIGTERM.",
     );
-    let _ = Command::new("kill")
-        .arg("-TERM")
+    let _ = send_process_signal(pid, "TERM").await;
+    stop_kill_fallback(state, pid, session_id, output_path).await;
+}
+
+async fn stop_kill_fallback(
+    state: AppState,
+    pid: u32,
+    session_id: String,
+    output_path: Option<PathBuf>,
+) {
+    sleep(STOP_KILL_DELAY).await;
+
+    if !recording_matches(&state, pid, &session_id, &output_path).await {
+        return;
+    }
+
+    state.emit_log(
+        "warn",
+        "FFmpeg did not stop after SIGTERM; sending SIGKILL.",
+    );
+    let _ = send_process_signal(pid, "KILL").await;
+}
+
+async fn recording_matches(
+    state: &AppState,
+    pid: u32,
+    session_id: &str,
+    output_path: &Option<PathBuf>,
+) -> bool {
+    state.recording.lock().await.as_ref().is_some_and(|active| {
+        active.pid == pid && active.session_id == session_id && &active.output_path == output_path
+    })
+}
+
+async fn send_process_signal(pid: u32, signal: &str) -> Result<()> {
+    Command::new("kill")
+        .arg(format!("-{signal}"))
         .arg(pid.to_string())
         .status()
-        .await;
+        .await
+        .with_context(|| format!("Could not send SIG{signal} to FFmpeg"))?;
+    Ok(())
 }
 
 async fn monitor_session(
@@ -491,9 +547,12 @@ async fn monitor_session(
 ) {
     let status = child.wait().await;
     let mut guard = state.recording.lock().await;
-    let had_active_recording = guard
+    let active_recording = guard
         .as_ref()
-        .is_some_and(|active| active.session_id == session_id);
+        .filter(|active| active.session_id == session_id)
+        .map(|active| active.stop_requested);
+    let had_active_recording = active_recording.is_some();
+    let stop_requested = active_recording.unwrap_or(false);
     if had_active_recording {
         guard.take();
     }
@@ -505,8 +564,20 @@ async fn monitor_session(
 
     let ended_at = Utc::now().to_rfc3339();
     match status {
-        Ok(exit_status) if exit_status.success() => {
-            state.emit_log("info", "Capture session finalized.");
+        Ok(exit_status) if exit_status.success() || stop_requested => {
+            let message = if exit_status.success() {
+                "Capture session finalized.".to_string()
+            } else {
+                format!("Capture session finalized after stop signal ({exit_status}).")
+            };
+            state.emit_log(
+                if exit_status.success() {
+                    "info"
+                } else {
+                    "warn"
+                },
+                &message,
+            );
             let _ = state
                 .database
                 .finish_session(&session_id, "completed", Some(ended_at), None);

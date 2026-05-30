@@ -579,7 +579,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const canStart = !startBlockedReason
   const canStop =
     wsStatus === 'connected' &&
-    ['recording', 'streaming', 'starting'].includes(recording.state) &&
+    ['recording', 'streaming', 'starting', 'stopping'].includes(recording.state) &&
     !stopRequestPending
   const visibleStartBlockedReason =
     startBlockedReason &&
