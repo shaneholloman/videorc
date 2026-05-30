@@ -50,6 +50,7 @@ pub struct BackendHealth {
     pub version: String,
     pub platform: String,
     pub ffmpeg: ToolStatus,
+    pub database_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,7 +113,11 @@ pub enum DeviceStatus {
 pub struct RecordingStatus {
     pub state: RecordingState,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,8 +130,130 @@ pub enum RecordingState {
     Idle,
     Starting,
     Recording,
+    Streaming,
     Stopping,
     Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSelection {
+    pub screen_id: Option<String>,
+    pub window_id: Option<String>,
+    pub camera_id: Option<String>,
+    pub microphone_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutSettings {
+    pub camera_corner: CameraCorner,
+    pub camera_size: CameraSize,
+    pub camera_shape: CameraShape,
+    pub camera_margin: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraSize {
+    Small,
+    Medium,
+    Large,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraShape {
+    Rectangle,
+    Circle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputSettings {
+    pub record_enabled: bool,
+    pub stream_enabled: bool,
+    pub output_directory: Option<String>,
+    pub ffmpeg_path: Option<String>,
+    pub rtmp: RtmpSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RtmpSettings {
+    pub preset: RtmpPreset,
+    pub server_url: String,
+    pub stream_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RtmpPreset {
+    #[serde(rename = "youtube")]
+    YouTube,
+    Twitch,
+    X,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartSessionParams {
+    pub sources: SourceSelection,
+    pub layout: LayoutSettings,
+    pub output: OutputSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemuxSessionParams {
+    pub session_id: String,
+    pub ffmpeg_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub id: String,
+    pub title: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub status: String,
+    pub mode: String,
+    pub output_path: Option<String>,
+    pub mp4_path: Option<String>,
+    pub stream_preset: Option<String>,
+    pub layout: LayoutSettings,
+    pub sources: SourceSelection,
+    pub health_events: Vec<HealthEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthEvent {
+    pub id: String,
+    pub session_id: Option<String>,
+    pub level: HealthLevel,
+    pub code: String,
+    pub message: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HealthLevel {
+    Info,
+    Warn,
+    Error,
 }
 
 impl ServerResponse {

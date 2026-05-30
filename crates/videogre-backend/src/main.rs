@@ -2,6 +2,7 @@ mod devices;
 mod protocol;
 mod recording;
 mod state;
+mod storage;
 
 use std::io::Write;
 use std::process::Stdio;
@@ -19,7 +20,7 @@ use protocol::{
     BackendConnection, BackendHealth, ClientCommand, RecordingState, ServerEvent, ServerResponse,
     ToolStatus,
 };
-use recording::{StartRecordingParams, idle_status, start_test_recording, stop_recording};
+use recording::{idle_status, remux_session, start_session, stop_recording};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -29,6 +30,7 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use crate::state::AppState;
+use crate::storage::Database;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -43,7 +45,8 @@ async fn main() -> Result<()> {
     let port = listener.local_addr()?.port();
     let token = Uuid::new_v4().to_string();
     let (events, _) = broadcast::channel(256);
-    let state = AppState::new(token.clone(), port, events);
+    let database = Database::open_default()?;
+    let state = AppState::new(token.clone(), port, events, database);
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/ws", get(ws_handler))
@@ -188,14 +191,54 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             ServerResponse::ok(command.id, devices)
         }
         "recording.start_test" => {
-            match serde_json::from_value::<StartRecordingParams>(command.params) {
-                Ok(params) => match start_test_recording(state.clone(), params).await {
+            match serde_json::from_value::<protocol::StartSessionParams>(command.params) {
+                Ok(params) => match start_session(state.clone(), params).await {
                     Ok(status) => ServerResponse::ok(command.id, status),
                     Err(error) => ServerResponse::error(
                         command.id,
                         "recording-start-failed",
                         error.to_string(),
                     ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "session.start" => {
+            match serde_json::from_value::<protocol::StartSessionParams>(command.params) {
+                Ok(params) => match start_session(state.clone(), params).await {
+                    Ok(status) => ServerResponse::ok(command.id, status),
+                    Err(error) => {
+                        ServerResponse::error(command.id, "session-start-failed", error.to_string())
+                    }
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "session.stop" => match stop_recording(state.clone()).await {
+            Ok(status) => ServerResponse::ok(command.id, status),
+            Err(error) => {
+                ServerResponse::error(command.id, "session-stop-failed", error.to_string())
+            }
+        },
+        "sessions.list" => match state.database.list_sessions(20) {
+            Ok(sessions) => ServerResponse::ok(command.id, sessions),
+            Err(error) => {
+                ServerResponse::error(command.id, "sessions-list-failed", error.to_string())
+            }
+        },
+        "session.remux_mp4" => {
+            match serde_json::from_value::<protocol::RemuxSessionParams>(command.params) {
+                Ok(params) => match remux_session(state.clone(), params).await {
+                    Ok(mp4_path) => {
+                        ServerResponse::ok(command.id, serde_json::json!({ "mp4Path": mp4_path }))
+                    }
+                    Err(error) => {
+                        ServerResponse::error(command.id, "remux-failed", error.to_string())
+                    }
                 },
                 Err(error) => {
                     ServerResponse::error(command.id, "invalid-params", error.to_string())
@@ -214,7 +257,14 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 .lock()
                 .await
                 .as_ref()
-                .map(|active| active.status(RecordingState::Recording, None))
+                .map(|active| {
+                    let state = if active.mode == "stream" {
+                        RecordingState::Streaming
+                    } else {
+                        RecordingState::Recording
+                    };
+                    active.status(state, None)
+                })
                 .unwrap_or_else(idle_status);
             ServerResponse::ok(command.id, status)
         }
@@ -226,12 +276,13 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
     }
 }
 
-async fn backend_health(_state: &AppState, ffmpeg_path: &str) -> BackendHealth {
+async fn backend_health(state: &AppState, ffmpeg_path: &str) -> BackendHealth {
     BackendHealth {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         platform: std::env::consts::OS.to_string(),
         ffmpeg: ffmpeg_status(ffmpeg_path).await,
+        database_path: state.database.path().display().to_string(),
     }
 }
 

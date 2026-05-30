@@ -9,6 +9,7 @@ export interface BackendHealth {
   version: string
   platform: string
   ffmpeg: ToolStatus
+  databasePath: string
 }
 
 export interface ToolStatus {
@@ -34,11 +35,13 @@ export interface DeviceList {
   warnings: string[]
 }
 
-export type RecordingState = 'idle' | 'starting' | 'recording' | 'stopping' | 'failed'
+export type RecordingState = 'idle' | 'starting' | 'recording' | 'streaming' | 'stopping' | 'failed'
 
 export interface RecordingStatus {
   state: RecordingState
+  sessionId?: string
   outputPath?: string
+  streamUrl?: string
   startedAt?: string
   message?: string
 }
@@ -73,6 +76,77 @@ export interface ServerEvent<TPayload = unknown> {
 export interface StartRecordingParams {
   outputDirectory?: string
   ffmpegPath?: string
+}
+
+export interface SourceSelection {
+  screenId?: string
+  windowId?: string
+  cameraId?: string
+  microphoneId?: string
+}
+
+export type CameraCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+export type CameraSize = 'small' | 'medium' | 'large'
+export type CameraShape = 'rectangle' | 'circle'
+
+export interface LayoutSettings {
+  cameraCorner: CameraCorner
+  cameraSize: CameraSize
+  cameraShape: CameraShape
+  cameraMargin: number
+}
+
+export type RtmpPreset = 'youtube' | 'twitch' | 'x' | 'custom'
+
+export interface RtmpSettings {
+  preset: RtmpPreset
+  serverUrl: string
+  streamKey: string
+}
+
+export interface OutputSettings {
+  recordEnabled: boolean
+  streamEnabled: boolean
+  outputDirectory?: string
+  ffmpegPath?: string
+  rtmp: RtmpSettings
+}
+
+export interface StartSessionParams {
+  sources: SourceSelection
+  layout: LayoutSettings
+  output: OutputSettings
+}
+
+export interface RemuxSessionParams {
+  sessionId: string
+  ffmpegPath?: string
+}
+
+export type HealthLevel = 'info' | 'warn' | 'error'
+
+export interface HealthEvent {
+  id: string
+  sessionId?: string
+  level: HealthLevel
+  code: string
+  message: string
+  createdAt: string
+}
+
+export interface SessionSummary {
+  id: string
+  title: string
+  startedAt: string
+  endedAt?: string
+  status: string
+  mode: string
+  outputPath?: string
+  mp4Path?: string
+  streamPreset?: string
+  layout: LayoutSettings
+  sources: SourceSelection
+  healthEvents: HealthEvent[]
 }
 
 export interface VideogreApi {

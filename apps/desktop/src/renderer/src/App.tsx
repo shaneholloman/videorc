@@ -3,34 +3,53 @@ import {
   AlertTriangle,
   CheckCircle2,
   CircleStop,
+  Database,
+  FileVideo,
   Folder,
+  LayoutTemplate,
   Mic,
   Monitor,
   Play,
   Radio,
   RefreshCcw,
   Settings,
-  Video,
-  Volume2
+  Wifi
 } from 'lucide-react'
-import type { ReactElement, ReactNode } from 'react'
+import type { Dispatch, ReactElement, ReactNode, SetStateAction } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type {
   BackendConnection,
   BackendHealth,
   BackendLogEvent,
+  CameraCorner,
+  CameraShape,
+  CameraSize,
   Device,
-  DeviceKind,
   DeviceList,
+  HealthEvent,
+  LayoutSettings,
   RecordingStatus,
-  StartRecordingParams
+  RtmpPreset,
+  SessionSummary,
+  SourceSelection,
+  StartSessionParams
 } from '../../shared/backend'
 import { BackendClient } from './backendClient'
 
 type SettingsState = {
   outputDirectory: string
   ffmpegPath: string
+}
+
+type CaptureConfig = {
+  sources: SourceSelection
+  layout: LayoutSettings
+  recordEnabled: boolean
+  streamEnabled: boolean
+  rtmpPreset: RtmpPreset
+  rtmpServerUrl: string
+  streamKey: string
 }
 
 type WsStatus = 'waiting' | 'connecting' | 'connected' | 'failed' | 'closed'
@@ -40,24 +59,38 @@ const defaultSettings: SettingsState = {
   ffmpegPath: ''
 }
 
-const deviceIcons: Record<DeviceKind, typeof Monitor> = {
-  screen: Monitor,
-  window: Monitor,
-  camera: Video,
-  microphone: Mic,
-  'system-audio': Volume2
+const rtmpDefaults: Record<RtmpPreset, string> = {
+  youtube: 'rtmp://a.rtmp.youtube.com/live2',
+  twitch: 'rtmp://live.twitch.tv/app',
+  x: '',
+  custom: ''
 }
 
-function loadSettings(): SettingsState {
-  const raw = localStorage.getItem('videogre.settings')
+const defaultCaptureConfig: CaptureConfig = {
+  sources: {},
+  layout: {
+    cameraCorner: 'bottom-right',
+    cameraSize: 'medium',
+    cameraShape: 'rectangle',
+    cameraMargin: 32
+  },
+  recordEnabled: true,
+  streamEnabled: false,
+  rtmpPreset: 'youtube',
+  rtmpServerUrl: rtmpDefaults.youtube,
+  streamKey: ''
+}
+
+function loadJson<T>(key: string, fallback: T): T {
+  const raw = localStorage.getItem(key)
   if (!raw) {
-    return defaultSettings
+    return fallback
   }
 
   try {
-    return { ...defaultSettings, ...(JSON.parse(raw) as Partial<SettingsState>) }
+    return { ...fallback, ...(JSON.parse(raw) as Partial<T>) }
   } catch {
-    return defaultSettings
+    return fallback
   }
 }
 
@@ -73,6 +106,19 @@ function compactTime(timestamp: string): string {
   }
 }
 
+function dayLabel(timestamp: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(new Date(timestamp))
+  } catch {
+    return timestamp
+  }
+}
+
 export function App(): ReactElement {
   const [connection, setConnection] = useState<BackendConnection | null>(null)
   const [client, setClient] = useState<BackendClient | null>(null)
@@ -81,24 +127,53 @@ export function App(): ReactElement {
   const [deviceList, setDeviceList] = useState<DeviceList>({ devices: [], warnings: [] })
   const [recording, setRecording] = useState<RecordingStatus>({ state: 'idle', message: 'Ready.' })
   const [logs, setLogs] = useState<BackendLogEvent[]>([])
-  const [settings, setSettings] = useState<SettingsState>(() => loadSettings())
+  const [healthEvents, setHealthEvents] = useState<HealthEvent[]>([])
+  const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [settings, setSettings] = useState<SettingsState>(() => loadJson('videogre.settings', defaultSettings))
+  const [captureConfig, setCaptureConfig] = useState<CaptureConfig>(() =>
+    loadJson('videogre.captureConfig', defaultCaptureConfig)
+  )
   const [lastError, setLastError] = useState<string | null>(null)
 
-  const requestParams = useMemo<StartRecordingParams>(
+  const sessionParams = useMemo<StartSessionParams>(
     () => ({
-      outputDirectory: settings.outputDirectory.trim() || undefined,
-      ffmpegPath: settings.ffmpegPath.trim() || undefined
+      sources: captureConfig.sources,
+      layout: captureConfig.layout,
+      output: {
+        recordEnabled: captureConfig.recordEnabled,
+        streamEnabled: captureConfig.streamEnabled,
+        outputDirectory: settings.outputDirectory.trim() || undefined,
+        ffmpegPath: settings.ffmpegPath.trim() || undefined,
+        rtmp: {
+          preset: captureConfig.rtmpPreset,
+          serverUrl: captureConfig.rtmpServerUrl.trim(),
+          streamKey: captureConfig.streamKey.trim()
+        }
+      }
     }),
-    [settings]
+    [captureConfig, settings]
   )
 
   const appendLog = useCallback((log: BackendLogEvent) => {
     setLogs((current) => [...current.slice(-79), log])
   }, [])
 
+  const refreshSessions = useCallback(async (activeClient: BackendClient | null = client) => {
+    if (!activeClient) {
+      return
+    }
+
+    const nextSessions = await activeClient.request<SessionSummary[]>('sessions.list')
+    setSessions(nextSessions)
+  }, [client])
+
   useEffect(() => {
     localStorage.setItem('videogre.settings', JSON.stringify(settings))
   }, [settings])
+
+  useEffect(() => {
+    localStorage.setItem('videogre.captureConfig', JSON.stringify(captureConfig))
+  }, [captureConfig])
 
   useEffect(() => {
     let disposed = false
@@ -125,6 +200,29 @@ export function App(): ReactElement {
   }, [appendLog])
 
   useEffect(() => {
+    setCaptureConfig((current) => {
+      const nextSources = { ...current.sources }
+      const captureDevices = deviceList.devices.filter(
+        (device) => ['screen', 'window'].includes(device.kind) && device.status === 'available'
+      )
+      const cameras = deviceList.devices.filter((device) => device.kind === 'camera' && device.status === 'available')
+      const microphones = deviceList.devices.filter(
+        (device) => device.kind === 'microphone' && device.status === 'available'
+      )
+
+      nextSources.screenId ||= captureDevices[0]?.id
+      nextSources.cameraId ||= cameras[0]?.id
+      nextSources.microphoneId ||= microphones[0]?.id
+
+      if (JSON.stringify(nextSources) === JSON.stringify(current.sources)) {
+        return current
+      }
+
+      return { ...current, sources: nextSources }
+    })
+  }, [deviceList])
+
+  useEffect(() => {
     if (!connection) {
       return
     }
@@ -137,7 +235,16 @@ export function App(): ReactElement {
     const unsubscribers = [
       nextClient.on('backend.ready', () => setWsStatus('connected')),
       nextClient.on('devices.changed', (payload) => setDeviceList(payload as DeviceList)),
-      nextClient.on('recording.status', (payload) => setRecording(payload as RecordingStatus)),
+      nextClient.on('recording.status', (payload) => {
+        const status = payload as RecordingStatus
+        setRecording(status)
+        if (['idle', 'failed'].includes(status.state)) {
+          void refreshSessions(nextClient)
+        }
+      }),
+      nextClient.on('health.event', (payload) => {
+        setHealthEvents((current) => [payload as HealthEvent, ...current].slice(0, 40))
+      }),
       nextClient.on('log', (payload) => appendLog(payload as BackendLogEvent)),
       nextClient.on('error', (payload) => {
         const error = payload as { message?: string }
@@ -150,12 +257,17 @@ export function App(): ReactElement {
       .connect()
       .then(async () => {
         setWsStatus('connected')
-        const nextHealth = await nextClient.request<BackendHealth>('health.ping', requestParams)
+        const nextHealth = await nextClient.request<BackendHealth>('health.ping', {
+          ffmpegPath: settings.ffmpegPath.trim() || undefined
+        })
         setHealth(nextHealth)
-        const nextDevices = await nextClient.request<DeviceList>('devices.list', requestParams)
+        const nextDevices = await nextClient.request<DeviceList>('devices.list', {
+          ffmpegPath: settings.ffmpegPath.trim() || undefined
+        })
         setDeviceList(nextDevices)
         const nextRecording = await nextClient.request<RecordingStatus>('recording.status')
         setRecording(nextRecording)
+        await refreshSessions(nextClient)
       })
       .catch((error: unknown) => {
         setWsStatus('failed')
@@ -169,7 +281,7 @@ export function App(): ReactElement {
       nextClient.close()
       setClient(null)
     }
-  }, [appendLog, connection, requestParams])
+  }, [appendLog, connection, refreshSessions, settings.ffmpegPath])
 
   const refreshBackend = useCallback(async () => {
     if (!client) {
@@ -178,47 +290,73 @@ export function App(): ReactElement {
 
     try {
       setLastError(null)
-      const [nextHealth, nextDevices] = await Promise.all([
-        client.request<BackendHealth>('health.ping', requestParams),
-        client.request<DeviceList>('devices.list', requestParams)
+      const [nextHealth, nextDevices, nextSessions] = await Promise.all([
+        client.request<BackendHealth>('health.ping', { ffmpegPath: settings.ffmpegPath.trim() || undefined }),
+        client.request<DeviceList>('devices.list', { ffmpegPath: settings.ffmpegPath.trim() || undefined }),
+        client.request<SessionSummary[]>('sessions.list')
       ])
       setHealth(nextHealth)
       setDeviceList(nextDevices)
+      setSessions(nextSessions)
     } catch (error) {
       setLastError(error instanceof Error ? error.message : String(error))
     }
-  }, [client, requestParams])
+  }, [client, settings.ffmpegPath])
 
-  const startRecording = useCallback(async () => {
+  const startSession = useCallback(async () => {
     if (!client) {
       return
     }
 
     try {
       setLastError(null)
-      const status = await client.request<RecordingStatus>('recording.start_test', requestParams)
+      const status = await client.request<RecordingStatus>('session.start', sessionParams)
       setRecording(status)
+      await refreshSessions(client)
     } catch (error) {
       setLastError(error instanceof Error ? error.message : String(error))
     }
-  }, [client, requestParams])
+  }, [client, refreshSessions, sessionParams])
 
-  const stopRecording = useCallback(async () => {
+  const stopSession = useCallback(async () => {
     if (!client) {
       return
     }
 
     try {
       setLastError(null)
-      const status = await client.request<RecordingStatus>('recording.stop')
+      const status = await client.request<RecordingStatus>('session.stop')
       setRecording(status)
     } catch (error) {
       setLastError(error instanceof Error ? error.message : String(error))
     }
   }, [client])
 
-  const canStart = wsStatus === 'connected' && !['recording', 'starting', 'stopping'].includes(recording.state)
-  const canStop = wsStatus === 'connected' && ['recording', 'starting'].includes(recording.state)
+  const remuxSession = useCallback(
+    async (sessionId: string) => {
+      if (!client) {
+        return
+      }
+
+      try {
+        setLastError(null)
+        await client.request('session.remux_mp4', {
+          sessionId,
+          ffmpegPath: settings.ffmpegPath.trim() || undefined
+        })
+        await refreshSessions(client)
+      } catch (error) {
+        setLastError(error instanceof Error ? error.message : String(error))
+      }
+    },
+    [client, refreshSessions, settings.ffmpegPath]
+  )
+
+  const canStart =
+    wsStatus === 'connected' &&
+    !['recording', 'streaming', 'starting', 'stopping'].includes(recording.state) &&
+    (captureConfig.recordEnabled || captureConfig.streamEnabled)
+  const canStop = wsStatus === 'connected' && ['recording', 'streaming', 'starting'].includes(recording.state)
 
   return (
     <main className="app-shell">
@@ -228,7 +366,7 @@ export function App(): ReactElement {
             <Radio aria-hidden="true" size={26} />
             <h1>Videogre</h1>
           </div>
-          <p className="subhead">Recording studio spike</p>
+          <p className="subhead">Capture session foundation</p>
         </div>
         <div className="topbar-actions">
           <StatusPill label="Backend" value={connection ? `${connection.host}:${connection.port}` : 'launching'} />
@@ -239,7 +377,7 @@ export function App(): ReactElement {
         </div>
       </header>
 
-      <section className="studio-grid">
+      <section className="studio-grid phase-two-grid">
         <Panel className="control-panel" title="Session" icon={Activity}>
           <div className="recording-state">
             <span className={`record-dot ${recording.state}`} />
@@ -250,11 +388,11 @@ export function App(): ReactElement {
           </div>
 
           <div className="transport-row">
-            <button className="primary-action" type="button" disabled={!canStart} onClick={startRecording}>
+            <button className="primary-action" type="button" disabled={!canStart} onClick={startSession}>
               <Play size={18} />
-              Start test recording
+              Start session
             </button>
-            <button className="secondary-action" type="button" disabled={!canStop} onClick={stopRecording}>
+            <button className="secondary-action" type="button" disabled={!canStop} onClick={stopSession}>
               <CircleStop size={18} />
               Stop
             </button>
@@ -262,7 +400,7 @@ export function App(): ReactElement {
 
           <div className="output-box">
             <Folder aria-hidden="true" size={18} />
-            <span>{recording.outputPath ?? 'Output path appears after recording starts.'}</span>
+            <span>{recording.outputPath ?? recording.streamUrl ?? 'Output appears after session start.'}</span>
           </div>
 
           {lastError ? (
@@ -271,6 +409,159 @@ export function App(): ReactElement {
               <span>{lastError}</span>
             </div>
           ) : null}
+        </Panel>
+
+        <Panel title="Outputs" icon={Wifi}>
+          <div className="toggle-row">
+            <label>
+              <input
+                checked={captureConfig.recordEnabled}
+                type="checkbox"
+                onChange={(event) =>
+                  setCaptureConfig((current) => ({ ...current, recordEnabled: event.target.checked }))
+                }
+              />
+              <span>Record MKV</span>
+            </label>
+            <label>
+              <input
+                checked={captureConfig.streamEnabled}
+                type="checkbox"
+                onChange={(event) =>
+                  setCaptureConfig((current) => ({ ...current, streamEnabled: event.target.checked }))
+                }
+              />
+              <span>Stream RTMP</span>
+            </label>
+          </div>
+          <label className="field">
+            <span>RTMP preset</span>
+            <select
+              value={captureConfig.rtmpPreset}
+              onChange={(event) => {
+                const preset = event.target.value as RtmpPreset
+                setCaptureConfig((current) => ({
+                  ...current,
+                  rtmpPreset: preset,
+                  rtmpServerUrl: rtmpDefaults[preset] || current.rtmpServerUrl
+                }))
+              }}
+            >
+              <option value="youtube">YouTube</option>
+              <option value="twitch">Twitch</option>
+              <option value="x">X / Twitter</option>
+              <option value="custom">Custom RTMP</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>RTMP server</span>
+            <input
+              value={captureConfig.rtmpServerUrl}
+              placeholder="rtmp://server/app"
+              onChange={(event) => setCaptureConfig((current) => ({ ...current, rtmpServerUrl: event.target.value }))}
+            />
+          </label>
+          <label className="field">
+            <span>Stream key</span>
+            <input
+              value={captureConfig.streamKey}
+              placeholder="manual stream key"
+              type="password"
+              onChange={(event) => setCaptureConfig((current) => ({ ...current, streamKey: event.target.value }))}
+            />
+          </label>
+        </Panel>
+
+        <Panel className="devices-panel" title="Sources" icon={Monitor}>
+          {deviceList.warnings.map((warning) => (
+            <div className="notice warn" key={warning}>
+              <AlertTriangle aria-hidden="true" size={18} />
+              <span>{warning}</span>
+            </div>
+          ))}
+          <SourceSelect
+            devices={deviceList.devices.filter((device) => ['screen', 'window'].includes(device.kind))}
+            label="Screen / window"
+            value={captureConfig.sources.screenId}
+            onChange={(screenId) =>
+              setCaptureConfig((current) => ({
+                ...current,
+                sources: { ...current.sources, screenId, windowId: undefined }
+              }))
+            }
+          />
+          <SourceSelect
+            allowNone
+            devices={deviceList.devices.filter((device) => device.kind === 'camera')}
+            label="Camera"
+            value={captureConfig.sources.cameraId}
+            onChange={(cameraId) =>
+              setCaptureConfig((current) => ({ ...current, sources: { ...current.sources, cameraId } }))
+            }
+          />
+          <SourceSelect
+            allowNone
+            devices={deviceList.devices.filter((device) => device.kind === 'microphone')}
+            label="Microphone"
+            value={captureConfig.sources.microphoneId}
+            onChange={(microphoneId) =>
+              setCaptureConfig((current) => ({ ...current, sources: { ...current.sources, microphoneId } }))
+            }
+          />
+        </Panel>
+
+        <Panel title="Layout" icon={LayoutTemplate}>
+          <div className="preview-stage">
+            <div
+              className={`camera-preview ${captureConfig.layout.cameraCorner} ${captureConfig.layout.cameraSize} ${captureConfig.layout.cameraShape}`}
+              style={{ margin: captureConfig.layout.cameraMargin }}
+            />
+          </div>
+          <div className="layout-grid">
+            <label className="field">
+              <span>Corner</span>
+              <select
+                value={captureConfig.layout.cameraCorner}
+                onChange={(event) => updateLayout(setCaptureConfig, { cameraCorner: event.target.value as CameraCorner })}
+              >
+                <option value="top-left">Top-left</option>
+                <option value="top-right">Top-right</option>
+                <option value="bottom-left">Bottom-left</option>
+                <option value="bottom-right">Bottom-right</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Size</span>
+              <select
+                value={captureConfig.layout.cameraSize}
+                onChange={(event) => updateLayout(setCaptureConfig, { cameraSize: event.target.value as CameraSize })}
+              >
+                <option value="small">Small</option>
+                <option value="medium">Medium</option>
+                <option value="large">Large</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Shape</span>
+              <select
+                value={captureConfig.layout.cameraShape}
+                onChange={(event) => updateLayout(setCaptureConfig, { cameraShape: event.target.value as CameraShape })}
+              >
+                <option value="rectangle">Rectangle</option>
+                <option value="circle">Circle</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Margin {captureConfig.layout.cameraMargin}px</span>
+              <input
+                max={96}
+                min={8}
+                type="range"
+                value={captureConfig.layout.cameraMargin}
+                onChange={(event) => updateLayout(setCaptureConfig, { cameraMargin: Number(event.target.value) })}
+              />
+            </label>
+          </div>
         </Panel>
 
         <Panel title="Settings" icon={Settings}>
@@ -294,20 +585,34 @@ export function App(): ReactElement {
             {health?.ffmpeg.available ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
             <span>{health?.ffmpeg.version ?? health?.ffmpeg.message ?? 'Waiting for FFmpeg status.'}</span>
           </div>
+          <div className="output-box database-path">
+            <Database aria-hidden="true" size={18} />
+            <span>{health?.databasePath ?? 'Waiting for SQLite path.'}</span>
+          </div>
         </Panel>
 
-        <Panel className="devices-panel" title="Sources" icon={Monitor}>
-          {deviceList.warnings.map((warning) => (
-            <div className="notice warn" key={warning}>
-              <AlertTriangle aria-hidden="true" size={18} />
-              <span>{warning}</span>
-            </div>
-          ))}
-          <div className="device-list">
-            {deviceList.devices.length === 0 ? (
-              <div className="empty-state">Waiting for device metadata.</div>
+        <Panel className="health-panel" title="Health" icon={AlertTriangle}>
+          <div className="health-list">
+            {healthEvents.length === 0 ? (
+              <div className="empty-state">No health events yet.</div>
             ) : (
-              deviceList.devices.map((device) => <DeviceRow device={device} key={device.id} />)
+              healthEvents.map((event) => <HealthRow event={event} key={event.id} />)
+            )}
+          </div>
+        </Panel>
+
+        <Panel className="sessions-panel" title="Session Library" icon={FileVideo}>
+          <div className="session-list">
+            {sessions.length === 0 ? (
+              <div className="empty-state">No sessions yet.</div>
+            ) : (
+              sessions.map((session) => (
+                <SessionRow
+                  key={session.id}
+                  onRemux={() => remuxSession(session.id)}
+                  session={session}
+                />
+              ))
             )}
           </div>
         </Panel>
@@ -330,6 +635,13 @@ export function App(): ReactElement {
       </section>
     </main>
   )
+}
+
+function updateLayout(
+  setCaptureConfig: Dispatch<SetStateAction<CaptureConfig>>,
+  patch: Partial<LayoutSettings>
+): void {
+  setCaptureConfig((current) => ({ ...current, layout: { ...current.layout, ...patch } }))
 }
 
 function Panel({
@@ -371,20 +683,72 @@ function StatusPill({
   )
 }
 
-function DeviceRow({ device }: { device: Device }): ReactElement {
-  const Icon = deviceIcons[device.kind]
-  const isAvailable = device.status === 'available'
+function SourceSelect({
+  allowNone = false,
+  devices,
+  label,
+  onChange,
+  value
+}: {
+  allowNone?: boolean
+  devices: Device[]
+  label: string
+  onChange: (value: string | undefined) => void
+  value?: string
+}): ReactElement {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value ?? ''} onChange={(event) => onChange(event.target.value || undefined)}>
+        {allowNone ? <option value="">None</option> : null}
+        {devices.map((device) => (
+          <option disabled={device.status !== 'available'} key={device.id} value={device.id}>
+            {device.name} {device.status !== 'available' ? `(${device.status})` : ''}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function HealthRow({ event }: { event: HealthEvent }): ReactElement {
+  return (
+    <article className={`health-row ${event.level}`}>
+      <span>{event.level}</span>
+      <div>
+        <strong>{event.code}</strong>
+        <p>{event.message}</p>
+      </div>
+      <time>{compactTime(event.createdAt)}</time>
+    </article>
+  )
+}
+
+function SessionRow({
+  onRemux,
+  session
+}: {
+  onRemux: () => void
+  session: SessionSummary
+}): ReactElement {
+  const canRemux = Boolean(session.status === 'completed' && session.outputPath?.endsWith('.mkv') && !session.mp4Path)
 
   return (
-    <article className="device-row">
-      <div className="device-icon">
-        <Icon aria-hidden="true" size={20} />
+    <article className="session-row">
+      <div className="session-main">
+        <strong>{session.title}</strong>
+        <span>
+          {dayLabel(session.startedAt)} · {session.mode} · {session.status}
+        </span>
+        <p>{session.outputPath ?? session.streamPreset ?? 'No local file'}</p>
       </div>
-      <div className="device-copy">
-        <strong>{device.name}</strong>
-        <span>{device.detail ?? device.kind}</span>
+      <div className="session-actions">
+        {session.healthEvents.length ? <span className="health-count">{session.healthEvents.length} health</span> : null}
+        {session.mp4Path ? <span className="mp4-chip">MP4</span> : null}
+        <button className="small-action" disabled={!canRemux} type="button" onClick={onRemux}>
+          MP4
+        </button>
       </div>
-      <span className={`device-status ${isAvailable ? 'good' : 'warn'}`}>{device.status}</span>
     </article>
   )
 }

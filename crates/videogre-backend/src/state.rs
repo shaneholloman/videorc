@@ -5,6 +5,7 @@ use tokio::sync::broadcast;
 
 use crate::protocol::{BackendLogEvent, ServerEvent};
 use crate::recording::RecordingSlot;
+use crate::storage::Database;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -12,15 +13,22 @@ pub struct AppState {
     pub port: u16,
     pub events: broadcast::Sender<ServerEvent>,
     pub recording: RecordingSlot,
+    pub database: Database,
 }
 
 impl AppState {
-    pub fn new(token: String, port: u16, events: broadcast::Sender<ServerEvent>) -> Self {
+    pub fn new(
+        token: String,
+        port: u16,
+        events: broadcast::Sender<ServerEvent>,
+        database: Database,
+    ) -> Self {
         Self {
             token,
             port,
             events,
             recording: Arc::new(tokio::sync::Mutex::new(None)),
+            database,
         }
     }
 
