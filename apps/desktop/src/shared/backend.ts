@@ -92,6 +92,7 @@ export interface SourceSelection {
   windowId?: string
   cameraId?: string
   microphoneId?: string
+  testPattern?: boolean
 }
 
 export type CameraCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'

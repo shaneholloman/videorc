@@ -21,11 +21,17 @@ extraResources:
 
 mac:
   category: public.app-category.video
+  hardenedRuntime: true
   icon: build-resources/icon.icns
-  identity: null
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  notarize: true
+  extendInfo:
+    NSCameraUsageDescription: Videogre uses the camera for creator overlays when you select a camera source.
+    NSMicrophoneUsageDescription: Videogre uses the microphone when you select a microphone for recording or streaming.
+    NSScreenCaptureDescription: Videogre captures your screen or selected windows only when you start a recording or stream.
+    NSDocumentsFolderUsageDescription: Videogre can save recordings to a folder you choose.
+    NSDownloadsFolderUsageDescription: Videogre can save exports to a folder you choose.
   target:
     - dir
     - dmg
-
-dmg:
-  sign: false

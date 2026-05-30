@@ -159,6 +159,8 @@ pub struct SourceSelection {
     pub window_id: Option<String>,
     pub camera_id: Option<String>,
     pub microphone_id: Option<String>,
+    #[serde(default)]
+    pub test_pattern: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

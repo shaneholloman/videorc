@@ -60,7 +60,13 @@ Create the configured Electron Builder distribution target:
 pnpm dist:desktop
 ```
 
-The current package still uses system FFmpeg. See [distribution notes](docs/distribution.md) for signing, notarization, and FFmpeg decisions.
+Run the packaged-app recording smoke test:
+
+```sh
+pnpm smoke:packaged
+```
+
+The current alpha package still uses system FFmpeg. Public v1 should bundle an LGPL-compatible FFmpeg build while keeping the Settings override. See [distribution notes](docs/distribution.md) for signing, notarization, and FFmpeg decisions.
 
 ## Current State
 
@@ -87,8 +93,9 @@ The technical spike, capture foundation, reliable recording preview path, first 
 - camera framing controls for fit/fill crop, mirror, zoom, and pan
 - recording timer and first hotkeys for session toggle and preview refresh
 - Electron Builder packaging foundation with the Rust backend included as an app resource
+- signed/notarized macOS release workflow scaffolding and packaged-app smoke script
 
-Next planned slice: signed macOS packaging, notarization, and packaged-app smoke testing.
+Next planned slice: bundled LGPL FFmpeg resolution and clean-machine release validation.
 
 ## AI Workflow
 

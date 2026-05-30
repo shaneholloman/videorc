@@ -438,6 +438,7 @@ mod tests {
             window_id: None,
             camera_id: Some("camera:avfoundation:0".to_string()),
             microphone_id: Some("microphone:avfoundation:0".to_string()),
+            test_pattern: false,
         };
         let output = OutputSettings {
             record_enabled: true,

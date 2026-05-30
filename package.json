@@ -12,6 +12,8 @@
     "package:backend": "cargo build --release -p videogre-backend",
     "package:desktop": "pnpm package:backend && pnpm --filter @videogre/desktop package",
     "dist:desktop": "pnpm package:backend && pnpm --filter @videogre/desktop dist",
+    "dist:desktop:signed": "pnpm package:backend && pnpm --filter @videogre/desktop dist:signed",
+    "smoke:packaged": "node scripts/smoke-packaged-app.mjs",
     "backend:dev": "cargo run -p videogre-backend",
     "backend:test": "cargo test",
     "backend:fmt": "cargo fmt --check",

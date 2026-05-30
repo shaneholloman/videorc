@@ -1004,11 +1004,15 @@ struct StreamTarget {
 }
 
 async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) -> CaptureInputs {
-    let selected_screen = params
-        .sources
-        .screen_id
-        .as_deref()
-        .and_then(parse_avfoundation_id);
+    let selected_screen = (!params.sources.test_pattern)
+        .then(|| {
+            params
+                .sources
+                .screen_id
+                .as_deref()
+                .and_then(parse_avfoundation_id)
+        })
+        .flatten();
     let camera_index = params
         .sources
         .camera_id
@@ -1019,7 +1023,7 @@ async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) 
         .microphone_id
         .as_deref()
         .and_then(parse_avfoundation_id);
-    let detected_screen = if cfg!(target_os = "macos") {
+    let detected_screen = if cfg!(target_os = "macos") && !params.sources.test_pattern {
         selected_screen.or(find_avfoundation_screen_index(ffmpeg_path).await)
     } else {
         None
@@ -1693,6 +1697,7 @@ mod tests {
                 window_id: None,
                 camera_id: Some("camera:avfoundation:0".to_string()),
                 microphone_id: Some("microphone:avfoundation:1".to_string()),
+                test_pattern: false,
             },
             layout: LayoutSettings {
                 camera_corner: CameraCorner::BottomRight,

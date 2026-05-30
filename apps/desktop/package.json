@@ -8,8 +8,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "package": "pnpm build && electron-builder --dir",
-    "dist": "pnpm build && electron-builder",
+    "package": "pnpm build && electron-builder --dir --config.mac.identity=null --config.mac.notarize=false",
+    "dist": "pnpm build && electron-builder --config.mac.identity=null --config.mac.notarize=false --config.dmg.sign=false",
+    "dist:signed": "pnpm build && electron-builder --mac dmg",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
   },
   "dependencies": {

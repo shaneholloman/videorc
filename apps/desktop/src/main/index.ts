@@ -116,6 +116,9 @@ function handleBackendStdout(text: string): void {
       try {
         backendConnection = JSON.parse(trimmed.slice('READY '.length)) as BackendConnection
         logBackend('info', `Backend ready on ${backendConnection.host}:${backendConnection.port}`)
+        if (process.env.VIDEOGRE_SMOKE_PRINT_BACKEND_READY === '1') {
+          console.log(`[smoke] backend-ready ${JSON.stringify(backendConnection)}`)
+        }
         BrowserWindow.getAllWindows().forEach((window) => {
           window.webContents.send('backend:connection', backendConnection)
         })
