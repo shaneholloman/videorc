@@ -30,6 +30,7 @@ const STOP_FINALIZE_TIMEOUT: Duration = Duration::from_secs(12);
 const STOP_TERM_DELAY: Duration = Duration::from_secs(3);
 const STOP_KILL_DELAY: Duration = Duration::from_secs(3);
 const SHUTDOWN_GRACE_DELAY: Duration = Duration::from_millis(1200);
+const CAPTURE_AUDIO_FILTER: &str = "aresample=async=1:first_pts=0,volume=24dB,alimiter=limit=0.95";
 
 #[derive(Debug)]
 pub struct ActiveRecording {
@@ -1472,7 +1473,7 @@ fn append_audio_encoding_args(args: &mut Vec<String>, input_layout: &InputLayout
 
     args.extend([
         "-af".to_string(),
-        "aresample=async=1:first_pts=0".to_string(),
+        CAPTURE_AUDIO_FILTER.to_string(),
         "-ar".to_string(),
         "48000".to_string(),
         "-ac".to_string(),
@@ -2066,10 +2067,7 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "1:a?"));
         assert!(args.iter().any(|arg| arg.contains("[2:v]")));
         assert!(args.iter().any(|arg| arg == "title=Microphone"));
-        assert_eq!(
-            arg_value(&args, "-af"),
-            Some("aresample=async=1:first_pts=0")
-        );
+        assert_eq!(arg_value(&args, "-af"), Some(CAPTURE_AUDIO_FILTER));
         assert_eq!(arg_value(&args, "-ar"), Some("48000"));
         assert_eq!(arg_value(&args, "-ac"), Some("1"));
         assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
@@ -2101,10 +2099,7 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "1:a?"));
         assert!(args.iter().any(|arg| arg == "-metadata:s:a:0"));
         assert!(args.iter().any(|arg| arg == "title=Microphone"));
-        assert_eq!(
-            arg_value(&args, "-af"),
-            Some("aresample=async=1:first_pts=0")
-        );
+        assert_eq!(arg_value(&args, "-af"), Some(CAPTURE_AUDIO_FILTER));
         assert_eq!(arg_value(&args, "-ar"), Some("48000"));
         assert_eq!(arg_value(&args, "-ac"), Some("1"));
         assert_eq!(arg_value(&args, "-c:a"), Some("pcm_s16le"));
