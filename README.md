@@ -46,6 +46,22 @@ Session metadata is stored in:
 ~/Library/Application Support/Videogre/videogre.sqlite3
 ```
 
+## Packaging
+
+Create a local unsigned macOS app bundle with the Rust backend included:
+
+```sh
+pnpm package:desktop
+```
+
+Create the configured Electron Builder distribution target:
+
+```sh
+pnpm dist:desktop
+```
+
+The current package still uses system FFmpeg. See [distribution notes](docs/distribution.md) for signing, notarization, and FFmpeg decisions.
+
 ## Current State
 
 The technical spike, capture foundation, reliable recording preview path, first post-recording AI workflow, and first creator polish slice are implemented:
@@ -70,8 +86,9 @@ The technical spike, capture foundation, reliable recording preview path, first 
 - one-shot FFmpeg microphone level check
 - camera framing controls for fit/fill crop, mirror, zoom, and pan
 - recording timer and first hotkeys for session toggle and preview refresh
+- Electron Builder packaging foundation with the Rust backend included as an app resource
 
-Next planned slice: packaging and distribution planning.
+Next planned slice: signed macOS packaging, notarization, and packaged-app smoke testing.
 
 ## AI Workflow
 

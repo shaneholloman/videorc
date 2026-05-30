@@ -4,9 +4,12 @@
   "private": true,
   "main": "./out/main/index.js",
   "description": "Videogre desktop technical spike.",
+  "author": "TheOrcDev",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "package": "pnpm build && electron-builder --dir",
+    "dist": "pnpm build && electron-builder",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
   },
   "dependencies": {
@@ -32,6 +35,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "electron": "^39.2.7",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^4.0.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.7"

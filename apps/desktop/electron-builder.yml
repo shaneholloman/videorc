@@ -1,0 +1,31 @@
+appId: dev.theorcdev.videogre
+productName: Videogre
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+asar: true
+npmRebuild: false
+publish: null
+
+directories:
+  buildResources: build-resources
+  output: release
+
+files:
+  - out/**/*
+  - package.json
+
+extraResources:
+  - from: ../../target/release/videogre-backend
+    to: videogre-backend
+    filter:
+      - videogre-backend
+
+mac:
+  category: public.app-category.video
+  icon: build-resources/icon.icns
+  identity: null
+  target:
+    - dir
+    - dmg
+
+dmg:
+  sign: false
