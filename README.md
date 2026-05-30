@@ -14,6 +14,7 @@ This repository currently contains the technical spike:
 - Authenticated low-resolution scene preview snapshots served by the Rust backend
 - Tutorial preset composition that scales to 1440p when available and falls back to the captured resolution
 - Optional MP4 remux after MKV recording
+- Post-recording AI workflow for local audio extraction, optional cloud transcription, summaries, and chapters
 
 Raw media frames do not move through Electron IPC. Electron receives backend connection details, state updates, device metadata, recording status, and logs.
 
@@ -45,9 +46,9 @@ Session metadata is stored in:
 ~/Library/Application Support/Videogre/videogre.sqlite3
 ```
 
-## Current Phase
+## Current State
 
-Phase 1 is complete. Phase 2 implements the capture session foundation. Phase 3 is underway with reliable capture/output improvements:
+The technical spike, capture foundation, reliable recording preview path, and first post-recording AI workflow are implemented:
 
 - screen/window, camera, and microphone selection
 - one v1 layout: screen/window plus camera corner
@@ -58,6 +59,27 @@ Phase 1 is complete. Phase 2 implements the capture session foundation. Phase 3 
 - tutorial-first 30 FPS composition with camera overlay and circle camera masking
 - deterministic health events surfaced in the UI
 - local session library with MKV to MP4 remux
+- post-recording AI artifacts attached to local sessions
+
+Next planned slice: creator polish for title/description suggestions, transcript and chapters viewing/export, microphone health, and onboarding/setup.
+
+## AI Workflow
+
+The AI workflow is explicit-consent and post-recording only:
+
+- Audio is extracted locally from the session recording into app support storage.
+- No upload happens unless the user enables cloud AI consent in the UI and runs AI for a session.
+- Cloud transcription uses `OPENAI_API_KEY` when present.
+- Generated transcript, summary, and chapters are stored as local SQLite artifacts.
+- Single-upload transcription currently fails fast when the extracted audio is over 25 MB; chunking is a later slice.
+
+Optional model overrides:
+
+```sh
+export OPENAI_API_KEY=...
+export VIDEOGRE_OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
+export VIDEOGRE_OPENAI_TEXT_MODEL=gpt-5-mini
+```
 
 ## Verification
 

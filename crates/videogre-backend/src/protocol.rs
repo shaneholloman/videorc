@@ -251,6 +251,7 @@ pub struct SessionSummary {
     pub layout: LayoutSettings,
     pub sources: SourceSelection,
     pub health_events: Vec<HealthEvent>,
+    pub ai_artifacts: Vec<AiArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +271,51 @@ pub enum HealthLevel {
     Info,
     Warn,
     Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAiWorkflowParams {
+    pub session_id: String,
+    pub consent_to_upload_audio: bool,
+    pub ffmpeg_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiWorkflowResult {
+    pub session_id: String,
+    pub audio_path: String,
+    pub artifacts: Vec<AiArtifact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiArtifact {
+    pub id: String,
+    pub session_id: String,
+    pub kind: AiArtifactKind,
+    pub status: AiArtifactStatus,
+    pub content: serde_json::Value,
+    pub file_path: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiArtifactKind {
+    AudioExtract,
+    Transcript,
+    Summary,
+    Chapters,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiArtifactStatus {
+    Ready,
+    PendingConsent,
+    Failed,
 }
 
 impl ServerResponse {

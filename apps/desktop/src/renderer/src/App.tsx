@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  Brain,
   CheckCircle2,
   CircleStop,
   Database,
@@ -22,6 +23,8 @@ import type {
   BackendConnection,
   BackendHealth,
   BackendLogEvent,
+  AiArtifact,
+  AiWorkflowResult,
   CameraCorner,
   CameraShape,
   CameraSize,
@@ -132,6 +135,8 @@ export function App(): ReactElement {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [aiConsent, setAiConsent] = useState(false)
+  const [aiRunningSessionId, setAiRunningSessionId] = useState<string | null>(null)
   const [settings, setSettings] = useState<SettingsState>(() => loadJson('videogre.settings', defaultSettings))
   const [captureConfig, setCaptureConfig] = useState<CaptureConfig>(() =>
     loadJson('videogre.captureConfig', defaultCaptureConfig)
@@ -247,6 +252,9 @@ export function App(): ReactElement {
       }),
       nextClient.on('health.event', (payload) => {
         setHealthEvents((current) => [payload as HealthEvent, ...current].slice(0, 40))
+      }),
+      nextClient.on('ai.artifacts.changed', () => {
+        void refreshSessions(nextClient)
       }),
       nextClient.on('log', (payload) => appendLog(payload as BackendLogEvent)),
       nextClient.on('error', (payload) => {
@@ -385,6 +393,30 @@ export function App(): ReactElement {
       }
     },
     [client, refreshSessions, settings.ffmpegPath]
+  )
+
+  const runAiWorkflow = useCallback(
+    async (sessionId: string) => {
+      if (!client) {
+        return
+      }
+
+      try {
+        setLastError(null)
+        setAiRunningSessionId(sessionId)
+        await client.request<AiWorkflowResult>('ai.run_post_recording', {
+          sessionId,
+          consentToUploadAudio: aiConsent,
+          ffmpegPath: settings.ffmpegPath.trim() || undefined
+        })
+        await refreshSessions(client)
+      } catch (error) {
+        setLastError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setAiRunningSessionId(null)
+      }
+    },
+    [aiConsent, client, refreshSessions, settings.ffmpegPath]
   )
 
   const canStart =
@@ -647,6 +679,24 @@ export function App(): ReactElement {
           </div>
         </Panel>
 
+        <Panel className="ai-panel" title="AI Publish Pack" icon={Brain}>
+          <label className="consent-box">
+            <input
+              checked={aiConsent}
+              type="checkbox"
+              onChange={(event) => setAiConsent(event.target.checked)}
+            />
+            <span>Allow cloud AI to upload extracted audio for transcription.</span>
+          </label>
+          <div className="notice warn">
+            <AlertTriangle aria-hidden="true" size={18} />
+            <span>Recordings stay local by default. Without consent, Videogre only extracts local audio.</span>
+          </div>
+          <div className="ai-model-note">
+            Uses `OPENAI_API_KEY` when present. Artifacts are stored locally with each session.
+          </div>
+        </Panel>
+
         <Panel className="sessions-panel" title="Session Library" icon={FileVideo}>
           <div className="session-list">
             {sessions.length === 0 ? (
@@ -654,7 +704,9 @@ export function App(): ReactElement {
             ) : (
               sessions.map((session) => (
                 <SessionRow
+                  aiRunning={aiRunningSessionId === session.id}
                   key={session.id}
+                  onRunAi={() => runAiWorkflow(session.id)}
                   onRemux={() => remuxSession(session.id)}
                   session={session}
                 />
@@ -771,13 +823,21 @@ function HealthRow({ event }: { event: HealthEvent }): ReactElement {
 }
 
 function SessionRow({
+  aiRunning,
+  onRunAi,
   onRemux,
   session
 }: {
+  aiRunning: boolean
+  onRunAi: () => void
   onRemux: () => void
   session: SessionSummary
 }): ReactElement {
   const canRemux = Boolean(session.status === 'completed' && session.outputPath?.endsWith('.mkv') && !session.mp4Path)
+  const canRunAi = Boolean(session.status === 'completed' && session.outputPath)
+  const summaryArtifacts = session.aiArtifacts.filter((artifact) => artifact.kind === 'summary')
+  const latestSummary = summaryArtifacts[summaryArtifacts.length - 1]
+  const artifactStatus = session.aiArtifacts.at(-1)?.status
 
   return (
     <article className="session-row">
@@ -787,14 +847,43 @@ function SessionRow({
           {dayLabel(session.startedAt)} · {session.mode} · {session.status}
         </span>
         <p>{session.outputPath ?? session.streamPreset ?? 'No local file'}</p>
+        {latestSummary ? <p className="session-summary">{artifactText(latestSummary)}</p> : null}
       </div>
       <div className="session-actions">
         {session.healthEvents.length ? <span className="health-count">{session.healthEvents.length} health</span> : null}
+        {session.aiArtifacts.length ? (
+          <span className={`ai-chip ${artifactStatus ?? 'pending-consent'}`}>
+            {session.aiArtifacts.length} AI
+          </span>
+        ) : null}
         {session.mp4Path ? <span className="mp4-chip">MP4</span> : null}
+        <button className="small-action ai-action" disabled={!canRunAi || aiRunning} type="button" onClick={onRunAi}>
+          {aiRunning ? 'AI...' : 'AI'}
+        </button>
         <button className="small-action" disabled={!canRemux} type="button" onClick={onRemux}>
           MP4
         </button>
       </div>
     </article>
   )
+}
+
+function artifactText(artifact: AiArtifact): string {
+  if (typeof artifact.content !== 'object' || artifact.content === null) {
+    return ''
+  }
+
+  const content = artifact.content as Record<string, unknown>
+  const text = content.text
+  const message = content.message
+
+  if (typeof text === 'string') {
+    return text
+  }
+
+  if (typeof message === 'string') {
+    return message
+  }
+
+  return artifact.status
 }

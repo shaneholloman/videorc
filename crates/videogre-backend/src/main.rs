@@ -1,3 +1,4 @@
+mod ai;
 mod devices;
 mod protocol;
 mod recording;
@@ -275,6 +276,38 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 },
                 Err(error) => {
                     ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "ai.run_post_recording" => {
+            match serde_json::from_value::<protocol::RunAiWorkflowParams>(command.params) {
+                Ok(params) => match ai::run_ai_workflow(state.clone(), params).await {
+                    Ok(result) => ServerResponse::ok(command.id, result),
+                    Err(error) => {
+                        ServerResponse::error(command.id, "ai-workflow-failed", error.to_string())
+                    }
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "ai.artifacts.list" => {
+            let session_id = command
+                .params
+                .get("sessionId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if session_id.is_empty() {
+                ServerResponse::error(command.id, "invalid-params", "sessionId is required")
+            } else {
+                match ai::list_ai_artifacts(state, session_id) {
+                    Ok(artifacts) => ServerResponse::ok(command.id, artifacts),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "ai-artifacts-list-failed",
+                        error.to_string(),
+                    ),
                 }
             }
         }

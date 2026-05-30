@@ -146,6 +146,31 @@ export interface HealthEvent {
   createdAt: string
 }
 
+export interface RunAiWorkflowParams {
+  sessionId: string
+  consentToUploadAudio: boolean
+  ffmpegPath?: string
+}
+
+export interface AiWorkflowResult {
+  sessionId: string
+  audioPath: string
+  artifacts: AiArtifact[]
+}
+
+export type AiArtifactKind = 'audio-extract' | 'transcript' | 'summary' | 'chapters'
+export type AiArtifactStatus = 'ready' | 'pending-consent' | 'failed'
+
+export interface AiArtifact {
+  id: string
+  sessionId: string
+  kind: AiArtifactKind
+  status: AiArtifactStatus
+  content: unknown
+  filePath?: string
+  createdAt: string
+}
+
 export interface SessionSummary {
   id: string
   title: string
@@ -159,6 +184,7 @@ export interface SessionSummary {
   layout: LayoutSettings
   sources: SourceSelection
   healthEvents: HealthEvent[]
+  aiArtifacts: AiArtifact[]
 }
 
 export interface VideogreApi {

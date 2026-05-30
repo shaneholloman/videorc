@@ -7,7 +7,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::protocol::{
-    HealthEvent, HealthLevel, LayoutSettings, OutputSettings, SessionSummary, SourceSelection,
+    AiArtifact, AiArtifactKind, AiArtifactStatus, HealthEvent, HealthLevel, LayoutSettings,
+    OutputSettings, SessionSummary, SourceSelection,
 };
 
 #[derive(Clone)]
@@ -105,6 +106,46 @@ impl Database {
         Ok(path)
     }
 
+    pub fn save_ai_artifact(
+        &self,
+        session_id: &str,
+        kind: AiArtifactKind,
+        status: AiArtifactStatus,
+        content: serde_json::Value,
+        file_path: Option<String>,
+    ) -> Result<AiArtifact> {
+        let artifact = AiArtifact {
+            id: Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            kind,
+            status,
+            content,
+            file_path,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO ai_artifacts (
+                id, session_id, kind, status, content_json, file_path, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                artifact.id,
+                artifact.session_id,
+                serde_json::to_string(&artifact.kind)?,
+                serde_json::to_string(&artifact.status)?,
+                serde_json::to_string(&artifact.content)?,
+                artifact.file_path,
+                artifact.created_at,
+            ],
+        )?;
+        Ok(artifact)
+    }
+
+    pub fn list_ai_artifacts(&self, session_id: &str) -> Result<Vec<AiArtifact>> {
+        let conn = self.lock()?;
+        self.ai_artifacts_for_session_locked(&conn, session_id)
+    }
+
     pub fn add_health_event(
         &self,
         session_id: Option<&str>,
@@ -182,6 +223,7 @@ impl Database {
 
             sessions.push(SessionSummary {
                 health_events: self.health_events_for_session_locked(&conn, &id)?,
+                ai_artifacts: self.ai_artifacts_for_session_locked(&conn, &id)?,
                 id,
                 title,
                 started_at,
@@ -241,6 +283,17 @@ impl Database {
                 FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS ai_artifacts (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                file_path TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value_json TEXT NOT NULL,
@@ -249,6 +302,36 @@ impl Database {
             ",
         )?;
         Ok(())
+    }
+
+    fn ai_artifacts_for_session_locked(
+        &self,
+        conn: &Connection,
+        session_id: &str,
+    ) -> Result<Vec<AiArtifact>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, kind, status, content_json, file_path, created_at
+             FROM ai_artifacts
+             WHERE session_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            let kind_json: String = row.get(2)?;
+            let status_json: String = row.get(3)?;
+            let content_json: String = row.get(4)?;
+            Ok(AiArtifact {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                kind: serde_json::from_str(&kind_json).unwrap_or(AiArtifactKind::Transcript),
+                status: serde_json::from_str(&status_json).unwrap_or(AiArtifactStatus::Failed),
+                content: serde_json::from_str(&content_json)
+                    .unwrap_or_else(|_| serde_json::json!({})),
+                file_path: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     fn health_events_for_session_locked(
@@ -305,6 +388,14 @@ pub fn default_preview_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Previews")
+}
+
+pub fn default_artifacts_dir() -> PathBuf {
+    default_database_path()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Artifacts")
 }
 
 #[cfg(test)]
