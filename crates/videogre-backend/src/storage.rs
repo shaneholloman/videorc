@@ -299,6 +299,14 @@ pub fn default_database_path() -> PathBuf {
     }
 }
 
+pub fn default_preview_dir() -> PathBuf {
+    default_database_path()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Previews")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

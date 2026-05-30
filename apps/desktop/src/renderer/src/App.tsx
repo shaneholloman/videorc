@@ -29,6 +29,7 @@ import type {
   DeviceList,
   HealthEvent,
   LayoutSettings,
+  PreviewSnapshot,
   RecordingStatus,
   RtmpPreset,
   SessionSummary,
@@ -129,6 +130,8 @@ export function App(): ReactElement {
   const [logs, setLogs] = useState<BackendLogEvent[]>([])
   const [healthEvents, setHealthEvents] = useState<HealthEvent[]>([])
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
   const [settings, setSettings] = useState<SettingsState>(() => loadJson('videogre.settings', defaultSettings))
   const [captureConfig, setCaptureConfig] = useState<CaptureConfig>(() =>
     loadJson('videogre.captureConfig', defaultCaptureConfig)
@@ -302,6 +305,38 @@ export function App(): ReactElement {
       setLastError(error instanceof Error ? error.message : String(error))
     }
   }, [client, settings.ffmpegPath])
+
+  const refreshPreview = useCallback(async () => {
+    if (!client || wsStatus !== 'connected') {
+      return
+    }
+
+    try {
+      setPreviewLoading(true)
+      const snapshot = await client.request<PreviewSnapshot>('preview.snapshot', {
+        sources: captureConfig.sources,
+        layout: captureConfig.layout,
+        ffmpegPath: settings.ffmpegPath.trim() || undefined
+      })
+      setPreviewUrl(`${snapshot.url}&cache=${Date.now()}`)
+    } catch (error) {
+      setLastError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setPreviewLoading(false)
+    }
+  }, [captureConfig.layout, captureConfig.sources, client, settings.ffmpegPath, wsStatus])
+
+  useEffect(() => {
+    if (!client || wsStatus !== 'connected') {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      void refreshPreview()
+    }, 800)
+
+    return () => window.clearTimeout(timer)
+  }, [client, refreshPreview, wsStatus])
 
   const startSession = useCallback(async () => {
     if (!client) {
@@ -512,11 +547,22 @@ export function App(): ReactElement {
 
         <Panel title="Layout" icon={LayoutTemplate}>
           <div className="preview-stage">
-            <div
-              className={`camera-preview ${captureConfig.layout.cameraCorner} ${captureConfig.layout.cameraSize} ${captureConfig.layout.cameraShape}`}
-              style={{ margin: captureConfig.layout.cameraMargin }}
-            />
+            {previewUrl ? (
+              <img alt="Selected scene preview" className="preview-image" src={previewUrl} />
+            ) : (
+              <div className="preview-placeholder">
+                <div
+                  className={`camera-preview ${captureConfig.layout.cameraCorner} ${captureConfig.layout.cameraSize} ${captureConfig.layout.cameraShape}`}
+                  style={{ margin: captureConfig.layout.cameraMargin }}
+                />
+              </div>
+            )}
+            {previewLoading ? <div className="preview-badge">Refreshing</div> : null}
           </div>
+          <button className="secondary-action preview-refresh" type="button" onClick={refreshPreview}>
+            <RefreshCcw size={16} />
+            Refresh preview
+          </button>
           <div className="layout-grid">
             <label className="field">
               <span>Corner</span>

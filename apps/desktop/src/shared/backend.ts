@@ -123,6 +123,18 @@ export interface RemuxSessionParams {
   ffmpegPath?: string
 }
 
+export interface PreviewSnapshotParams {
+  sources: SourceSelection
+  layout: LayoutSettings
+  ffmpegPath?: string
+}
+
+export interface PreviewSnapshot {
+  id: string
+  url: string
+  createdAt: string
+}
+
 export type HealthLevel = 'info' | 'warn' | 'error'
 
 export interface HealthEvent {

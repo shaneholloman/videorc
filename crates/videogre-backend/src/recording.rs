@@ -13,11 +13,12 @@ use uuid::Uuid;
 
 use crate::devices::find_avfoundation_screen_index;
 use crate::protocol::{
-    CameraCorner, CameraShape, CameraSize, HealthLevel, RecordingState, RecordingStatus,
-    RemuxSessionParams, RtmpPreset, RtmpSettings, StartSessionParams,
+    CameraCorner, CameraShape, CameraSize, HealthLevel, PreviewSnapshot, PreviewSnapshotParams,
+    RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset, RtmpSettings,
+    StartSessionParams,
 };
 use crate::state::AppState;
-use crate::storage::NewSession;
+use crate::storage::{NewSession, default_preview_dir};
 
 #[derive(Debug)]
 pub struct ActiveRecording {
@@ -130,6 +131,9 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
         .save_setting("last_capture_session", &params)?;
 
     emit_foundation_health_events(&state, &session_id, &params)?;
+    if params.output.record_enabled {
+        emit_disk_space_health_event(&state, &session_id, &output_dir).await?;
+    }
 
     let capture = resolve_capture_inputs(&ffmpeg_path, &params).await;
     if matches!(capture.video, VideoInput::TestPattern) {
@@ -298,6 +302,76 @@ pub async fn remux_session(state: AppState, params: RemuxSessionParams) -> Resul
     )?;
     state.emit_log("info", "Created MP4 copy for session.");
     Ok(output.display().to_string())
+}
+
+pub async fn create_preview_snapshot(
+    state: AppState,
+    params: PreviewSnapshotParams,
+) -> Result<PreviewSnapshot> {
+    let ffmpeg_path = params
+        .ffmpeg_path
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "ffmpeg".to_string());
+    let preview_id = Uuid::new_v4().to_string();
+    let preview_dir = default_preview_dir();
+    fs::create_dir_all(&preview_dir)
+        .await
+        .with_context(|| format!("Could not create {}", preview_dir.display()))?;
+
+    let output_path = preview_file_path(&preview_id);
+    let session_params = StartSessionParams {
+        sources: params.sources,
+        layout: params.layout,
+        output: crate::protocol::OutputSettings {
+            record_enabled: true,
+            stream_enabled: false,
+            output_directory: None,
+            ffmpeg_path: Some(ffmpeg_path.clone()),
+            rtmp: RtmpSettings {
+                preset: RtmpPreset::Custom,
+                server_url: "rtmp://preview.invalid/live".to_string(),
+                stream_key: "preview".to_string(),
+            },
+        },
+    };
+    let mut capture = resolve_capture_inputs(&ffmpeg_path, &session_params).await;
+    capture.microphone_index = None;
+    let args = preview_ffmpeg_args(&capture, &session_params, &output_path)?;
+    let output = Command::new(&ffmpeg_path)
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .with_context(|| format!("Could not start {ffmpeg_path} for preview"))?;
+
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "Preview snapshot failed{}",
+            if message.is_empty() {
+                String::new()
+            } else {
+                format!(": {message}")
+            }
+        );
+    }
+
+    let snapshot = PreviewSnapshot {
+        id: preview_id.clone(),
+        url: format!(
+            "http://127.0.0.1:{}/preview/{}?token={}",
+            state.port, preview_id, state.token
+        ),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.emit_event("preview.updated", &snapshot);
+    Ok(snapshot)
+}
+
+pub fn preview_file_path(preview_id: &str) -> PathBuf {
+    default_preview_dir().join(format!("{preview_id}.jpg"))
 }
 
 async fn stop_fallback(
@@ -485,70 +559,16 @@ fn ffmpeg_args(
         "-loglevel".to_string(),
         "warning".to_string(),
     ];
-    let mut camera_input_index = None;
+    let input_layout = append_input_args(&mut args, capture, true);
 
-    let audio_map = match capture.video {
-        VideoInput::MacScreen { index } => {
-            args.extend([
-                "-f".to_string(),
-                "avfoundation".to_string(),
-                "-framerate".to_string(),
-                "30".to_string(),
-                "-capture_cursor".to_string(),
-                "1".to_string(),
-                "-i".to_string(),
-                format!(
-                    "{}:{}",
-                    index,
-                    capture
-                        .microphone_index
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                ),
-            ]);
-            "0:a?".to_string()
-        }
-        VideoInput::TestPattern => {
-            args.extend([
-                "-f".to_string(),
-                "lavfi".to_string(),
-                "-i".to_string(),
-                "testsrc2=size=1920x1080:rate=30".to_string(),
-                "-f".to_string(),
-                "lavfi".to_string(),
-                "-i".to_string(),
-                "sine=frequency=880:sample_rate=48000".to_string(),
-            ]);
-            "1:a?".to_string()
-        }
-    };
-
-    if let Some(camera_index) = capture.camera_index {
-        camera_input_index = Some(match capture.video {
-            VideoInput::MacScreen { .. } => 1,
-            VideoInput::TestPattern => 2,
-        });
-        args.extend([
-            "-f".to_string(),
-            "avfoundation".to_string(),
-            "-framerate".to_string(),
-            "30".to_string(),
-            "-i".to_string(),
-            format!("{camera_index}:none"),
-        ]);
-    }
-
-    if let Some(camera_input_index) = camera_input_index {
-        args.extend([
-            "-filter_complex".to_string(),
-            camera_overlay_filter(camera_input_index, params),
-            "-map".to_string(),
-            "[v]".to_string(),
-        ]);
-    } else {
-        args.extend(["-map".to_string(), "0:v:0".to_string()]);
-    }
-    args.extend(["-map".to_string(), audio_map]);
+    args.extend([
+        "-filter_complex".to_string(),
+        video_filter(input_layout.camera_input_index, params, false),
+        "-map".to_string(),
+        "[v]".to_string(),
+        "-map".to_string(),
+        audio_map(input_layout),
+    ]);
     args.extend([
         "-r".to_string(),
         "30".to_string(),
@@ -567,12 +587,22 @@ fn ffmpeg_args(
             args.extend([
                 "-f".to_string(),
                 "tee".to_string(),
-                format!("[f=matroska]{}|[f=flv]{}", path.display(), target.url),
+                format!(
+                    "[f=matroska:onfail=abort]{}|[f=flv:onfail=ignore:flvflags=no_duration_filesize]{}",
+                    path.display(),
+                    target.url
+                ),
             ]);
         }
         (Some(path), None) => args.push(path.display().to_string()),
         (None, Some(target)) => {
-            args.extend(["-f".to_string(), "flv".to_string(), target.url.clone()]);
+            args.extend([
+                "-flvflags".to_string(),
+                "no_duration_filesize".to_string(),
+                "-f".to_string(),
+                "flv".to_string(),
+                target.url.clone(),
+            ]);
         }
         (None, None) => bail!("At least one output target is required"),
     }
@@ -580,23 +610,170 @@ fn ffmpeg_args(
     Ok(args)
 }
 
-fn camera_overlay_filter(camera_input_index: usize, params: &StartSessionParams) -> String {
+fn preview_ffmpeg_args(
+    capture: &CaptureInputs,
+    params: &StartSessionParams,
+    output_path: &Path,
+) -> Result<Vec<String>> {
+    let mut args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+    ];
+    let input_layout = append_input_args(&mut args, capture, false);
+    args.extend([
+        "-filter_complex".to_string(),
+        video_filter(input_layout.camera_input_index, params, true),
+        "-map".to_string(),
+        "[v]".to_string(),
+        "-frames:v".to_string(),
+        "1".to_string(),
+        "-q:v".to_string(),
+        "4".to_string(),
+        "-update".to_string(),
+        "1".to_string(),
+        output_path.display().to_string(),
+    ]);
+    Ok(args)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InputLayout {
+    camera_input_index: Option<usize>,
+    audio_input_index: Option<usize>,
+}
+
+fn append_input_args(
+    args: &mut Vec<String>,
+    capture: &CaptureInputs,
+    include_audio: bool,
+) -> InputLayout {
+    let audio_input_index = match capture.video {
+        VideoInput::MacScreen { index } => {
+            args.extend([
+                "-f".to_string(),
+                "avfoundation".to_string(),
+                "-framerate".to_string(),
+                "30".to_string(),
+                "-capture_cursor".to_string(),
+                "1".to_string(),
+                "-i".to_string(),
+                format!(
+                    "{}:{}",
+                    index,
+                    include_audio
+                        .then_some(capture.microphone_index)
+                        .flatten()
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                ),
+            ]);
+            include_audio.then_some(0)
+        }
+        VideoInput::TestPattern => {
+            args.extend([
+                "-f".to_string(),
+                "lavfi".to_string(),
+                "-i".to_string(),
+                "testsrc2=size=1920x1080:rate=30".to_string(),
+            ]);
+            if include_audio {
+                args.extend([
+                    "-f".to_string(),
+                    "lavfi".to_string(),
+                    "-i".to_string(),
+                    "sine=frequency=880:sample_rate=48000".to_string(),
+                ]);
+                Some(1)
+            } else {
+                None
+            }
+        }
+    };
+
+    let camera_input_index = capture.camera_index.map(|camera_index| {
+        let input_index = match (capture.video.clone(), include_audio) {
+            (VideoInput::MacScreen { .. }, _) => 1,
+            (VideoInput::TestPattern, true) => 2,
+            (VideoInput::TestPattern, false) => 1,
+        };
+        args.extend([
+            "-f".to_string(),
+            "avfoundation".to_string(),
+            "-framerate".to_string(),
+            "30".to_string(),
+            "-i".to_string(),
+            format!("{camera_index}:none"),
+        ]);
+        input_index
+    });
+
+    InputLayout {
+        camera_input_index,
+        audio_input_index,
+    }
+}
+
+fn audio_map(input_layout: InputLayout) -> String {
+    input_layout
+        .audio_input_index
+        .map(|index| format!("{index}:a?"))
+        .unwrap_or_else(|| "0:a?".to_string())
+}
+
+fn video_filter(
+    camera_input_index: Option<usize>,
+    params: &StartSessionParams,
+    preview: bool,
+) -> String {
+    let base_scale = if preview {
+        "scale=w=960:h=-2".to_string()
+    } else {
+        tutorial_scale_filter()
+    };
+
+    if let Some(camera_input_index) = camera_input_index {
+        let camera = camera_chain_filter(camera_input_index, params);
+        let margin = params.layout.camera_margin.min(160);
+        let (x, y) = match params.layout.camera_corner {
+            CameraCorner::TopLeft => (format!("{margin}"), format!("{margin}")),
+            CameraCorner::TopRight => (format!("W-w-{margin}"), format!("{margin}")),
+            CameraCorner::BottomLeft => (format!("{margin}"), format!("H-h-{margin}")),
+            CameraCorner::BottomRight => (format!("W-w-{margin}"), format!("H-h-{margin}")),
+        };
+        let final_scale = if preview { ",scale=w=960:h=-2" } else { "" };
+
+        return format!(
+            "[0:v]{base_scale},fps=30[base];{camera};[base][cam]overlay=x={x}:y={y}:format=auto{final_scale}[v]"
+        );
+    }
+
+    format!("[0:v]{base_scale},fps=30[v]")
+}
+
+fn tutorial_scale_filter() -> String {
+    "scale=w='min(2560,iw)':h=-2".to_string()
+}
+
+fn camera_chain_filter(camera_input_index: usize, params: &StartSessionParams) -> String {
     let width = match params.layout.camera_size {
         CameraSize::Small => 260,
         CameraSize::Medium => 360,
         CameraSize::Large => 480,
     };
-    let margin = params.layout.camera_margin.min(160);
-    let (x, y) = match params.layout.camera_corner {
-        CameraCorner::TopLeft => (format!("{margin}"), format!("{margin}")),
-        CameraCorner::TopRight => (format!("W-w-{margin}"), format!("{margin}")),
-        CameraCorner::BottomLeft => (format!("{margin}"), format!("H-h-{margin}")),
-        CameraCorner::BottomRight => (format!("W-w-{margin}"), format!("H-h-{margin}")),
-    };
 
-    format!(
-        "[{camera_input_index}:v]scale={width}:-1[cam];[0:v][cam]overlay=x={x}:y={y}:format=auto[v]"
-    )
+    match params.layout.camera_shape {
+        CameraShape::Rectangle => {
+            format!("[{camera_input_index}:v]scale={width}:-2[cam]")
+        }
+        CameraShape::Circle => {
+            let radius = width / 2;
+            format!(
+                "[{camera_input_index}:v]scale={width}:{width}:force_original_aspect_ratio=increase,crop={width}:{width},format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte((X-{radius})*(X-{radius})+(Y-{radius})*(Y-{radius}),{radius}*{radius}),255,0)'[cam]"
+            )
+        }
+    }
 }
 
 fn validate_outputs(params: &StartSessionParams) -> Result<()> {
@@ -663,8 +840,8 @@ fn emit_foundation_health_events(
             state,
             Some(session_id),
             HealthLevel::Info,
-            "camera-shape-foundation",
-            "Circle camera shape is stored in the session; the FFmpeg spike records a rectangular overlay until the native compositor lands.",
+            "camera-shape-circle",
+            "Circle camera shape is applied with an FFmpeg alpha mask in the current preview/recording path.",
         )?;
     }
 
@@ -675,6 +852,48 @@ fn emit_foundation_health_events(
             HealthLevel::Info,
             "x-rtmp-access",
             "X/Twitter streaming requires an account with live RTMP access.",
+        )?;
+    }
+
+    Ok(())
+}
+
+async fn emit_disk_space_health_event(
+    state: &AppState,
+    session_id: &str,
+    output_dir: &Path,
+) -> Result<()> {
+    let output = Command::new("df")
+        .args(["-Pk", &output_dir.display().to_string()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await;
+
+    let Ok(output) = output else {
+        return Ok(());
+    };
+
+    if !output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(line) = stdout.lines().nth(1) else {
+        return Ok(());
+    };
+    let columns = line.split_whitespace().collect::<Vec<_>>();
+    let Some(available_kb) = columns.get(3).and_then(|value| value.parse::<u64>().ok()) else {
+        return Ok(());
+    };
+
+    if available_kb < 1_048_576 {
+        emit_health_event(
+            state,
+            Some(session_id),
+            HealthLevel::Warn,
+            "disk-space-low",
+            "Less than 1 GB is available in the selected recording location.",
         )?;
     }
 
@@ -767,9 +986,20 @@ mod tests {
         .unwrap();
 
         assert!(args.contains(&"tee".to_string()));
-        assert!(args.iter().any(|arg| arg.contains("[f=matroska]")));
-        assert!(args.iter().any(|arg| arg.contains("[f=flv]")));
+        assert!(args.iter().any(|arg| arg.contains("[f=matroska")));
+        assert!(args.iter().any(|arg| arg.contains("[f=flv")));
         assert!(args.contains(&"-filter_complex".to_string()));
+    }
+
+    #[test]
+    fn circle_camera_filter_uses_alpha_mask() {
+        let mut params = base_params(true, false);
+        params.layout.camera_shape = CameraShape::Circle;
+        let filter = video_filter(Some(1), &params, true);
+
+        assert!(filter.contains("format=rgba"));
+        assert!(filter.contains("geq="));
+        assert!(filter.contains("scale=w=960:h=-2"));
     }
 
     #[test]

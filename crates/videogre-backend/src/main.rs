@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path as AxumPath, Query, State};
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -20,7 +20,10 @@ use protocol::{
     BackendConnection, BackendHealth, ClientCommand, RecordingState, ServerEvent, ServerResponse,
     ToolStatus,
 };
-use recording::{idle_status, remux_session, start_session, stop_recording};
+use recording::{
+    create_preview_snapshot, idle_status, preview_file_path, remux_session, start_session,
+    stop_recording,
+};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -49,6 +52,7 @@ async fn main() -> Result<()> {
     let state = AppState::new(token.clone(), port, events, database);
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route("/preview/{id}", get(preview_handler))
         .route("/ws", get(ws_handler))
         .with_state(state.clone());
 
@@ -72,6 +76,35 @@ struct WsQuery {
 
 async fn health_handler(State(state): State<AppState>) -> Json<BackendHealth> {
     Json(backend_health(&state, "ffmpeg").await)
+}
+
+async fn preview_handler(
+    State(state): State<AppState>,
+    Query(query): Query<WsQuery>,
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    if query.token != state.token {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    if !id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    match tokio::fs::read(preview_file_path(&id)).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn ws_handler(
@@ -238,6 +271,19 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     }
                     Err(error) => {
                         ServerResponse::error(command.id, "remux-failed", error.to_string())
+                    }
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "preview.snapshot" => {
+            match serde_json::from_value::<protocol::PreviewSnapshotParams>(command.params) {
+                Ok(params) => match create_preview_snapshot(state.clone(), params).await {
+                    Ok(snapshot) => ServerResponse::ok(command.id, snapshot),
+                    Err(error) => {
+                        ServerResponse::error(command.id, "preview-failed", error.to_string())
                     }
                 },
                 Err(error) => {

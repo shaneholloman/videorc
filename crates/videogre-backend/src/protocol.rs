@@ -222,6 +222,22 @@ pub struct RemuxSessionParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PreviewSnapshotParams {
+    pub sources: SourceSelection,
+    pub layout: LayoutSettings,
+    pub ffmpeg_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewSnapshot {
+    pub id: String,
+    pub url: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub id: String,
     pub title: String,
