@@ -16,7 +16,8 @@ use crate::audio::{
     NativeAudioCaptureSession, NativeAudioSource, attach_fifo_writer, create_native_audio_fifo,
     native_audio_fifo_path, parse_coreaudio_microphone_id, start_native_audio_source,
 };
-use crate::devices::find_avfoundation_screen_index;
+use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
+use crate::devices::{find_avfoundation_camera_index, find_avfoundation_screen_index};
 use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::protocol::{
     AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize, HealthLevel,
@@ -203,6 +204,15 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
             HealthLevel::Warn,
             "screen-capture-fallback",
             "Using FFmpeg test pattern because a macOS screen/window source was not available.",
+        )?;
+    }
+    if params.sources.camera_id.is_some() && capture.camera_index.is_none() {
+        emit_health_event(
+            &state,
+            Some(&session_id),
+            HealthLevel::Warn,
+            "camera-source-unavailable",
+            "Selected camera could not be bridged to the current FFmpeg recording path; continuing without the camera overlay.",
         )?;
     }
     emit_audio_track_health_events(&state, &session_id, &params, &audio_tracks)?;
@@ -1295,11 +1305,7 @@ async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) 
                 .and_then(parse_avfoundation_id)
         })
         .flatten();
-    let camera_index = params
-        .sources
-        .camera_id
-        .as_deref()
-        .and_then(parse_avfoundation_id);
+    let camera_index = resolve_camera_input(ffmpeg_path, params.sources.camera_id.as_deref()).await;
     let microphone = params.sources.microphone_id.as_deref().and_then(|id| {
         parse_coreaudio_microphone_id(id)
             .map(|device_id| MicrophoneInput::CoreAudio {
@@ -1323,6 +1329,16 @@ async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) 
         camera_index,
         microphone,
     }
+}
+
+async fn resolve_camera_input(ffmpeg_path: &str, camera_id: Option<&str>) -> Option<usize> {
+    let camera_id = camera_id?;
+    if let Some(index) = parse_avfoundation_id(camera_id) {
+        return Some(index);
+    }
+
+    let camera_name = native_camera_name_for_id(camera_id)?;
+    find_avfoundation_camera_index(ffmpeg_path, &camera_name).await
 }
 
 async fn prepare_native_audio_source(
@@ -2008,6 +2024,22 @@ fn emit_foundation_health_events(
             HealthLevel::Warn,
             "window-capture-fallback",
             "Window source was selected with native ScreenCaptureKit discovery, but this phase records the primary display through the FFmpeg AVFoundation fallback bridge.",
+        )?;
+    }
+
+    if params
+        .sources
+        .camera_id
+        .as_deref()
+        .and_then(parse_native_camera_id)
+        .is_some()
+    {
+        emit_health_event(
+            state,
+            Some(session_id),
+            HealthLevel::Info,
+            "camera-native-avfoundation-discovery",
+            "Camera source was discovered with native AVFoundation and selected by unique ID. Recording still uses the FFmpeg AVFoundation fallback bridge until the native camera frame bridge lands.",
         )?;
     }
 

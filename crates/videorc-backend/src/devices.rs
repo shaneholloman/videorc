@@ -8,6 +8,7 @@ use crate::audio::{
     AudioProcessingSettings, list_native_microphones, parse_coreaudio_microphone_id,
     sample_native_audio_meter,
 };
+use crate::camera_capture::list_native_cameras;
 use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::protocol::{
     AudioMeterParams, AudioMeterResult, AudioMeterStatus, Device, DeviceKind, DeviceList,
@@ -65,6 +66,13 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
     let native_microphone_available = native_microphones
         .iter()
         .any(|device| device.status == DeviceStatus::Available);
+    let native_cameras = list_native_cameras();
+    let native_camera_permission_required = native_cameras
+        .devices
+        .iter()
+        .any(|device| device.status == DeviceStatus::PermissionRequired);
+    warnings.extend(native_cameras.warnings);
+    devices.extend(native_cameras.devices);
 
     match probe_avfoundation_devices(ffmpeg_path).await {
         Ok(av_devices) => {
@@ -110,10 +118,20 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
                         if !device.name.to_lowercase().contains("capture screen") {
                             devices.push(Device {
                                 id: format!("camera:avfoundation:{}", device.index),
-                                name: device.name,
+                                name: format!("FFmpeg fallback - {}", device.name),
                                 kind: DeviceKind::Camera,
-                                status: DeviceStatus::Available,
-                                detail: Some("Detected by FFmpeg avfoundation.".to_string()),
+                                status: if native_camera_permission_required {
+                                    DeviceStatus::PermissionRequired
+                                } else {
+                                    DeviceStatus::Available
+                                },
+                                detail: Some(if native_camera_permission_required {
+                                    "FFmpeg avfoundation fallback camera path; macOS Camera permission is required."
+                                        .to_string()
+                                } else {
+                                    "FFmpeg avfoundation fallback camera path; native AVFoundation camera discovery is preferred."
+                                        .to_string()
+                                }),
                             });
                         }
                     }
@@ -177,6 +195,35 @@ pub async fn find_avfoundation_screen_index(ffmpeg_path: &str) -> Option<usize> 
                 && device.name.to_lowercase().contains("capture screen")
         })
         .map(|device| device.index)
+}
+
+pub async fn find_avfoundation_camera_index(ffmpeg_path: &str, camera_name: &str) -> Option<usize> {
+    let normalized_camera_name = normalize_device_name(camera_name);
+    let video_devices = probe_avfoundation_devices(ffmpeg_path)
+        .await
+        .ok()?
+        .into_iter()
+        .filter(|device| {
+            device.kind == AvFoundationDeviceKind::Video
+                && !device.name.to_lowercase().contains("capture screen")
+        })
+        .collect::<Vec<_>>();
+
+    video_devices
+        .iter()
+        .find(|device| normalize_device_name(&device.name) == normalized_camera_name)
+        .or_else(|| {
+            video_devices.iter().find(|device| {
+                let normalized_name = normalize_device_name(&device.name);
+                normalized_name.contains(&normalized_camera_name)
+                    || normalized_camera_name.contains(&normalized_name)
+            })
+        })
+        .map(|device| device.index)
+}
+
+fn normalize_device_name(name: &str) -> String {
+    name.trim().to_lowercase()
 }
 
 pub async fn sample_audio_meter(params: AudioMeterParams) -> AudioMeterResult {

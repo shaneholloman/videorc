@@ -1,5 +1,6 @@
 mod ai;
 mod audio;
+mod camera_capture;
 mod devices;
 mod ffmpeg;
 mod protocol;
