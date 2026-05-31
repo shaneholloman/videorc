@@ -30,7 +30,7 @@ const STOP_FINALIZE_TIMEOUT: Duration = Duration::from_secs(12);
 const STOP_TERM_DELAY: Duration = Duration::from_secs(3);
 const STOP_KILL_DELAY: Duration = Duration::from_secs(3);
 const SHUTDOWN_GRACE_DELAY: Duration = Duration::from_millis(1200);
-const CAPTURE_AUDIO_FILTER: &str = "aresample=async=1:first_pts=0,volume=24dB,alimiter=limit=0.95";
+const CAPTURE_AUDIO_FILTER: &str = "aresample=async=1:first_pts=0,highpass=f=80,volume=12dB,dynaudnorm=f=150:g=10:p=0.90:m=10,alimiter=limit=0.85:level=false";
 const AVFOUNDATION_VIDEO_PIXEL_FORMAT: &str = "nv12";
 const MJPEG_BOUNDARY: &[u8] = b"--videorc";
 const MJPEG_HEADER_END: &[u8] = b"\r\n\r\n";
@@ -2026,6 +2026,15 @@ mod tests {
             .map_or(0, |position| position + 2);
 
         args[start..input_position].iter().any(|arg| arg == name)
+    }
+
+    #[test]
+    fn capture_audio_filter_normalizes_speech_without_limiter_auto_level() {
+        assert!(CAPTURE_AUDIO_FILTER.contains("highpass=f=80"));
+        assert!(CAPTURE_AUDIO_FILTER.contains("volume=12dB"));
+        assert!(CAPTURE_AUDIO_FILTER.contains("dynaudnorm="));
+        assert!(CAPTURE_AUDIO_FILTER.contains("alimiter=limit=0.85:level=false"));
+        assert!(!CAPTURE_AUDIO_FILTER.contains("volume=24dB"));
     }
 
     #[test]
