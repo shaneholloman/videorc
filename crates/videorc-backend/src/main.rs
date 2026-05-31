@@ -70,6 +70,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/preview/live.mjpeg", get(live_preview_handler))
+        .route("/preview/live.jpg", get(live_preview_frame_handler))
         .route("/preview/{id}", get(preview_handler))
         .route("/ws", get(ws_handler))
         .with_state(state.clone());
@@ -196,6 +197,29 @@ async fn live_preview_handler(
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn live_preview_frame_handler(
+    State(state): State<AppState>,
+    Query(query): Query<WsQuery>,
+) -> Response {
+    if query.token != state.token {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    match state.preview_latest_frame.read().await.clone() {
+        Some(bytes) => (
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "no-store, no-cache, must-revalidate"),
+                (header::PRAGMA, "no-cache"),
+                (header::EXPIRES, "0"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn ws_handler(

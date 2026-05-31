@@ -1,5 +1,5 @@
 import { ArrowsClockwise, FolderOpen, GearSix, Image, PencilSimpleLine, VideoCamera } from '@phosphor-icons/react'
-import { useEffect, useState, type CSSProperties, type ReactElement } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -64,7 +64,9 @@ export function PreviewStage({
   className?: string
 }): ReactElement {
   const [imageFailed, setImageFailed] = useState(false)
+  const [displayPreviewUrl, setDisplayPreviewUrl] = useState<string | null>(previewUrl)
   const isLive = previewLiveStatus.state === 'live'
+  const latestFrameUrl = useMemo(() => latestPreviewFrameUrl(previewUrl), [previewUrl])
   const showUnavailable = previewLiveStatus.state === 'unavailable' || imageFailed
   const badgeLabel =
     previewLiveStatus.state === 'connecting'
@@ -81,16 +83,40 @@ export function PreviewStage({
     setImageFailed(false)
   }, [previewUrl])
 
+  useEffect(() => {
+    if (!previewUrl) {
+      setDisplayPreviewUrl(null)
+      return
+    }
+
+    if (!isLive || !latestFrameUrl) {
+      setDisplayPreviewUrl(previewUrl)
+      return
+    }
+
+    const updateFrame = (): void => {
+      setDisplayPreviewUrl(withCacheBust(latestFrameUrl))
+    }
+
+    updateFrame()
+    const timer = window.setInterval(updateFrame, 80)
+    return () => window.clearInterval(timer)
+  }, [isLive, latestFrameUrl, previewUrl])
+
   return (
     <div className={cn('flex flex-col gap-3', className)}>
       <div className="relative aspect-video w-full overflow-hidden rounded-xl border bg-muted">
-        {previewUrl && !imageFailed ? (
+        {displayPreviewUrl && !imageFailed ? (
           <img
             alt="Selected scene preview"
             className="size-full object-contain"
-            key={previewUrl}
-            src={previewUrl}
-            onError={() => setImageFailed(true)}
+            src={displayPreviewUrl}
+            onLoad={() => setImageFailed(false)}
+            onError={() => {
+              if (!isLive || !latestFrameUrl) {
+                setImageFailed(true)
+              }
+            }}
           />
         ) : (
           <div className="flex size-full items-center justify-center">
@@ -189,6 +215,21 @@ export function PreviewStage({
       ) : null}
     </div>
   )
+}
+
+function latestPreviewFrameUrl(previewUrl: string | null): string | null {
+  if (!previewUrl) {
+    return null
+  }
+
+  return previewUrl.includes('/preview/live.mjpeg')
+    ? previewUrl.replace('/preview/live.mjpeg', '/preview/live.jpg')
+    : null
+}
+
+function withCacheBust(url: string): string {
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}t=${Date.now()}`
 }
 
 function sceneSourceStyle(transform: Scene['sources'][number]['transform']): CSSProperties {

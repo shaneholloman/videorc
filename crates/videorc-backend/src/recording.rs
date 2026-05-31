@@ -35,7 +35,7 @@ use crate::storage::{NewSession, default_preview_dir};
 const PREVIEW_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 const LIVE_PREVIEW_WIDTH: u32 = 1280;
 const LIVE_PREVIEW_HEIGHT: u32 = 720;
-const LIVE_PREVIEW_FPS: u32 = 12;
+const LIVE_PREVIEW_FPS: u32 = 30;
 const STOP_FINALIZE_TIMEOUT: Duration = Duration::from_secs(12);
 const STOP_TERM_DELAY: Duration = Duration::from_secs(3);
 const STOP_KILL_DELAY: Duration = Duration::from_secs(3);
@@ -625,6 +625,7 @@ pub async fn stop_live_preview(state: AppState) -> Result<PreviewLiveStatus> {
         guard.status = unavailable_live_preview_status(Some("Live preview stopped.".to_string()));
         process
     };
+    clear_latest_preview_frame(&state).await;
     stop_live_preview_process(process).await;
 
     let status = live_preview_status(&state).await;
@@ -704,6 +705,7 @@ async fn start_idle_live_preview(
         };
         old_process
     };
+    clear_latest_preview_frame(&state).await;
     state.emit_event("preview.live.status", live_preview_status(&state).await);
     stop_live_preview_process(old_process).await;
 
@@ -766,6 +768,8 @@ fn live_preview_session_params(
     params: PreviewLiveParams,
     ffmpeg_path: String,
 ) -> StartSessionParams {
+    let video = live_preview_video_settings(params.video.unwrap_or_else(default_video_settings));
+
     StartSessionParams {
         sources: params.sources,
         layout: params.layout,
@@ -774,7 +778,7 @@ fn live_preview_session_params(
             stream_enabled: false,
             output_directory: None,
             ffmpeg_path: Some(ffmpeg_path),
-            video: params.video.unwrap_or_else(default_video_settings),
+            video,
             rtmp: RtmpSettings {
                 preset: RtmpPreset::Custom,
                 server_url: "rtmp://preview.invalid/live".to_string(),
@@ -783,6 +787,14 @@ fn live_preview_session_params(
         },
         audio: Default::default(),
     }
+}
+
+fn live_preview_video_settings(mut video: VideoSettings) -> VideoSettings {
+    video.width = LIVE_PREVIEW_WIDTH;
+    video.height = LIVE_PREVIEW_HEIGHT;
+    video.fps = video.fps.clamp(24, LIVE_PREVIEW_FPS);
+    video.bitrate_kbps = video.bitrate_kbps.min(4000);
+    video
 }
 
 async fn stop_idle_live_preview_for_recording(state: AppState) {
@@ -799,6 +811,7 @@ async fn stop_idle_live_preview_for_recording(state: AppState) {
         }
         process
     };
+    clear_latest_preview_frame(&state).await;
     if process.is_some() {
         state.emit_event("preview.live.status", live_preview_status(&state).await);
     }
@@ -812,6 +825,10 @@ async fn publish_recording_live_preview_status(state: &AppState, message: Option
         guard.status = status.clone();
     }
     state.emit_event("preview.live.status", status);
+}
+
+async fn clear_latest_preview_frame(state: &AppState) {
+    *state.preview_latest_frame.write().await = None;
 }
 
 async fn restart_idle_live_preview_if_desired(state: AppState) {
@@ -874,10 +891,11 @@ async fn publish_preview_stdout(state: AppState, idle_pid: Option<u32>, mut stdo
                 pending.extend_from_slice(&buffer[..read]);
 
                 while let Some(part) = drain_next_mjpeg_part(&mut pending) {
-                    if let Some(pid) = idle_pid
-                        && part.windows(2).any(|window| window == [0xff, 0xd8])
-                    {
-                        mark_idle_live_preview_frame_received(&state, pid).await;
+                    if let Some(jpeg) = jpeg_bytes_from_mjpeg_part(&part) {
+                        *state.preview_latest_frame.write().await = Some(jpeg);
+                        if let Some(pid) = idle_pid {
+                            mark_idle_live_preview_frame_received(&state, pid).await;
+                        }
                     }
                     let _ = state.preview_frames.send(part);
                 }
@@ -925,6 +943,13 @@ fn parse_mjpeg_content_length(headers: &[u8]) -> Option<usize> {
             .then(|| value.trim().parse::<usize>().ok())
             .flatten()
     })
+}
+
+fn jpeg_bytes_from_mjpeg_part(part: &[u8]) -> Option<Vec<u8>> {
+    let header_end = find_bytes(part, MJPEG_HEADER_END)? + MJPEG_HEADER_END.len();
+    let content_length = parse_mjpeg_content_length(&part[..header_end])?;
+    let part_end = header_end + content_length;
+    (part.len() >= part_end).then(|| part[header_end..part_end].to_vec())
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1830,6 +1855,14 @@ fn append_avfoundation_video_input(
     args.extend([
         "-fflags".to_string(),
         "nobuffer".to_string(),
+        "-flags".to_string(),
+        "low_delay".to_string(),
+        "-probesize".to_string(),
+        "32".to_string(),
+        "-analyzeduration".to_string(),
+        "0".to_string(),
+        "-thread_queue_size".to_string(),
+        "16".to_string(),
         "-f".to_string(),
         "avfoundation".to_string(),
         "-pixel_format".to_string(),
@@ -1979,12 +2012,15 @@ fn video_filter(
         let final_scale = if preview { ",scale=w=960:h=-2" } else { "" };
 
         return format!(
-            "[0:v]{base_scale},fps={}[base];{camera};[base][cam]overlay=x={x}:y={y}:format=auto{final_scale}[v]",
+            "[0:v]setpts=PTS-STARTPTS,{base_scale},fps={}[base];{camera};[base][cam]overlay=x={x}:y={y}:format=auto{final_scale}[v]",
             params.output.video.fps
         );
     }
 
-    format!("[0:v]{base_scale},fps={}[v]", params.output.video.fps)
+    format!(
+        "[0:v]setpts=PTS-STARTPTS,{base_scale},fps={}[v]",
+        params.output.video.fps
+    )
 }
 
 fn output_scale_filter(video: &VideoSettings) -> String {
@@ -2000,9 +2036,9 @@ fn camera_chain_filter(camera_input_index: usize, params: &StartSessionParams) -
     let scaled_width = width * zoom / 100;
     let scaled_height = height * zoom / 100;
     let prefix = if params.layout.camera_mirror {
-        format!("[{camera_input_index}:v]hflip,")
+        format!("[{camera_input_index}:v]setpts=PTS-STARTPTS,hflip,")
     } else {
-        format!("[{camera_input_index}:v]")
+        format!("[{camera_input_index}:v]setpts=PTS-STARTPTS,")
     };
     let frame = match params.layout.camera_fit {
         CameraFit::Fit if zoom == 100 => format!(
@@ -2733,6 +2769,19 @@ mod tests {
             Some("nobuffer")
         );
         assert_eq!(
+            input_arg_value(&args, "3:none", "-flags"),
+            Some("low_delay")
+        );
+        assert_eq!(input_arg_value(&args, "3:none", "-probesize"), Some("32"));
+        assert_eq!(
+            input_arg_value(&args, "3:none", "-analyzeduration"),
+            Some("0")
+        );
+        assert_eq!(
+            input_arg_value(&args, "3:none", "-thread_queue_size"),
+            Some("16")
+        );
+        assert_eq!(
             input_arg_value(&args, "3:none", "-pixel_format"),
             Some(AVFOUNDATION_VIDEO_PIXEL_FORMAT)
         );
@@ -2746,14 +2795,49 @@ mod tests {
             Some("nobuffer")
         );
         assert_eq!(
+            input_arg_value(&args, "0:none", "-flags"),
+            Some("low_delay")
+        );
+        assert_eq!(input_arg_value(&args, "0:none", "-probesize"), Some("32"));
+        assert_eq!(
+            input_arg_value(&args, "0:none", "-analyzeduration"),
+            Some("0")
+        );
+        assert_eq!(
+            input_arg_value(&args, "0:none", "-thread_queue_size"),
+            Some("16")
+        );
+        assert_eq!(
             input_arg_value(&args, "0:none", "-pixel_format"),
             Some(AVFOUNDATION_VIDEO_PIXEL_FORMAT)
         );
         assert!(!input_has_arg(&args, "0:none", "-capture_cursor"));
         assert!(!args.iter().any(|arg| arg.ends_with(":a?")));
         assert!(args.iter().any(|arg| arg.contains("pad=1280:720")));
+        assert!(args.iter().any(|arg| arg.contains("fps=30")));
+        assert!(args.iter().any(|arg| arg.contains("setpts=PTS-STARTPTS")));
         assert!(args.iter().any(|arg| arg == "[preview]"));
         assert!(args.iter().any(|arg| arg == "pipe:1"));
+    }
+
+    #[test]
+    fn idle_live_preview_caps_composition_to_preview_resolution() {
+        let mut params = base_params(true, false);
+        params.output.video.fps = 60;
+        params.output.video.bitrate_kbps = 9000;
+        let preview_params = PreviewLiveParams {
+            sources: params.sources,
+            layout: params.layout,
+            ffmpeg_path: None,
+            video: Some(params.output.video),
+        };
+
+        let session = live_preview_session_params(preview_params, "ffmpeg".to_string());
+
+        assert_eq!(session.output.video.width, LIVE_PREVIEW_WIDTH);
+        assert_eq!(session.output.video.height, LIVE_PREVIEW_HEIGHT);
+        assert_eq!(session.output.video.fps, LIVE_PREVIEW_FPS);
+        assert_eq!(session.output.video.bitrate_kbps, 4000);
     }
 
     #[test]
@@ -2771,6 +2855,17 @@ mod tests {
             "--videorc\r\nContent-length: 3\r\n\r\nabc"
         );
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn mjpeg_part_exposes_latest_jpeg_payload() {
+        let part =
+            b"--videorc\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\n\xff\xd8\xff\xd9\r\n";
+
+        assert_eq!(
+            jpeg_bytes_from_mjpeg_part(part),
+            Some(vec![0xff, 0xd8, 0xff, 0xd9])
+        );
     }
 
     #[test]
@@ -2837,7 +2932,7 @@ mod tests {
         params.layout.camera_offset_y = -20;
         let filter = camera_chain_filter(1, &params);
 
-        assert!(filter.starts_with("[1:v]hflip,"));
+        assert!(filter.starts_with("[1:v]setpts=PTS-STARTPTS,hflip,"));
         assert!(filter.contains("scale=540:304"));
         assert!(filter.contains("crop=w=360:h=203"));
         assert!(filter.contains("(40)*(iw-ow)/200"));
