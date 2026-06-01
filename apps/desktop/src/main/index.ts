@@ -74,10 +74,10 @@ function resolveAppIcon(): NativeImage | null {
 
 function resolveAppIconPath(): string | null {
   const candidates = app.isPackaged
-    ? [join(process.resourcesPath, 'videorc-logo.png'), join(process.resourcesPath, 'icon.icns')]
+    ? [join(process.resourcesPath, 'icon.icns'), join(process.resourcesPath, 'videorc-logo.png')]
     : [
-        resolve(workspaceRoot(), 'apps/desktop/src/renderer/src/assets/videorc-logo.png'),
-        resolve(workspaceRoot(), 'apps/desktop/build-resources/icon.icns')
+        resolve(workspaceRoot(), 'apps/desktop/build-resources/icon.icns'),
+        resolve(workspaceRoot(), 'apps/desktop/src/renderer/src/assets/videorc-logo.png')
       ]
 
   return candidates.find((path) => existsSync(path)) ?? null
