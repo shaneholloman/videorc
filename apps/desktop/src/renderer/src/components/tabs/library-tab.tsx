@@ -75,7 +75,7 @@ function SessionRow({
         </div>
       </div>
       <p className="truncate rounded-lg bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
-        {session.outputPath ?? session.streamPreset ?? 'No local file'}
+        {session.mp4Path ?? session.outputPath ?? session.streamPreset ?? 'No local file'}
       </p>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="secondary" onClick={onOpenInAi}>

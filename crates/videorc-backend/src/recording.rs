@@ -59,6 +59,7 @@ pub struct ActiveRecording {
     pub stdin: Option<ChildStdin>,
     pub output_path: Option<PathBuf>,
     pub stream_url: Option<String>,
+    pub ffmpeg_path: String,
     pub started_at: String,
     pub mode: String,
     pub audio_tracks: Vec<AudioTrack>,
@@ -292,6 +293,7 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
         stdin,
         output_path: output_path.clone(),
         stream_url,
+        ffmpeg_path: ffmpeg_path.clone(),
         started_at: started_at.to_rfc3339(),
         mode: mode.to_string(),
         audio_tracks,
@@ -440,7 +442,7 @@ pub async fn stop_recording(state: AppState) -> Result<RecordingStatus> {
 pub async fn remux_session(state: AppState, params: RemuxSessionParams) -> Result<String> {
     let input = state
         .database
-        .session_output_path(&params.session_id)?
+        .session_recording_path(&params.session_id)?
         .map(PathBuf::from)
         .context("Session does not have an MKV output path")?;
 
@@ -450,26 +452,7 @@ pub async fn remux_session(state: AppState, params: RemuxSessionParams) -> Resul
 
     let output = input.with_extension("mp4");
     let ffmpeg_path = resolve_ffmpeg_path(params.ffmpeg_path);
-
-    let status = Command::new(&ffmpeg_path)
-        .args([
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-i",
-            &input.display().to_string(),
-            "-codec",
-            "copy",
-            &output.display().to_string(),
-        ])
-        .status()
-        .await
-        .with_context(|| format!("Could not start {ffmpeg_path} for MP4 remux"))?;
-
-    if !status.success() {
-        bail!("FFmpeg remux failed with {status}");
-    }
+    export_mp4_from_mkv(&ffmpeg_path, &input, &output).await?;
 
     state.database.finish_session(
         &params.session_id,
@@ -480,6 +463,42 @@ pub async fn remux_session(state: AppState, params: RemuxSessionParams) -> Resul
     )?;
     state.emit_log("info", "Created MP4 copy for session.");
     Ok(output.display().to_string())
+}
+
+async fn export_mp4_from_mkv(ffmpeg_path: &str, input: &Path, output: &Path) -> Result<()> {
+    let status = Command::new(ffmpeg_path)
+        .args(mp4_export_args(input, output))
+        .status()
+        .await
+        .with_context(|| format!("Could not start {ffmpeg_path} for MP4 export"))?;
+
+    if !status.success() {
+        bail!("FFmpeg MP4 export failed with {status}");
+    }
+
+    Ok(())
+}
+
+fn mp4_export_args(input: &Path, output: &Path) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-map".to_string(),
+        "0".to_string(),
+        "-c:v".to_string(),
+        "copy".to_string(),
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        "160k".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        output.display().to_string(),
+    ]
 }
 
 pub async fn create_preview_snapshot(
@@ -1229,6 +1248,7 @@ async fn monitor_session(
             });
             MonitoredRecording {
                 stop_requested: active.stop_requested,
+                ffmpeg_path: active.ffmpeg_path.clone(),
                 started_at: active.started_at.clone(),
                 pipeline: active.pipeline.clone(),
                 native_audio_stats,
@@ -1301,11 +1321,40 @@ async fn monitor_session(
                 },
                 &message,
             );
+            let mp4_path = if let Some(output_path) = output_path.as_ref() {
+                match export_completed_recording_to_mp4(
+                    &state,
+                    &session_id,
+                    &monitored_recording.ffmpeg_path,
+                    output_path,
+                )
+                .await
+                {
+                    Ok(path) => path,
+                    Err(error) => {
+                        let message = format!(
+                            "MP4 export failed; keeping MKV recovery file at {}. {error}",
+                            output_path.display()
+                        );
+                        state.emit_log("warn", &message);
+                        let _ = emit_health_event(
+                            &state,
+                            Some(&session_id),
+                            HealthLevel::Warn,
+                            "mp4-export-failed",
+                            &message,
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let _ = state.database.finish_session(
                 &session_id,
                 "completed",
                 Some(ended_at),
-                None,
+                mp4_path.as_ref().map(|path| path.display().to_string()),
                 duration_ms,
             );
             let _ = emit_health_event(
@@ -1320,7 +1369,10 @@ async fn monitor_session(
                 RecordingStatus {
                     state: RecordingState::Idle,
                     session_id: Some(session_id),
-                    output_path: output_path.as_ref().map(|path| path.display().to_string()),
+                    output_path: mp4_path
+                        .as_ref()
+                        .or(output_path.as_ref())
+                        .map(|path| path.display().to_string()),
                     stream_url: None,
                     started_at: None,
                     audio_tracks: Vec::new(),
@@ -1405,6 +1457,52 @@ async fn monitor_session(
     restart_idle_live_preview_if_desired(state).await;
 }
 
+async fn export_completed_recording_to_mp4(
+    state: &AppState,
+    session_id: &str,
+    ffmpeg_path: &str,
+    input: &Path,
+) -> Result<Option<PathBuf>> {
+    if input.extension().and_then(|value| value.to_str()) != Some("mkv") {
+        return Ok(None);
+    }
+
+    let output = input.with_extension("mp4");
+    state.emit_log(
+        "info",
+        format!("Exporting MP4 recording to {}.", output.display()),
+    );
+    export_mp4_from_mkv(ffmpeg_path, input, &output).await?;
+
+    match fs::remove_file(input).await {
+        Ok(()) => {
+            state.emit_log(
+                "info",
+                format!("Removed temporary MKV capture file {}.", input.display()),
+            );
+        }
+        Err(error) => {
+            state.emit_log(
+                "warn",
+                format!(
+                    "Created MP4 export but could not remove temporary MKV {}: {error}",
+                    input.display()
+                ),
+            );
+        }
+    }
+
+    emit_health_event(
+        state,
+        Some(session_id),
+        HealthLevel::Info,
+        "mp4-export-created",
+        &format!("MP4 recording exported to {}.", output.display()),
+    )?;
+
+    Ok(Some(output))
+}
+
 #[derive(Debug)]
 struct NativeAudioStats {
     device_name: String,
@@ -1415,6 +1513,7 @@ struct NativeAudioStats {
 #[derive(Debug)]
 struct MonitoredRecording {
     stop_requested: bool,
+    ffmpeg_path: String,
     started_at: String,
     pipeline: RecordingPipeline,
     native_audio_stats: Option<NativeAudioStats>,
@@ -2882,6 +2981,25 @@ mod tests {
         assert_eq!(arg_value(&args, "-flush_packets"), Some("1"));
         assert!(args.iter().any(|arg| arg == "videorc"));
         assert!(args.iter().any(|arg| arg == "pipe:1"));
+    }
+
+    #[test]
+    fn mp4_export_copies_video_and_encodes_audio_for_mp4_compatibility() {
+        let args = mp4_export_args(
+            Path::new("/tmp/videorc-test.mkv"),
+            Path::new("/tmp/videorc-test.mp4"),
+        );
+
+        assert_eq!(arg_value(&args, "-i"), Some("/tmp/videorc-test.mkv"));
+        assert_eq!(arg_value(&args, "-map"), Some("0"));
+        assert_eq!(arg_value(&args, "-c:v"), Some("copy"));
+        assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
+        assert_eq!(arg_value(&args, "-b:a"), Some("160k"));
+        assert_eq!(arg_value(&args, "-movflags"), Some("+faststart"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("/tmp/videorc-test.mp4")
+        );
     }
 
     #[test]

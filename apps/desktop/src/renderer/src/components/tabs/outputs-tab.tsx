@@ -44,7 +44,7 @@ export function OutputsTab(): ReactElement {
             onCheckedChange={(checked) => setCaptureConfig((current) => ({ ...current, recordEnabled: checked }))}
           />
         }
-        description="Local recording is the primary output. MKV keeps the mic as its own audio track when available, then can remux to MP4."
+        description="Local recording exports MP4 into the recordings folder after capture finalizes."
         icon={FileVideo}
         title="Recording"
       >
@@ -161,7 +161,7 @@ export function OutputsTab(): ReactElement {
 
       <PanelSection
         className="lg:col-span-2"
-        description="Remux and artifact actions live here so Studio remains recording-focused."
+        description="Completed local recording artifacts live here."
         icon={FileVideo}
         title="Recording artifacts"
       >
@@ -193,7 +193,7 @@ function OutputSessionRow({
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold">{session.title}</div>
         <div className="truncate text-xs text-muted-foreground">
-          {dayLabel(session.startedAt)} · {session.status} · {session.outputPath ?? session.streamPreset}
+          {dayLabel(session.startedAt)} · {session.status} · {session.mp4Path ?? session.outputPath ?? session.streamPreset}
         </div>
         <div className="mt-1 flex flex-wrap gap-1.5">
           {session.container ? <Badge variant="outline">{session.container.toUpperCase()}</Badge> : null}
@@ -204,7 +204,7 @@ function OutputSessionRow({
         </div>
       </div>
       <Button disabled={!canRemux} size="sm" variant="outline" onClick={onRemux}>
-        Remux MP4
+        Export MP4
       </Button>
     </div>
   )

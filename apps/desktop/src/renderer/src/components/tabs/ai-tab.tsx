@@ -136,7 +136,7 @@ export function AiTab({
   )
 
   function SessionActions({ session }: { session: SessionSummary }): ReactElement {
-    const canRunAi = Boolean(session.status === 'completed' && session.outputPath)
+    const canRunAi = Boolean(session.status === 'completed' && (session.mp4Path || session.outputPath))
     const canExportPublishPack = session.aiArtifacts.some(
       (artifact) => artifact.status === 'ready' && artifact.kind !== 'audio-extract'
     )

@@ -98,11 +98,24 @@ impl Database {
         Ok(())
     }
 
-    pub fn session_output_path(&self, session_id: &str) -> Result<Option<String>> {
+    pub fn session_recording_path(&self, session_id: &str) -> Result<Option<String>> {
         let conn = self.lock()?;
         let path = conn
             .query_row(
                 "SELECT output_path FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(path)
+    }
+
+    pub fn session_output_path(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self.lock()?;
+        let path = conn
+            .query_row(
+                "SELECT COALESCE(mp4_path, output_path) FROM sessions WHERE id = ?1",
                 params![session_id],
                 |row| row.get(0),
             )
@@ -697,6 +710,54 @@ mod tests {
         assert_eq!(
             session.session_logs[0].source_id.as_deref(),
             Some("screen:avfoundation:1")
+        );
+    }
+
+    #[test]
+    fn session_output_path_prefers_mp4_export_when_available() {
+        let database = test_database();
+        database
+            .create_session(&sample_session("session-1"))
+            .unwrap();
+
+        assert_eq!(
+            database
+                .session_recording_path("session-1")
+                .unwrap()
+                .as_deref(),
+            Some("/tmp/videorc-test.mkv")
+        );
+        assert_eq!(
+            database
+                .session_output_path("session-1")
+                .unwrap()
+                .as_deref(),
+            Some("/tmp/videorc-test.mkv")
+        );
+
+        database
+            .finish_session(
+                "session-1",
+                "completed",
+                None,
+                Some("/tmp/videorc-test.mp4".to_string()),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            database
+                .session_recording_path("session-1")
+                .unwrap()
+                .as_deref(),
+            Some("/tmp/videorc-test.mkv")
+        );
+        assert_eq!(
+            database
+                .session_output_path("session-1")
+                .unwrap()
+                .as_deref(),
+            Some("/tmp/videorc-test.mp4")
         );
     }
 }
