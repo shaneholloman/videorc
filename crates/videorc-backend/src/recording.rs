@@ -44,6 +44,7 @@ const STOP_TERM_DELAY: Duration = Duration::from_secs(3);
 const STOP_KILL_DELAY: Duration = Duration::from_secs(3);
 const SHUTDOWN_GRACE_DELAY: Duration = Duration::from_millis(1200);
 const CAPTURE_AUDIO_FILTER: &str = "aresample=async=1:first_pts=0";
+const MONO_TO_STEREO_FILTER: &str = "pan=stereo|c0=c0|c1=c0";
 const MICROPHONE_SYNC_OFFSET_MIN_MS: i32 = -1000;
 const MICROPHONE_SYNC_OFFSET_MAX_MS: i32 = 1000;
 const AVFOUNDATION_VIDEO_PIXEL_FORMAT: &str = "nv12";
@@ -2013,13 +2014,7 @@ fn append_audio_encoding_args(
         "-ar".to_string(),
         "48000".to_string(),
         "-ac".to_string(),
-        input_layout
-            .audio_inputs
-            .iter()
-            .map(|input| input.channels)
-            .max()
-            .unwrap_or(1)
-            .to_string(),
+        audio_output_channels(input_layout).to_string(),
         "-c:a".to_string(),
         if streaming { "aac" } else { "pcm_s16le" }.to_string(),
     ]);
@@ -2030,23 +2025,39 @@ fn append_audio_encoding_args(
 }
 
 fn capture_audio_filter(input_layout: &InputLayout, audio: &AudioSettings) -> String {
-    if !input_layout
+    let has_microphone = input_layout
         .audio_inputs
         .iter()
-        .any(|input| input.track.source == AudioTrackSource::Microphone)
-    {
-        return CAPTURE_AUDIO_FILTER.to_string();
+        .any(|input| input.track.source == AudioTrackSource::Microphone);
+    let has_mono_input = input_layout
+        .audio_inputs
+        .iter()
+        .any(|input| input.channels == 1);
+    let mut filters = Vec::new();
+
+    if has_microphone {
+        let offset_ms = audio
+            .microphone_sync_offset_ms
+            .clamp(MICROPHONE_SYNC_OFFSET_MIN_MS, MICROPHONE_SYNC_OFFSET_MAX_MS);
+        if offset_ms != 0 {
+            let offset_seconds = f64::from(offset_ms) / 1000.0;
+            filters.push(format!("asetpts=PTS{offset_seconds:+.3}/TB"));
+        }
     }
 
-    let offset_ms = audio
-        .microphone_sync_offset_ms
-        .clamp(MICROPHONE_SYNC_OFFSET_MIN_MS, MICROPHONE_SYNC_OFFSET_MAX_MS);
-    if offset_ms == 0 {
-        return CAPTURE_AUDIO_FILTER.to_string();
+    if has_mono_input {
+        filters.push(MONO_TO_STEREO_FILTER.to_string());
     }
+    filters.push(CAPTURE_AUDIO_FILTER.to_string());
+    filters.join(",")
+}
 
-    let offset_seconds = f64::from(offset_ms) / 1000.0;
-    format!("asetpts=PTS{offset_seconds:+.3}/TB,{CAPTURE_AUDIO_FILTER}")
+fn audio_output_channels(input_layout: &InputLayout) -> u16 {
+    if input_layout.audio_inputs.is_empty() {
+        0
+    } else {
+        NATIVE_AUDIO_CHANNELS
+    }
 }
 
 fn append_live_preview_output_args(args: &mut Vec<String>) {
@@ -2790,10 +2801,10 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "title=Microphone"));
         assert_eq!(
             arg_value(&args, "-af"),
-            Some("asetpts=PTS-0.250/TB,aresample=async=1:first_pts=0")
+            Some("asetpts=PTS-0.250/TB,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0")
         );
         assert_eq!(arg_value(&args, "-ar"), Some("48000"));
-        assert_eq!(arg_value(&args, "-ac"), Some("1"));
+        assert_eq!(arg_value(&args, "-ac"), Some("2"));
         assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
         assert_eq!(arg_value(&args, "-b:a"), Some("160k"));
         assert_eq!(arg_value(&args, "-realtime"), Some("1"));
@@ -2827,10 +2838,10 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "title=Microphone"));
         assert_eq!(
             arg_value(&args, "-af"),
-            Some("asetpts=PTS-0.250/TB,aresample=async=1:first_pts=0")
+            Some("asetpts=PTS-0.250/TB,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0")
         );
         assert_eq!(arg_value(&args, "-ar"), Some("48000"));
-        assert_eq!(arg_value(&args, "-ac"), Some("1"));
+        assert_eq!(arg_value(&args, "-ac"), Some("2"));
         assert_eq!(arg_value(&args, "-c:a"), Some("pcm_s16le"));
         assert_eq!(arg_value(&args, "-b:a"), None);
     }
@@ -2913,9 +2924,12 @@ mod tests {
 
         assert_eq!(
             arg_value(&delayed, "-af"),
-            Some("asetpts=PTS+0.120/TB,aresample=async=1:first_pts=0")
+            Some("asetpts=PTS+0.120/TB,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0")
         );
-        assert_eq!(arg_value(&disabled, "-af"), Some(CAPTURE_AUDIO_FILTER));
+        assert_eq!(
+            arg_value(&disabled, "-af"),
+            Some("pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0")
+        );
     }
 
     #[test]
@@ -2933,7 +2947,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(arg_value(&args, "-af"), Some(CAPTURE_AUDIO_FILTER));
+        assert_eq!(
+            arg_value(&args, "-af"),
+            Some("pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0")
+        );
+        assert_eq!(arg_value(&args, "-ac"), Some("2"));
     }
 
     #[test]
@@ -3172,6 +3190,11 @@ mod tests {
             vec!["testsrc2=size=2560x1440:rate=30", ":1"]
         );
         assert!(with_mic.iter().any(|arg| arg == "title=Microphone"));
+        assert_eq!(
+            arg_value(&with_mic, "-af"),
+            Some("asetpts=PTS-0.250/TB,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0")
+        );
+        assert_eq!(arg_value(&with_mic, "-ac"), Some("2"));
         assert_eq!(arg_value(&with_mic, "-c:a"), Some("pcm_s16le"));
         assert_eq!(
             ffmpeg_inputs(&without_mic),
@@ -3181,6 +3204,11 @@ mod tests {
             ]
         );
         assert!(without_mic.iter().any(|arg| arg == "title=Test tone"));
+        assert_eq!(
+            arg_value(&without_mic, "-af"),
+            Some("pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0")
+        );
+        assert_eq!(arg_value(&without_mic, "-ac"), Some("2"));
         assert_eq!(arg_value(&without_mic, "-c:a"), Some("pcm_s16le"));
     }
 
