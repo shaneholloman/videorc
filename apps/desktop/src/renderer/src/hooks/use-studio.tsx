@@ -218,7 +218,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           streamKey: captureConfig.streamKey.trim()
         }
       },
-      audio: captureConfig.audio
+      audio: captureConfig.audio,
+      streaming: captureConfig.streaming
     }),
     [captureConfig, settings]
   )

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::streaming::StreamingSettings;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientCommand {
@@ -540,6 +542,8 @@ pub struct StartSessionParams {
     pub output: OutputSettings,
     #[serde(default)]
     pub audio: AudioSettings,
+    #[serde(default)]
+    pub streaming: Option<StreamingSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

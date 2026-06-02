@@ -331,6 +331,7 @@ export interface StartSessionParams {
   layout: LayoutSettings
   output: OutputSettings
   audio?: AudioSettings
+  streaming?: StreamingSettings
 }
 
 export interface AudioSettings {

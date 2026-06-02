@@ -33,6 +33,7 @@ use crate::protocol::{
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::state::AppState;
 use crate::storage::{NewSession, default_preview_dir};
+use crate::streaming::{StreamTargetSettings, StreamUrlMode, StreamingSettings};
 
 const PREVIEW_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 const LIVE_PREVIEW_WIDTH: u32 = 1280;
@@ -204,6 +205,28 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
     state
         .database
         .save_setting("last_capture_session", &params)?;
+    let configured_targets = params
+        .streaming
+        .as_ref()
+        .filter(|streaming| streaming.enabled)
+        .and_then(|streaming| stream_targets_from_streaming(streaming).ok());
+    if let Some(targets) = configured_targets {
+        let redacted = targets
+            .iter()
+            .map(|target| target.redacted_url.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = state.database.add_session_log(
+            &session_id,
+            HealthLevel::Info,
+            "stream-targets-configured",
+            &format!(
+                "Configured {} stream destination(s): {redacted}. Multi-destination fan-out activates with the FFmpeg tee.",
+                targets.len()
+            ),
+            None,
+        );
+    }
     let _ = state.database.add_session_log(
         &session_id,
         HealthLevel::Info,
@@ -544,6 +567,7 @@ pub async fn create_preview_snapshot(
             },
         },
         audio: Default::default(),
+        streaming: None,
     };
     let mut capture = resolve_capture_inputs(&ffmpeg_path, &session_params).await;
     capture.microphone = None;
@@ -825,6 +849,7 @@ fn live_preview_session_params(
             },
         },
         audio: Default::default(),
+        streaming: None,
     }
 }
 
@@ -2408,7 +2433,18 @@ fn validate_outputs(params: &StartSessionParams) -> Result<()> {
     }
 
     if params.output.stream_enabled {
-        build_stream_url(&params.output.rtmp)?;
+        match params
+            .streaming
+            .as_ref()
+            .filter(|streaming| streaming.enabled)
+        {
+            Some(streaming) => {
+                stream_targets_from_streaming(streaming)?;
+            }
+            None => {
+                build_stream_url(&params.output.rtmp)?;
+            }
+        }
     }
 
     validate_video_settings(&params.output.video)?;
@@ -2449,6 +2485,55 @@ fn build_stream_url(settings: &RtmpSettings) -> Result<StreamTarget> {
         url,
         redacted_url: format!("{server_url}/••••"),
     })
+}
+
+fn redact_stream_url(url: &str) -> String {
+    match url.rsplit_once('/') {
+        Some((prefix, _)) => format!("{prefix}/••••"),
+        None => "••••".to_string(),
+    }
+}
+
+fn resolve_stream_target(target: &StreamTargetSettings) -> Result<StreamTarget> {
+    let server = target.server_url.trim().trim_end_matches('/');
+    if server.is_empty() {
+        bail!("{} RTMP URL is missing", target.label);
+    }
+    if matches!(target.url_mode, Some(StreamUrlMode::FullUrl)) {
+        return Ok(StreamTarget {
+            url: server.to_string(),
+            redacted_url: redact_stream_url(server),
+        });
+    }
+    let stream_key = target.stream_key.trim().trim_start_matches('/');
+    if stream_key.is_empty() {
+        bail!("{} stream key is missing", target.label);
+    }
+    Ok(StreamTarget {
+        url: format!("{server}/{stream_key}"),
+        redacted_url: format!("{server}/••••"),
+    })
+}
+
+/// Resolves every enabled stream target that has complete credentials. Incomplete
+/// enabled targets are skipped (M5 surfaces them for confirmation); an error is
+/// only returned when no enabled destination is ready.
+fn stream_targets_from_streaming(streaming: &StreamingSettings) -> Result<Vec<StreamTarget>> {
+    let mut targets = Vec::new();
+    let mut problems = Vec::new();
+    for target in streaming.targets.iter().filter(|target| target.enabled) {
+        match resolve_stream_target(target) {
+            Ok(resolved) => targets.push(resolved),
+            Err(error) => problems.push(error.to_string()),
+        }
+    }
+    if targets.is_empty() {
+        if problems.is_empty() {
+            bail!("Enable at least one streaming destination");
+        }
+        bail!("No streaming destination is ready: {}", problems.join("; "));
+    }
+    Ok(targets)
 }
 
 fn output_mode(record_enabled: bool, stream_enabled: bool) -> &'static str {
@@ -2722,6 +2807,7 @@ mod tests {
         CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransform, LayoutPreset,
         LayoutSettings, OutputSettings, PreviewLiveParams, RtmpSettings, SourceSelection,
     };
+    use crate::streaming::{StreamMode, StreamPlatform, default_stream_targets};
 
     fn base_params(record_enabled: bool, stream_enabled: bool) -> StartSessionParams {
         StartSessionParams {
@@ -2761,7 +2847,119 @@ mod tests {
                 },
             },
             audio: Default::default(),
+            streaming: None,
         }
+    }
+
+    fn streaming_for(enabled: &[(StreamPlatform, &str, &str)]) -> StreamingSettings {
+        let mut targets = default_stream_targets();
+        for (platform, server, key) in enabled {
+            if let Some(target) = targets.iter_mut().find(|t| t.platform == *platform) {
+                target.enabled = true;
+                if !server.is_empty() {
+                    target.server_url = server.to_string();
+                }
+                target.stream_key = key.to_string();
+                target.stream_key_present = !key.is_empty();
+            }
+        }
+        let enabled_target_ids = targets
+            .iter()
+            .filter(|t| t.enabled)
+            .map(|t| t.id.clone())
+            .collect();
+        StreamingSettings {
+            enabled: !enabled.is_empty(),
+            mode: StreamMode::Single,
+            targets,
+            selected_target_id: None,
+            default_output_preset: VideoPreset::Tutorial1080p30,
+            default_bitrate_kbps: 6000,
+            enabled_target_ids,
+        }
+    }
+
+    #[test]
+    fn resolves_single_ready_stream_target() {
+        let streaming = streaming_for(&[(
+            StreamPlatform::Twitch,
+            "rtmp://live.twitch.tv/app",
+            "key-123",
+        )]);
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].url, "rtmp://live.twitch.tv/app/key-123");
+        assert_eq!(targets[0].redacted_url, "rtmp://live.twitch.tv/app/••••");
+        assert!(!targets[0].redacted_url.contains("key-123"));
+    }
+
+    #[test]
+    fn resolves_three_ready_stream_targets() {
+        let streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+            (StreamPlatform::X, "rtmp://x.example/app", "xk"),
+        ]);
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        assert_eq!(targets.len(), 3);
+        assert!(targets.iter().any(|t| t.url.ends_with("/yt")));
+        assert!(targets.iter().any(|t| t.url.ends_with("/tw")));
+        assert!(targets.iter().any(|t| t.url.ends_with("/xk")));
+    }
+
+    #[test]
+    fn skips_incomplete_enabled_targets() {
+        let streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", ""),
+        ]);
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(targets[0].url.ends_with("/yt"));
+    }
+
+    #[test]
+    fn errors_when_no_target_ready_and_names_the_target() {
+        let streaming = streaming_for(&[(StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "")]);
+        let error = stream_targets_from_streaming(&streaming)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Twitch"),
+            "error should name the target: {error}"
+        );
+        assert!(
+            error.contains("stream key"),
+            "error should mention the missing key: {error}"
+        );
+    }
+
+    #[test]
+    fn full_url_mode_uses_server_as_complete_url() {
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Custom,
+            "rtmp://custom.example/app/secret",
+            "",
+        )]);
+        if let Some(custom) = streaming
+            .targets
+            .iter_mut()
+            .find(|t| t.platform == StreamPlatform::Custom)
+        {
+            custom.url_mode = Some(StreamUrlMode::FullUrl);
+        }
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].url, "rtmp://custom.example/app/secret");
+        assert!(!targets[0].redacted_url.contains("secret"));
     }
 
     #[test]
