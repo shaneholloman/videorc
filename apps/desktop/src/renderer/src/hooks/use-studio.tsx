@@ -41,6 +41,7 @@ import type {
   LayoutSettings,
   PreviewLiveStatus,
   PlatformAccount,
+  PlatformAccountValidation,
   OAuthStartResult,
   RecordingStatus,
   RuntimeInfo,
@@ -85,6 +86,7 @@ export type StudioContextValue = {
   screens: StreamScreen[]
   activeScreen: StreamScreen | null
   platformAccounts: PlatformAccount[]
+  platformAccountValidations: PlatformAccountValidation[]
   streamMetadataDraft: StreamMetadataDraft | null
   streamMetadataValidation: StreamMetadataValidation | null
   // preview + audio
@@ -129,6 +131,7 @@ export type StudioContextValue = {
   // actions
   refreshBackend: () => Promise<void>
   refreshPlatformAccounts: () => Promise<void>
+  validatePlatformAccounts: () => Promise<PlatformAccountValidation[]>
   connectPlatformAccount: (platform: PlatformAccount['platform']) => Promise<void>
   disconnectPlatformAccount: (platform: PlatformAccount['platform']) => Promise<void>
   refreshStreamMetadata: () => Promise<void>
@@ -237,6 +240,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [screens, setScreens] = useState<StreamScreen[]>([])
   const [activeScreen, setActiveScreen] = useState<StreamScreen | null>(null)
   const [platformAccounts, setPlatformAccounts] = useState<PlatformAccount[]>([])
+  const [platformAccountValidations, setPlatformAccountValidations] = useState<PlatformAccountValidation[]>([])
   const [streamMetadataDraft, setStreamMetadataDraft] = useState<StreamMetadataDraft | null>(null)
   const [streamMetadataValidation, setStreamMetadataValidation] = useState<StreamMetadataValidation | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -379,6 +383,26 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       reportError(error)
     }
   }, [client, refreshPlatformAccountsForClient, reportError])
+
+  const validatePlatformAccountsForClient = useCallback(async (activeClient: BackendClient | null) => {
+    if (!activeClient) {
+      setPlatformAccountValidations([])
+      return []
+    }
+
+    const validations = await activeClient.request<PlatformAccountValidation[]>('platformAccounts.validate')
+    setPlatformAccountValidations(validations)
+    return validations
+  }, [])
+
+  const validatePlatformAccounts = useCallback(async () => {
+    try {
+      return await validatePlatformAccountsForClient(client)
+    } catch (error) {
+      reportError(error)
+      return []
+    }
+  }, [client, reportError, validatePlatformAccountsForClient])
 
   const refreshStreamMetadataForClient = useCallback(async (activeClient: BackendClient | null) => {
     if (!activeClient) {
@@ -575,6 +599,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         }
         if (result.status === 'success' && result.accountConnected) {
           void refreshPlatformAccountsForClient(nextClient)
+          void validatePlatformAccountsForClient(nextClient)
           toast.success('Account connected.')
         } else if (result.status === 'success') {
           toast.success('OAuth callback received.')
@@ -621,6 +646,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         }
         await refreshScreensForClient(nextClient)
         await refreshPlatformAccountsForClient(nextClient)
+        await validatePlatformAccountsForClient(nextClient)
         await refreshStreamMetadataForClient(nextClient)
         await refreshSessions(nextClient)
       })
@@ -644,6 +670,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     refreshPlatformAccountsForClient,
     refreshScreensForClient,
     refreshStreamMetadataForClient,
+    validatePlatformAccountsForClient,
     refreshSessions,
     reportError,
     settings.ffmpegPath
@@ -708,6 +735,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         nextScreens,
         nextActiveScreen,
         nextPlatformAccounts,
+        nextPlatformAccountValidations,
         nextStreamMetadataDraft
       ] = await Promise.all([
         client.request<BackendHealth>('health.ping', { ffmpegPath: settings.ffmpegPath.trim() || undefined }),
@@ -717,6 +745,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         client.request<StreamScreen[]>('screens.list'),
         client.request<StreamScreen | null>('screens.active'),
         client.request<PlatformAccount[]>('platformAccounts.list'),
+        client.request<PlatformAccountValidation[]>('platformAccounts.validate'),
         client.request<StreamMetadataDraft>('streamTargets.metadata.get')
       ])
       const nextStreamMetadataValidation = await client.request<StreamMetadataValidation>(
@@ -730,6 +759,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setScreens(nextScreens)
       setActiveScreen(nextActiveScreen)
       setPlatformAccounts(nextPlatformAccounts)
+      setPlatformAccountValidations(nextPlatformAccountValidations)
       setStreamMetadataDraft(nextStreamMetadataDraft)
       setStreamMetadataValidation(nextStreamMetadataValidation)
       if (!sceneEditMode) {
@@ -1284,6 +1314,19 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setStreamHealth(null)
       setStreamTargets([])
       setStartRequestPending(true)
+      const enabledOauthTargets = captureConfig.streaming.targets.filter(
+        (target) => target.enabled && target.authMode === 'oauth'
+      )
+      if (enabledOauthTargets.length) {
+        const validations = await validatePlatformAccountsForClient(client)
+        const unhealthy = enabledOauthTargets.find((target) => {
+          const validation = validations.find((item) => item.platform === target.platform)
+          return !validation || !['valid', 'refreshed'].includes(validation.state)
+        })
+        if (unhealthy) {
+          throw new Error(`Reconnect ${unhealthy.label} before starting an OAuth livestream.`)
+        }
+      }
       setRecording((current) =>
         isActiveRecordingState(current.state)
           ? current
@@ -1302,7 +1345,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     } finally {
       setStartRequestPending(false)
     }
-  }, [client, isSessionActive, refreshSessions, reportError, sessionParams, startBlockedReason])
+  }, [
+    captureConfig.streaming.targets,
+    client,
+    isSessionActive,
+    refreshSessions,
+    reportError,
+    sessionParams,
+    startBlockedReason,
+    validatePlatformAccountsForClient
+  ])
 
   const stopSession = useCallback(async () => {
     if (!client || stopRequestPending) {
@@ -1550,6 +1602,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     screens,
     activeScreen,
     platformAccounts,
+    platformAccountValidations,
     streamMetadataDraft,
     streamMetadataValidation,
     previewUrl,
@@ -1585,6 +1638,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     runtimeInfo,
     refreshBackend,
     refreshPlatformAccounts,
+    validatePlatformAccounts,
     connectPlatformAccount,
     disconnectPlatformAccount,
     refreshStreamMetadata,

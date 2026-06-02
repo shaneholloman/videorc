@@ -31,6 +31,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useStudio } from '@/hooks/use-studio'
 import type {
   PlatformAccount,
+  PlatformAccountValidation,
   StreamAuthMode,
   StreamMetadataDraft,
   StreamMetadataValidation,
@@ -59,6 +60,7 @@ export function StreamingTab(): ReactElement {
     patchStreamMetadataDraft,
     patchStreamTargetMetadataDraft,
     patchStreamingTarget,
+    platformAccountValidations,
     platformAccounts,
     saveStreamMetadataDraft,
     health,
@@ -87,6 +89,14 @@ export function StreamingTab(): ReactElement {
     }
     return map
   }, [platformAccounts])
+
+  const validationByPlatform = useMemo(() => {
+    const map = new Map<StreamPlatform, PlatformAccountValidation>()
+    for (const validation of platformAccountValidations) {
+      map.set(validation.platform, validation)
+    }
+    return map
+  }, [platformAccountValidations])
 
   // A destination is "in trouble" while live if its leg dropped (failed) or it was
   // skipped this session for incomplete credentials (not-configured).
@@ -123,6 +133,7 @@ export function StreamingTab(): ReactElement {
             key={target.id}
             runtime={runtimeById.get(target.id)}
             target={target}
+            validation={validationByPlatform.get(target.platform)}
             onConnect={connectPlatformAccount}
             onDisconnect={disconnectPlatformAccount}
             onPatch={patchStreamingTarget}
@@ -229,6 +240,7 @@ function DestinationCard({
   account,
   disabled,
   runtime,
+  validation,
   onConnect,
   onDisconnect,
   onPatch
@@ -237,6 +249,7 @@ function DestinationCard({
   account?: PlatformAccount
   disabled: boolean
   runtime?: StreamTargetRuntime
+  validation?: PlatformAccountValidation
   onConnect: (platform: StreamPlatform) => void
   onDisconnect: (platform: StreamPlatform) => void
   onPatch: (targetId: string, patch: Partial<StreamTargetSettings>) => void
@@ -310,6 +323,7 @@ function DestinationCard({
           account={account}
           disabled={disabled}
           platform={target.platform}
+          validation={validation}
           onConnect={onConnect}
           onDisconnect={onDisconnect}
         />
@@ -359,12 +373,14 @@ function OAuthAccountPanel({
   account,
   disabled,
   platform,
+  validation,
   onConnect,
   onDisconnect
 }: {
   account?: PlatformAccount
   disabled: boolean
   platform: StreamPlatform
+  validation?: PlatformAccountValidation
   onConnect: (platform: StreamPlatform) => void
   onDisconnect: (platform: StreamPlatform) => void
 }): ReactElement {
@@ -396,6 +412,14 @@ function OAuthAccountPanel({
           {account.status === 'connected' ? 'Connected' : 'Reconnect'}
         </Badge>
       </div>
+      {validation ? (
+        <div className="flex flex-col gap-1 rounded-md bg-background/60 px-2 py-1.5">
+          <Badge className="w-fit" variant={validationBadge(validation).tone}>
+            {validationBadge(validation).label}
+          </Badge>
+          <span className="text-xs text-muted-foreground">{validation.message}</span>
+        </div>
+      ) : null}
       <div className="flex flex-wrap gap-1">
         {account.scopes.length ? (
           account.scopes.map((scope) => (
@@ -413,6 +437,19 @@ function OAuthAccountPanel({
       </Button>
     </div>
   )
+}
+
+function validationBadge(validation: PlatformAccountValidation): { tone: BadgeTone; label: string } {
+  switch (validation.state) {
+    case 'valid':
+      return { tone: 'success', label: 'Validated' }
+    case 'refreshed':
+      return { tone: 'success', label: 'Refreshed' }
+    case 'needs-reconnect':
+      return { tone: 'warning', label: 'Needs reconnect' }
+    default:
+      return { tone: 'outline', label: 'Not checked' }
+  }
 }
 
 function MetadataEditor({
