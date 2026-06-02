@@ -56,7 +56,7 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use crate::ffmpeg::{default_ffmpeg_path, resolve_ffmpeg_path_ref};
-use crate::oauth::{OAuthCompleteParams, OAuthStartParams};
+use crate::oauth::{OAuthCompleteParams, OAuthStartParams, OAuthStartProviderParams};
 use crate::state::AppState;
 use crate::storage::Database;
 use crate::streaming::{StreamMetadataDraft, validate_stream_metadata_draft};
@@ -246,15 +246,16 @@ async fn oauth_callback_handler(
     State(state): State<AppState>,
     Query(query): Query<OAuthCallbackQuery>,
 ) -> impl IntoResponse {
-    let result = state
-        .oauth
-        .complete(OAuthCompleteParams {
+    let result = complete_oauth_callback(
+        &state,
+        OAuthCompleteParams {
             state: query.state,
             code: query.code,
             error: query.error,
             error_description: query.error_description,
-        })
-        .await;
+        },
+    )
+    .await;
     state.emit_event("platformAccounts.oauth.callback", result.clone());
 
     let title = match result.status {
@@ -267,6 +268,49 @@ async fn oauth_callback_handler(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title></head>\
          <body><h1>{title}</h1><p>You can return to Videorc.</p></body></html>"
     ))
+}
+
+async fn complete_oauth_callback(
+    state: &AppState,
+    params: OAuthCompleteParams,
+) -> oauth::OAuthCallbackResult {
+    let outcome = state.oauth.complete_with_pending(params).await;
+    let mut result = outcome.result;
+    let Some(exchange) = outcome.exchange else {
+        return result;
+    };
+    let Some(code) = outcome.authorization_code else {
+        return result;
+    };
+
+    match oauth::exchange_and_store_token(
+        &exchange,
+        &code,
+        &reqwest::Client::new(),
+        secrets::put_secret,
+    )
+    .await
+    {
+        Ok(account) => match state.database.upsert_platform_account(account) {
+            Ok(_) => {
+                result.token_stored = true;
+                result.account_connected = true;
+                if let Ok(accounts) = state.database.list_platform_accounts() {
+                    state.emit_event("platformAccounts.changed", accounts);
+                }
+            }
+            Err(error) => {
+                result.status = oauth::OAuthCallbackStatus::Failed;
+                result.message = Some(format!("OAuth account storage failed: {error}"));
+            }
+        },
+        Err(error) => {
+            result.status = oauth::OAuthCallbackStatus::Failed;
+            result.message = Some(format!("OAuth token exchange failed: {error}"));
+        }
+    }
+
+    result
 }
 
 async fn ws_handler(
@@ -598,10 +642,25 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 }
             }
         }
+        "platformAccounts.oauth.startProvider" => {
+            match serde_json::from_value::<OAuthStartProviderParams>(command.params) {
+                Ok(params) => match state.oauth.start_provider(params, state.port).await {
+                    Ok(result) => ServerResponse::ok(command.id, result),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "platform-oauth-provider-start-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
         "platformAccounts.oauth.complete" => {
             match serde_json::from_value::<OAuthCompleteParams>(command.params) {
                 Ok(params) => {
-                    let result = state.oauth.complete(params).await;
+                    let result = complete_oauth_callback(state, params).await;
                     state.emit_event("platformAccounts.oauth.callback", result.clone());
                     ServerResponse::ok(command.id, result)
                 }

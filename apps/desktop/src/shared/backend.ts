@@ -448,6 +448,10 @@ export interface OAuthStartParams {
   extraParams?: Record<string, string>
 }
 
+export interface OAuthStartProviderParams {
+  platform: StreamPlatform
+}
+
 export interface OAuthStartResult {
   platform: StreamPlatform
   state: string
@@ -472,6 +476,8 @@ export interface OAuthCallbackResult {
   codePresent: boolean
   error?: string
   message?: string
+  tokenStored: boolean
+  accountConnected: boolean
   receivedAt: string
 }
 

@@ -1,12 +1,18 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::streaming::StreamPlatform;
+use crate::streaming::{
+    PlatformAccountStatus, StreamPlatform, UpsertPlatformAccount, stream_platform_id,
+    stream_platform_label,
+};
 
 const OAUTH_STATE_TTL_MINUTES: i64 = 10;
 
@@ -27,6 +33,12 @@ pub struct OAuthStartParams {
     pub redirect_uri: Option<String>,
     #[serde(default)]
     pub extra_params: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthStartProviderParams {
+    pub platform: StreamPlatform,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +83,8 @@ pub struct OAuthCallbackResult {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    pub token_stored: bool,
+    pub account_connected: bool,
     pub received_at: String,
 }
 
@@ -78,6 +92,36 @@ pub struct OAuthCallbackResult {
 struct PendingOAuthSession {
     platform: StreamPlatform,
     expires_at: chrono::DateTime<Utc>,
+    exchange: Option<PendingOAuthExchange>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OAuthCompleteOutcome {
+    pub result: OAuthCallbackResult,
+    pub exchange: Option<PendingOAuthExchange>,
+    pub authorization_code: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingOAuthExchange {
+    pub platform: StreamPlatform,
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    pub redirect_uri: String,
+    pub scopes: Vec<String>,
+    pub code_verifier: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthProviderConfig {
+    authorization_url: String,
+    token_url: String,
+    client_id: String,
+    client_secret: Option<String>,
+    scopes: Vec<String>,
+    extra_params: HashMap<String, String>,
+    pkce: bool,
 }
 
 impl OAuthSessions {
@@ -100,6 +144,7 @@ impl OAuthSessions {
             PendingOAuthSession {
                 platform: params.platform,
                 expires_at,
+                exchange: None,
             },
         );
 
@@ -112,52 +157,310 @@ impl OAuthSessions {
         })
     }
 
+    pub async fn start_provider(
+        &self,
+        params: OAuthStartProviderParams,
+        backend_port: u16,
+    ) -> Result<OAuthStartResult> {
+        if matches!(params.platform, StreamPlatform::Custom) {
+            anyhow::bail!("Custom RTMP does not support OAuth.");
+        }
+        let config = provider_config(params.platform)?;
+        let state = Uuid::new_v4().to_string();
+        let redirect_uri = format!("http://127.0.0.1:{backend_port}/oauth/callback");
+        let expires_at = Utc::now() + Duration::minutes(OAUTH_STATE_TTL_MINUTES);
+        let mut extra_params = config.extra_params.clone();
+        let code_verifier = if config.pkce {
+            let verifier = pkce_verifier();
+            extra_params.insert("code_challenge".to_string(), pkce_s256_challenge(&verifier));
+            extra_params.insert("code_challenge_method".to_string(), "S256".to_string());
+            Some(verifier)
+        } else {
+            None
+        };
+        let start_params = OAuthStartParams {
+            platform: params.platform,
+            authorization_url: config.authorization_url.clone(),
+            client_id: config.client_id.clone(),
+            scopes: config.scopes.clone(),
+            redirect_uri: Some(redirect_uri.clone()),
+            extra_params,
+        };
+        let auth_url = authorization_url(&start_params, &state, &redirect_uri);
+
+        self.pending.lock().await.insert(
+            state.clone(),
+            PendingOAuthSession {
+                platform: params.platform,
+                expires_at,
+                exchange: Some(PendingOAuthExchange {
+                    platform: params.platform,
+                    token_url: config.token_url,
+                    client_id: config.client_id,
+                    client_secret: config.client_secret,
+                    redirect_uri: redirect_uri.clone(),
+                    scopes: normalized_scopes(&config.scopes),
+                    code_verifier,
+                }),
+            },
+        );
+
+        Ok(OAuthStartResult {
+            platform: params.platform,
+            state,
+            auth_url,
+            redirect_uri,
+            expires_at: expires_at.to_rfc3339(),
+        })
+    }
+
+    #[cfg(test)]
     pub async fn complete(&self, params: OAuthCompleteParams) -> OAuthCallbackResult {
+        self.complete_with_pending(params).await.result
+    }
+
+    pub async fn complete_with_pending(&self, params: OAuthCompleteParams) -> OAuthCompleteOutcome {
         let received_at = Utc::now();
         let Some(pending) = self.pending.lock().await.remove(&params.state) else {
-            return OAuthCallbackResult {
-                platform: None,
-                state: params.state,
-                status: OAuthCallbackStatus::UnknownState,
-                code_present: params.code.as_ref().is_some_and(|code| !code.is_empty()),
-                error: params.error,
-                message: Some("OAuth callback state is not recognized.".to_string()),
-                received_at: received_at.to_rfc3339(),
+            return OAuthCompleteOutcome {
+                result: OAuthCallbackResult {
+                    platform: None,
+                    state: params.state,
+                    status: OAuthCallbackStatus::UnknownState,
+                    code_present: params.code.as_ref().is_some_and(|code| !code.is_empty()),
+                    error: params.error,
+                    message: Some("OAuth callback state is not recognized.".to_string()),
+                    token_stored: false,
+                    account_connected: false,
+                    received_at: received_at.to_rfc3339(),
+                },
+                exchange: None,
+                authorization_code: None,
             };
         };
 
+        let code_present = params.code.as_ref().is_some_and(|code| !code.is_empty());
         if pending.expires_at < received_at {
-            return OAuthCallbackResult {
-                platform: Some(pending.platform),
-                state: params.state,
-                status: OAuthCallbackStatus::Expired,
-                code_present: params.code.as_ref().is_some_and(|code| !code.is_empty()),
-                error: params.error,
-                message: Some(
-                    "OAuth callback state expired. Start the connection again.".to_string(),
-                ),
-                received_at: received_at.to_rfc3339(),
+            return OAuthCompleteOutcome {
+                result: OAuthCallbackResult {
+                    platform: Some(pending.platform),
+                    state: params.state,
+                    status: OAuthCallbackStatus::Expired,
+                    code_present,
+                    error: params.error,
+                    message: Some(
+                        "OAuth callback state expired. Start the connection again.".to_string(),
+                    ),
+                    token_stored: false,
+                    account_connected: false,
+                    received_at: received_at.to_rfc3339(),
+                },
+                exchange: None,
+                authorization_code: None,
             };
         }
 
-        let code_present = params.code.as_ref().is_some_and(|code| !code.is_empty());
         let failed = params.error.is_some() || !code_present;
-        OAuthCallbackResult {
-            platform: Some(pending.platform),
-            state: params.state,
-            status: if failed {
-                OAuthCallbackStatus::Failed
-            } else {
-                OAuthCallbackStatus::Success
+        let status = if failed {
+            OAuthCallbackStatus::Failed
+        } else {
+            OAuthCallbackStatus::Success
+        };
+        let authorization_code = (!failed).then_some(params.code).flatten();
+        OAuthCompleteOutcome {
+            result: OAuthCallbackResult {
+                platform: Some(pending.platform),
+                state: params.state,
+                status,
+                code_present,
+                error: params.error,
+                message: params.error_description.or_else(|| {
+                    (!code_present).then(|| "OAuth callback did not include a code.".to_string())
+                }),
+                token_stored: false,
+                account_connected: false,
+                received_at: received_at.to_rfc3339(),
             },
-            code_present,
-            error: params.error,
-            message: params.error_description.or_else(|| {
-                (!code_present).then(|| "OAuth callback did not include a code.".to_string())
-            }),
-            received_at: received_at.to_rfc3339(),
+            exchange: (!failed).then_some(pending.exchange).flatten(),
+            authorization_code,
         }
     }
+}
+
+pub async fn exchange_and_store_token<F>(
+    exchange: &PendingOAuthExchange,
+    authorization_code: &str,
+    client: &reqwest::Client,
+    mut put_secret: F,
+) -> Result<UpsertPlatformAccount>
+where
+    F: FnMut(&str, &str) -> Result<()>,
+{
+    let mut form = vec![
+        ("grant_type", "authorization_code".to_string()),
+        ("code", authorization_code.to_string()),
+        ("redirect_uri", exchange.redirect_uri.clone()),
+        ("client_id", exchange.client_id.clone()),
+    ];
+    if let Some(client_secret) = exchange.client_secret.as_ref() {
+        form.push(("client_secret", client_secret.clone()));
+    }
+    if let Some(code_verifier) = exchange.code_verifier.as_ref() {
+        form.push(("code_verifier", code_verifier.clone()));
+    }
+
+    let response = client
+        .post(&exchange.token_url)
+        .form(&form)
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "Could not exchange OAuth code for {}",
+                stream_platform_label(exchange.platform)
+            )
+        })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        anyhow::bail!("OAuth token exchange failed with HTTP {status}");
+    }
+    let token = response
+        .json::<OAuthTokenResponse>()
+        .await
+        .context("Could not parse OAuth token response")?;
+    if token.access_token.trim().is_empty() {
+        anyhow::bail!("OAuth token response did not include an access token.");
+    }
+
+    let platform_id = stream_platform_id(exchange.platform);
+    let access_ref = format!("platform:{platform_id}:oauth:access");
+    put_secret(&access_ref, &token.access_token)?;
+    let refresh_ref = token
+        .refresh_token
+        .as_deref()
+        .filter(|refresh_token| !refresh_token.trim().is_empty())
+        .map(|refresh_token| {
+            let secret_ref = format!("platform:{platform_id}:oauth:refresh");
+            put_secret(&secret_ref, refresh_token)?;
+            Ok::<_, anyhow::Error>(secret_ref)
+        })
+        .transpose()?;
+    let scopes = token
+        .scopes()
+        .filter(|scopes| !scopes.is_empty())
+        .unwrap_or_else(|| exchange.scopes.clone());
+    let expires_at = token
+        .expires_in
+        .and_then(|seconds| Utc::now().checked_add_signed(Duration::seconds(seconds)))
+        .map(|expires_at| expires_at.to_rfc3339());
+
+    Ok(UpsertPlatformAccount {
+        platform: exchange.platform,
+        account_id: format!("{platform_id}:oauth"),
+        account_label: format!("{} OAuth account", stream_platform_label(exchange.platform)),
+        account_handle: None,
+        avatar_url: None,
+        scopes,
+        token_secret_ref: Some(access_ref),
+        refresh_token_secret_ref: refresh_ref,
+        stream_key_secret_ref: None,
+        expires_at,
+        status: PlatformAccountStatus::Connected,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthTokenResponse {
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<i64>,
+    #[serde(default)]
+    scope: Option<OAuthScopeResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OAuthScopeResponse {
+    String(String),
+    List(Vec<String>),
+}
+
+impl OAuthTokenResponse {
+    fn scopes(&self) -> Option<Vec<String>> {
+        match self.scope.as_ref()? {
+            OAuthScopeResponse::String(scopes) => Some(normalized_scopes(
+                &scopes.split(' ').map(str::to_string).collect::<Vec<_>>(),
+            )),
+            OAuthScopeResponse::List(scopes) => Some(normalized_scopes(scopes)),
+        }
+    }
+}
+
+fn provider_config(platform: StreamPlatform) -> Result<OAuthProviderConfig> {
+    match platform {
+        StreamPlatform::Youtube => Ok(OAuthProviderConfig {
+            authorization_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+            token_url: "https://oauth2.googleapis.com/token".to_string(),
+            client_id: required_env("VIDEORC_YOUTUBE_CLIENT_ID")?,
+            client_secret: optional_env("VIDEORC_YOUTUBE_CLIENT_SECRET"),
+            scopes: vec![
+                "https://www.googleapis.com/auth/youtube".to_string(),
+                "https://www.googleapis.com/auth/youtube.force-ssl".to_string(),
+            ],
+            extra_params: HashMap::from([
+                ("access_type".to_string(), "offline".to_string()),
+                ("prompt".to_string(), "consent".to_string()),
+            ]),
+            pkce: true,
+        }),
+        StreamPlatform::Twitch => Ok(OAuthProviderConfig {
+            authorization_url: "https://id.twitch.tv/oauth2/authorize".to_string(),
+            token_url: "https://id.twitch.tv/oauth2/token".to_string(),
+            client_id: required_env("VIDEORC_TWITCH_CLIENT_ID")?,
+            client_secret: optional_env("VIDEORC_TWITCH_CLIENT_SECRET"),
+            scopes: vec![
+                "channel:manage:broadcast".to_string(),
+                "channel:read:stream_key".to_string(),
+            ],
+            extra_params: HashMap::new(),
+            pkce: false,
+        }),
+        StreamPlatform::X => Ok(OAuthProviderConfig {
+            authorization_url: "https://x.com/i/oauth2/authorize".to_string(),
+            token_url: "https://api.x.com/2/oauth2/token".to_string(),
+            client_id: required_env("VIDEORC_X_CLIENT_ID")?,
+            client_secret: optional_env("VIDEORC_X_CLIENT_SECRET"),
+            scopes: vec![
+                "tweet.read".to_string(),
+                "users.read".to_string(),
+                "offline.access".to_string(),
+            ],
+            extra_params: HashMap::new(),
+            pkce: true,
+        }),
+        StreamPlatform::Custom => anyhow::bail!("Custom RTMP does not support OAuth."),
+    }
+}
+
+fn required_env(name: &str) -> Result<String> {
+    optional_env(name).ok_or_else(|| anyhow::anyhow!("{name} is not configured."))
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn pkce_verifier() -> String {
+    format!("videorc-{}", Uuid::new_v4().simple())
+}
+
+fn pkce_s256_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
 fn validate_start_params(params: &OAuthStartParams) -> Result<()> {
@@ -244,6 +547,12 @@ fn percent_encode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::Form;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use tokio::net::TcpListener;
 
     fn start_params() -> OAuthStartParams {
         OAuthStartParams {
@@ -343,5 +652,98 @@ mod tests {
         assert_eq!(completed.error.as_deref(), Some("access_denied"));
         assert_eq!(completed.message.as_deref(), Some("User cancelled."));
         assert!(!completed.code_present);
+    }
+
+    #[test]
+    fn pkce_challenge_uses_s256_base64url_without_padding() {
+        assert_eq!(
+            pkce_s256_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_exchange_stores_secrets_and_returns_public_account_record() {
+        async fn token_endpoint(Form(form): Form<HashMap<String, String>>) -> impl IntoResponse {
+            if form.get("code").map(String::as_str) != Some("auth-code")
+                || form.get("client_id").map(String::as_str) != Some("client-id")
+                || form.get("client_secret").map(String::as_str) != Some("client-secret")
+                || form.get("code_verifier").map(String::as_str) != Some("verifier")
+            {
+                return (StatusCode::BAD_REQUEST, "bad form").into_response();
+            }
+            Json(serde_json::json!({
+                "access_token": "access-token-value",
+                "refresh_token": "refresh-token-value",
+                "expires_in": 3600,
+                "scope": "channel:read:stream_key channel:manage:broadcast"
+            }))
+            .into_response()
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/token", post(token_endpoint)),
+            )
+            .await
+            .unwrap();
+        });
+
+        let exchange = PendingOAuthExchange {
+            platform: StreamPlatform::Twitch,
+            token_url: format!("http://{address}/token"),
+            client_id: "client-id".to_string(),
+            client_secret: Some("client-secret".to_string()),
+            redirect_uri: "http://127.0.0.1:61234/oauth/callback".to_string(),
+            scopes: vec!["fallback".to_string()],
+            code_verifier: Some("verifier".to_string()),
+        };
+        let mut secrets = Vec::new();
+        let account = exchange_and_store_token(
+            &exchange,
+            "auth-code",
+            &reqwest::Client::new(),
+            |secret_ref, value| {
+                secrets.push((secret_ref.to_string(), value.to_string()));
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(account.platform, StreamPlatform::Twitch);
+        assert_eq!(account.account_id, "twitch:oauth");
+        assert_eq!(account.account_label, "Twitch OAuth account");
+        assert_eq!(
+            account.scopes,
+            vec![
+                "channel:manage:broadcast".to_string(),
+                "channel:read:stream_key".to_string()
+            ]
+        );
+        assert_eq!(
+            account.token_secret_ref.as_deref(),
+            Some("platform:twitch:oauth:access")
+        );
+        assert_eq!(
+            account.refresh_token_secret_ref.as_deref(),
+            Some("platform:twitch:oauth:refresh")
+        );
+        assert_eq!(
+            secrets,
+            vec![
+                (
+                    "platform:twitch:oauth:access".to_string(),
+                    "access-token-value".to_string()
+                ),
+                (
+                    "platform:twitch:oauth:refresh".to_string(),
+                    "refresh-token-value".to_string()
+                )
+            ]
+        );
     }
 }
