@@ -253,6 +253,70 @@ export interface RtmpSettings {
   streamKey: string
 }
 
+// Multi-platform streaming (per-target) model. Replaces the single RtmpSettings
+// streaming config over phases M1-M4; today it is migrated alongside the legacy
+// fields and not yet consumed by session start.
+export type StreamPlatform = 'youtube' | 'twitch' | 'x' | 'custom'
+export type StreamUrlMode = 'server-and-key' | 'full-url'
+export type StreamAuthMode = 'manual-rtmp' | 'oauth'
+export type StreamTargetState =
+  | 'not-configured'
+  | 'ready'
+  | 'connecting'
+  | 'live'
+  | 'warning'
+  | 'failed'
+  | 'stopped'
+
+export interface StreamTargetStatus {
+  state: StreamTargetState
+  message?: string
+  redactedUrl?: string
+  lastError?: string
+  droppedFrames?: number
+  bitrateKbps?: number
+}
+
+export interface StreamTargetSettings {
+  id: string
+  platform: StreamPlatform
+  label: string
+  enabled: boolean
+  serverUrl: string
+  urlMode?: StreamUrlMode
+  // Transitional: the raw key lives here until the secret-storage slice (M1b)
+  // moves it into Keychain/safeStorage and replaces it with streamKeySecretRef.
+  streamKey: string
+  streamKeySecretRef?: string
+  streamKeyPresent: boolean
+  authMode: StreamAuthMode
+  accountId?: string
+  accountLabel?: string
+  status?: StreamTargetStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface StreamingSettings {
+  enabled: boolean
+  mode: 'single' | 'multi'
+  targets: StreamTargetSettings[]
+  selectedTargetId?: string
+  defaultOutputPreset: VideoPreset
+  defaultBitrateKbps: number
+  enabledTargetIds: string[]
+}
+
+export interface StreamSessionTargetHistory {
+  targetId: string
+  platform: StreamPlatform
+  label: string
+  attempted: boolean
+  skipped: boolean
+  statusTimeline: StreamTargetStatus[]
+  redactedUrl?: string
+}
+
 export interface OutputSettings {
   recordEnabled: boolean
   streamEnabled: boolean

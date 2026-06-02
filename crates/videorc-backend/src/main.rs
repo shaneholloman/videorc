@@ -11,6 +11,7 @@ mod scene;
 mod screen_capture;
 mod state;
 mod storage;
+mod streaming;
 
 use std::convert::Infallible;
 use std::io::Write;
