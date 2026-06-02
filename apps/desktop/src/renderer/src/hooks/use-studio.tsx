@@ -48,6 +48,8 @@ import type {
   SessionLogEntry,
   SessionSummary,
   StartSessionParams,
+  StreamMetadataDraft,
+  StreamMetadataValidation,
   StreamScreen,
   StreamHealth,
   StreamingSettings,
@@ -82,6 +84,8 @@ export type StudioContextValue = {
   screens: StreamScreen[]
   activeScreen: StreamScreen | null
   platformAccounts: PlatformAccount[]
+  streamMetadataDraft: StreamMetadataDraft | null
+  streamMetadataValidation: StreamMetadataValidation | null
   // preview + audio
   previewUrl: string | null
   previewLoading: boolean
@@ -101,6 +105,7 @@ export type StudioContextValue = {
   startRequestPending: boolean
   stopRequestPending: boolean
   screenImportPending: boolean
+  streamMetadataSavePending: boolean
   // settings + capture config
   settings: SettingsState
   setSettings: Dispatch<SetStateAction<SettingsState>>
@@ -112,6 +117,11 @@ export type StudioContextValue = {
   applyVideoPreset: (preset: VideoPreset) => void
   applyRtmpPreset: (preset: RtmpPreset) => void
   patchStreamingTarget: (targetId: string, patch: Partial<StreamTargetSettings>) => void
+  patchStreamMetadataDraft: (patch: Partial<StreamMetadataDraft>) => void
+  patchStreamTargetMetadataDraft: (
+    platform: StreamMetadataDraft['targetOverrides'][number]['platform'],
+    patch: Partial<StreamMetadataDraft['targetOverrides'][number]>
+  ) => void
   // notices
   lastError: string | null
   runtimeInfo: RuntimeInfo | null
@@ -119,6 +129,8 @@ export type StudioContextValue = {
   refreshBackend: () => Promise<void>
   refreshPlatformAccounts: () => Promise<void>
   disconnectPlatformAccount: (platform: PlatformAccount['platform']) => Promise<void>
+  refreshStreamMetadata: () => Promise<void>
+  saveStreamMetadataDraft: () => Promise<void>
   refreshScreens: () => Promise<void>
   importScreenImage: () => Promise<void>
   renameScreen: (screenId: string, name: string) => Promise<void>
@@ -223,6 +235,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [screens, setScreens] = useState<StreamScreen[]>([])
   const [activeScreen, setActiveScreen] = useState<StreamScreen | null>(null)
   const [platformAccounts, setPlatformAccounts] = useState<PlatformAccount[]>([])
+  const [streamMetadataDraft, setStreamMetadataDraft] = useState<StreamMetadataDraft | null>(null)
+  const [streamMetadataValidation, setStreamMetadataValidation] = useState<StreamMetadataValidation | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewLiveStatus, setPreviewLiveStatus] = useState<PreviewLiveStatus>({
@@ -242,6 +256,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [startRequestPending, setStartRequestPending] = useState(false)
   const [stopRequestPending, setStopRequestPending] = useState(false)
   const [screenImportPending, setScreenImportPending] = useState(false)
+  const [streamMetadataSavePending, setStreamMetadataSavePending] = useState(false)
   const [settings, setSettings] = useState<SettingsState>(() => loadJson(STORAGE_KEYS.settings, defaultSettings))
   const [captureConfig, setCaptureConfig] = useState<CaptureConfig>(loadCaptureConfig)
   const [lastError, setLastError] = useState<string | null>(null)
@@ -362,6 +377,27 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       reportError(error)
     }
   }, [client, refreshPlatformAccountsForClient, reportError])
+
+  const refreshStreamMetadataForClient = useCallback(async (activeClient: BackendClient | null) => {
+    if (!activeClient) {
+      setStreamMetadataDraft(null)
+      setStreamMetadataValidation(null)
+      return
+    }
+
+    const draft = await activeClient.request<StreamMetadataDraft>('streamTargets.metadata.get')
+    const validation = await activeClient.request<StreamMetadataValidation>('streamTargets.metadata.validate', draft)
+    setStreamMetadataDraft(draft)
+    setStreamMetadataValidation(validation)
+  }, [])
+
+  const refreshStreamMetadata = useCallback(async () => {
+    try {
+      await refreshStreamMetadataForClient(client)
+    } catch (error) {
+      reportError(error)
+    }
+  }, [client, refreshStreamMetadataForClient, reportError])
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings))
@@ -522,6 +558,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       nextClient.on('platformAccounts.changed', (payload) => {
         setPlatformAccounts(payload as PlatformAccount[])
       }),
+      nextClient.on('streamTargets.metadata.changed', (payload) => {
+        const draft = payload as StreamMetadataDraft
+        setStreamMetadataDraft(draft)
+        void nextClient
+          .request<StreamMetadataValidation>('streamTargets.metadata.validate', draft)
+          .then(setStreamMetadataValidation)
+      }),
       nextClient.on('platformAccounts.oauth.callback', (payload) => {
         const result = payload as { status?: string; message?: string }
         if (result.status === 'success') {
@@ -571,6 +614,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         }
         await refreshScreensForClient(nextClient)
         await refreshPlatformAccountsForClient(nextClient)
+        await refreshStreamMetadataForClient(nextClient)
         await refreshSessions(nextClient)
       })
       .catch((error: unknown) => {
@@ -592,6 +636,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     connection,
     refreshPlatformAccountsForClient,
     refreshScreensForClient,
+    refreshStreamMetadataForClient,
     refreshSessions,
     reportError,
     settings.ffmpegPath
@@ -655,7 +700,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         nextDiagnostics,
         nextScreens,
         nextActiveScreen,
-        nextPlatformAccounts
+        nextPlatformAccounts,
+        nextStreamMetadataDraft
       ] = await Promise.all([
         client.request<BackendHealth>('health.ping', { ffmpegPath: settings.ffmpegPath.trim() || undefined }),
         client.request<DeviceList>('devices.list', { ffmpegPath: settings.ffmpegPath.trim() || undefined }),
@@ -663,8 +709,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         client.request<DiagnosticStats>('diagnostics.stats'),
         client.request<StreamScreen[]>('screens.list'),
         client.request<StreamScreen | null>('screens.active'),
-        client.request<PlatformAccount[]>('platformAccounts.list')
+        client.request<PlatformAccount[]>('platformAccounts.list'),
+        client.request<StreamMetadataDraft>('streamTargets.metadata.get')
       ])
+      const nextStreamMetadataValidation = await client.request<StreamMetadataValidation>(
+        'streamTargets.metadata.validate',
+        nextStreamMetadataDraft
+      )
       setHealth(nextHealth)
       setDeviceList(nextDevices)
       setSessions(nextSessions)
@@ -672,6 +723,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setScreens(nextScreens)
       setActiveScreen(nextActiveScreen)
       setPlatformAccounts(nextPlatformAccounts)
+      setStreamMetadataDraft(nextStreamMetadataDraft)
+      setStreamMetadataValidation(nextStreamMetadataValidation)
       if (!sceneEditMode) {
         await reloadSceneFromCaptureConfig()
       }
@@ -1090,6 +1143,66 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     [client, refreshPlatformAccountsForClient, reportError, wsStatus]
   )
 
+  const patchStreamMetadataDraft = useCallback((patch: Partial<StreamMetadataDraft>) => {
+    setStreamMetadataDraft((current) => (current ? { ...current, ...patch } : current))
+    setStreamMetadataValidation(null)
+  }, [])
+
+  const patchStreamTargetMetadataDraft = useCallback(
+    (
+      platform: StreamMetadataDraft['targetOverrides'][number]['platform'],
+      patch: Partial<StreamMetadataDraft['targetOverrides'][number]>
+    ) => {
+      setStreamMetadataDraft((current) =>
+        current
+          ? {
+              ...current,
+              targetOverrides: current.targetOverrides.map((target) =>
+                target.platform === platform ? { ...target, ...patch } : target
+              )
+            }
+          : current
+      )
+      setStreamMetadataValidation(null)
+    },
+    []
+  )
+
+  const saveStreamMetadataDraft = useCallback(async () => {
+    if (!client || wsStatus !== 'connected') {
+      toast.error('Backend socket is not connected.')
+      return
+    }
+    if (!streamMetadataDraft) {
+      toast.error('Metadata draft is not loaded yet.')
+      return
+    }
+
+    try {
+      setLastError(null)
+      setStreamMetadataSavePending(true)
+      const validation = await client.request<StreamMetadataValidation>(
+        'streamTargets.metadata.validate',
+        streamMetadataDraft
+      )
+      setStreamMetadataValidation(validation)
+      const saved = await client.request<StreamMetadataDraft>(
+        'streamTargets.metadata.update',
+        streamMetadataDraft
+      )
+      setStreamMetadataDraft(saved)
+      if (validation.valid) {
+        toast.success('Saved stream metadata.')
+      } else {
+        toast.warning('Saved stream metadata with warnings.')
+      }
+    } catch (error) {
+      reportError(error)
+    } finally {
+      setStreamMetadataSavePending(false)
+    }
+  }, [client, reportError, streamMetadataDraft, wsStatus])
+
   useEffect(() => {
     if (!client || wsStatus !== 'connected' || isSessionActive || !health?.ffmpeg.available || !deviceList.devices.length) {
       return
@@ -1407,6 +1520,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     screens,
     activeScreen,
     platformAccounts,
+    streamMetadataDraft,
+    streamMetadataValidation,
     previewUrl,
     previewLoading,
     previewLiveStatus,
@@ -1424,6 +1539,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     startRequestPending,
     stopRequestPending,
     screenImportPending,
+    streamMetadataSavePending,
     settings,
     setSettings,
     captureConfig,
@@ -1433,11 +1549,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     applyVideoPreset,
     applyRtmpPreset,
     patchStreamingTarget,
+    patchStreamMetadataDraft,
+    patchStreamTargetMetadataDraft,
     lastError,
     runtimeInfo,
     refreshBackend,
     refreshPlatformAccounts,
     disconnectPlatformAccount,
+    refreshStreamMetadata,
+    saveStreamMetadataDraft,
     refreshScreens,
     importScreenImage,
     renameScreen,

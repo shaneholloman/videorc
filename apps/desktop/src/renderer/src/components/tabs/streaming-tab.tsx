@@ -1,9 +1,11 @@
 import {
   Broadcast,
   CheckCircle,
+  FloppyDisk,
   Gauge,
   LinkSimple,
   SignOut,
+  TextAa,
   TwitchLogo,
   WarningCircle,
   XLogo,
@@ -17,13 +19,23 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useStudio } from '@/hooks/use-studio'
 import type {
   PlatformAccount,
   StreamAuthMode,
+  StreamMetadataDraft,
+  StreamMetadataValidation,
   StreamPlatform,
+  StreamPrivacy,
   StreamTargetRuntime,
   StreamTargetSettings,
   StreamUrlMode
@@ -43,10 +55,16 @@ export function StreamingTab(): ReactElement {
   const {
     captureConfig,
     disconnectPlatformAccount,
+    patchStreamMetadataDraft,
+    patchStreamTargetMetadataDraft,
     patchStreamingTarget,
     platformAccounts,
+    saveStreamMetadataDraft,
     health,
     isSessionActive,
+    streamMetadataDraft,
+    streamMetadataSavePending,
+    streamMetadataValidation,
     streamTargets,
     stopSession
   } = useStudio()
@@ -110,13 +128,25 @@ export function StreamingTab(): ReactElement {
         ))}
       </div>
 
-      <StreamingReadiness
-        bitrateKbps={video.bitrateKbps}
-        ffmpegReady={Boolean(health?.ffmpeg.available)}
-        recordEnabled={captureConfig.recordEnabled}
-        targets={streaming.targets}
-        video={`${video.width}×${video.height} @ ${video.fps}`}
-      />
+      <div className="flex flex-col gap-4">
+        <MetadataEditor
+          disabled={isSessionActive}
+          draft={streamMetadataDraft}
+          pending={streamMetadataSavePending}
+          targets={streaming.targets}
+          validation={streamMetadataValidation}
+          onPatchDraft={patchStreamMetadataDraft}
+          onPatchTarget={patchStreamTargetMetadataDraft}
+          onSave={() => void saveStreamMetadataDraft()}
+        />
+        <StreamingReadiness
+          bitrateKbps={video.bitrateKbps}
+          ffmpegReady={Boolean(health?.ffmpeg.available)}
+          recordEnabled={captureConfig.recordEnabled}
+          targets={streaming.targets}
+          video={`${video.width}×${video.height} @ ${video.fps}`}
+        />
+      </div>
     </div>
   )
 }
@@ -376,6 +406,290 @@ function OAuthAccountPanel({
       </Button>
     </div>
   )
+}
+
+function MetadataEditor({
+  draft,
+  validation,
+  targets,
+  disabled,
+  pending,
+  onPatchDraft,
+  onPatchTarget,
+  onSave
+}: {
+  draft: StreamMetadataDraft | null
+  validation: StreamMetadataValidation | null
+  targets: StreamTargetSettings[]
+  disabled: boolean
+  pending: boolean
+  onPatchDraft: (patch: Partial<StreamMetadataDraft>) => void
+  onPatchTarget: (
+    platform: StreamMetadataDraft['targetOverrides'][number]['platform'],
+    patch: Partial<StreamMetadataDraft['targetOverrides'][number]>
+  ) => void
+  onSave: () => void
+}): ReactElement {
+  const nativeTargets = targets.filter((target) => target.platform !== 'custom')
+  const globalTitleIssue = metadataIssue(validation, 'title')
+
+  return (
+    <PanelSection
+      action={
+        <Button disabled={!draft || pending} size="sm" variant="secondary" onClick={onSave}>
+          <FloppyDisk data-icon="inline-start" weight="bold" />
+          {pending ? 'Saving' : 'Save'}
+        </Button>
+      }
+      icon={TextAa}
+      title="Broadcast metadata"
+    >
+      {!draft ? (
+        <p className="text-sm text-muted-foreground">Loading metadata draft.</p>
+      ) : (
+        <>
+          <Field>
+            <FieldLabel htmlFor="stream-title">Title</FieldLabel>
+            <Input
+              aria-invalid={Boolean(globalTitleIssue)}
+              disabled={disabled}
+              id="stream-title"
+              placeholder="Untitled livestream"
+              value={draft.title}
+              onChange={(event) => onPatchDraft({ title: event.target.value })}
+            />
+            {globalTitleIssue ? <FieldDescription>{globalTitleIssue.message}</FieldDescription> : null}
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="stream-description">Description</FieldLabel>
+            <textarea
+              className="min-h-24 w-full resize-y rounded-lg border border-transparent bg-input/50 px-3 py-2 text-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={disabled}
+              id="stream-description"
+              placeholder="Optional"
+              value={draft.description}
+              onChange={(event) => onPatchDraft({ description: event.target.value })}
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel>Default privacy</FieldLabel>
+            <Select
+              disabled={disabled}
+              value={draft.defaultPrivacy}
+              onValueChange={(value) => onPatchDraft({ defaultPrivacy: value as StreamPrivacy })}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="private">Private</SelectItem>
+                <SelectItem value="unlisted">Unlisted</SelectItem>
+                <SelectItem value="public">Public</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+
+          <div className="flex flex-col gap-4">
+            {draft.targetOverrides.map((override) => {
+              const target = nativeTargets.find((item) => item.platform === override.platform)
+              return (
+                <MetadataOverride
+                  disabled={disabled}
+                  draft={draft}
+                  key={override.platform}
+                  label={target?.label ?? platformLabel(override.platform)}
+                  override={override}
+                  validation={validation}
+                  onPatch={(patch) => onPatchTarget(override.platform, patch)}
+                />
+              )
+            })}
+          </div>
+
+          {validation && !validation.valid ? (
+            <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
+              {validation.issues.length} metadata warning{validation.issues.length === 1 ? '' : 's'} before Go Live.
+            </div>
+          ) : (
+            <Badge className="w-fit" variant="success">
+              Metadata ready
+            </Badge>
+          )}
+        </>
+      )}
+    </PanelSection>
+  )
+}
+
+function MetadataOverride({
+  override,
+  draft,
+  label,
+  disabled,
+  validation,
+  onPatch
+}: {
+  override: StreamMetadataDraft['targetOverrides'][number]
+  draft: StreamMetadataDraft
+  label: string
+  disabled: boolean
+  validation: StreamMetadataValidation | null
+  onPatch: (patch: Partial<StreamMetadataDraft['targetOverrides'][number]>) => void
+}): ReactElement {
+  const titleIssue = metadataIssue(validation, 'title', override.platform)
+  const fieldsDisabled = disabled || !override.customize
+  const twitch = override.platform === 'twitch'
+  const youtube = override.platform === 'youtube'
+  const x = override.platform === 'x'
+
+  return (
+    <div className="flex flex-col gap-3 border-t pt-4 first:border-t-0 first:pt-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate text-sm font-medium">{label}</span>
+          <span className="truncate text-xs text-muted-foreground">
+            {override.customize ? 'Custom metadata' : 'Inherits global metadata'}
+          </span>
+        </div>
+        <Switch
+          aria-label={`Customize ${label}`}
+          checked={override.customize}
+          disabled={disabled}
+          onCheckedChange={(customize) => onPatch({ customize })}
+        />
+      </div>
+
+      <Field>
+        <FieldLabel htmlFor={`${override.platform}-metadata-title`}>Title</FieldLabel>
+        <Input
+          aria-invalid={Boolean(titleIssue)}
+          disabled={fieldsDisabled}
+          id={`${override.platform}-metadata-title`}
+          placeholder={draft.title || 'Inherits global title'}
+          value={override.title}
+          onChange={(event) => onPatch({ title: event.target.value })}
+        />
+        {titleIssue ? <FieldDescription>{titleIssue.message}</FieldDescription> : null}
+      </Field>
+
+      <Field>
+        <FieldLabel htmlFor={`${override.platform}-metadata-description`}>Description</FieldLabel>
+        <textarea
+          className="min-h-20 w-full resize-y rounded-lg border border-transparent bg-input/50 px-3 py-2 text-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={fieldsDisabled || twitch}
+          id={`${override.platform}-metadata-description`}
+          placeholder={twitch ? 'Not supported by Twitch' : draft.description || 'Inherits global description'}
+          value={twitch ? '' : override.description}
+          onChange={(event) => onPatch({ description: event.target.value })}
+        />
+        {twitch ? <FieldDescription>Twitch supports title, category, and language.</FieldDescription> : null}
+      </Field>
+
+      {youtube ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field>
+            <FieldLabel>Privacy</FieldLabel>
+            <Select
+              disabled={fieldsDisabled}
+              value={override.privacy}
+              onValueChange={(value) => onPatch({ privacy: value as StreamPrivacy })}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="private">Private</SelectItem>
+                <SelectItem value="unlisted">Unlisted</SelectItem>
+                <SelectItem value="public">Public</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel>Made for kids</FieldLabel>
+            <ToggleGroup
+              className="w-full"
+              disabled={fieldsDisabled}
+              type="single"
+              value={override.youtubeMadeForKids ? 'yes' : 'no'}
+              variant="outline"
+              onValueChange={(value) => value && onPatch({ youtubeMadeForKids: value === 'yes' })}
+            >
+              <ToggleGroupItem value="no">No</ToggleGroupItem>
+              <ToggleGroupItem value="yes">Yes</ToggleGroupItem>
+            </ToggleGroup>
+          </Field>
+        </div>
+      ) : null}
+
+      {twitch ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="twitch-category">Category</FieldLabel>
+            <Input
+              disabled={fieldsDisabled}
+              id="twitch-category"
+              placeholder="Just Chatting"
+              value={override.twitchCategoryName ?? ''}
+              onChange={(event) => onPatch({ twitchCategoryName: event.target.value })}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="twitch-language">Language</FieldLabel>
+            <Input
+              disabled={fieldsDisabled}
+              id="twitch-language"
+              placeholder="en"
+              value={override.twitchLanguage ?? ''}
+              onChange={(event) => onPatch({ twitchLanguage: event.target.value })}
+            />
+          </Field>
+        </div>
+      ) : null}
+
+      {x ? (
+        <Field>
+          <FieldLabel>Visibility</FieldLabel>
+          <Select
+            disabled={fieldsDisabled}
+            value={override.xVisibility ?? 'public'}
+            onValueChange={(value) => onPatch({ xVisibility: value as StreamPrivacy })}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="public">Public</SelectItem>
+              <SelectItem value="unlisted">Unlisted</SelectItem>
+              <SelectItem value="private">Private</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
+    </div>
+  )
+}
+
+function metadataIssue(
+  validation: StreamMetadataValidation | null,
+  field: string,
+  platform?: StreamPlatform
+): StreamMetadataValidation['issues'][number] | undefined {
+  return validation?.issues.find((issue) => issue.field === field && issue.platform === platform)
+}
+
+function platformLabel(platform: StreamPlatform): string {
+  switch (platform) {
+    case 'youtube':
+      return 'YouTube'
+    case 'twitch':
+      return 'Twitch'
+    case 'x':
+      return 'X'
+    default:
+      return 'Custom'
+  }
 }
 
 function StreamingReadiness({
