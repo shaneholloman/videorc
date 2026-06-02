@@ -4,6 +4,7 @@ mod camera_capture;
 mod devices;
 mod diagnostics;
 mod ffmpeg;
+mod live_pipeline;
 mod live_render;
 mod live_scene;
 mod pipeline;
@@ -546,17 +547,15 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                         }
                         ServerResponse::ok(command.id, screen)
                     }
-                    Err(error) => ServerResponse::error(
-                        command.id,
-                        "screen-import-failed",
-                        error.to_string(),
-                    ),
+                    Err(error) => {
+                        ServerResponse::error(command.id, "screen-import-failed", error.to_string())
+                    }
                 },
                 Err(error) => {
                     ServerResponse::error(command.id, "invalid-params", error.to_string())
                 }
             }
-        },
+        }
         "session.remux_mp4" => {
             match serde_json::from_value::<protocol::RemuxSessionParams>(command.params) {
                 Ok(params) => match remux_session(state.clone(), params).await {
