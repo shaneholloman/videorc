@@ -40,6 +40,7 @@ import type {
   HealthEvent,
   LayoutSettings,
   PreviewLiveStatus,
+  PlatformAccount,
   RecordingStatus,
   RuntimeInfo,
   RtmpPreset,
@@ -80,6 +81,7 @@ export type StudioContextValue = {
   sessions: SessionSummary[]
   screens: StreamScreen[]
   activeScreen: StreamScreen | null
+  platformAccounts: PlatformAccount[]
   // preview + audio
   previewUrl: string | null
   previewLoading: boolean
@@ -115,6 +117,8 @@ export type StudioContextValue = {
   runtimeInfo: RuntimeInfo | null
   // actions
   refreshBackend: () => Promise<void>
+  refreshPlatformAccounts: () => Promise<void>
+  disconnectPlatformAccount: (platform: PlatformAccount['platform']) => Promise<void>
   refreshScreens: () => Promise<void>
   importScreenImage: () => Promise<void>
   renameScreen: (screenId: string, name: string) => Promise<void>
@@ -218,6 +222,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [screens, setScreens] = useState<StreamScreen[]>([])
   const [activeScreen, setActiveScreen] = useState<StreamScreen | null>(null)
+  const [platformAccounts, setPlatformAccounts] = useState<PlatformAccount[]>([])
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewLiveStatus, setPreviewLiveStatus] = useState<PreviewLiveStatus>({
@@ -340,6 +345,23 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       reportError(error)
     }
   }, [client, refreshScreensForClient, reportError])
+
+  const refreshPlatformAccountsForClient = useCallback(async (activeClient: BackendClient | null) => {
+    if (!activeClient) {
+      setPlatformAccounts([])
+      return
+    }
+
+    setPlatformAccounts(await activeClient.request<PlatformAccount[]>('platformAccounts.list'))
+  }, [])
+
+  const refreshPlatformAccounts = useCallback(async () => {
+    try {
+      await refreshPlatformAccountsForClient(client)
+    } catch (error) {
+      reportError(error)
+    }
+  }, [client, refreshPlatformAccountsForClient, reportError])
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings))
@@ -497,6 +519,21 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       nextClient.on('screens.active.changed', (payload) => {
         setActiveScreen(payload as StreamScreen | null)
       }),
+      nextClient.on('platformAccounts.changed', (payload) => {
+        setPlatformAccounts(payload as PlatformAccount[])
+      }),
+      nextClient.on('platformAccounts.oauth.callback', (payload) => {
+        const result = payload as { status?: string; message?: string }
+        if (result.status === 'success') {
+          toast.success('OAuth callback received.', {
+            description: 'Provider token exchange is the next OAuth slice.'
+          })
+        } else {
+          toast.error('OAuth callback failed.', {
+            description: result.message ?? result.status ?? 'Connection could not be completed.'
+          })
+        }
+      }),
       nextClient.on('ai.artifacts.changed', () => {
         void refreshSessions(nextClient)
       }),
@@ -533,6 +570,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           applyScene(nextScene)
         }
         await refreshScreensForClient(nextClient)
+        await refreshPlatformAccountsForClient(nextClient)
         await refreshSessions(nextClient)
       })
       .catch((error: unknown) => {
@@ -552,6 +590,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     appendLog,
     applyPreviewLiveStatus,
     connection,
+    refreshPlatformAccountsForClient,
     refreshScreensForClient,
     refreshSessions,
     reportError,
@@ -609,13 +648,22 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
     try {
       setLastError(null)
-      const [nextHealth, nextDevices, nextSessions, nextDiagnostics, nextScreens, nextActiveScreen] = await Promise.all([
+      const [
+        nextHealth,
+        nextDevices,
+        nextSessions,
+        nextDiagnostics,
+        nextScreens,
+        nextActiveScreen,
+        nextPlatformAccounts
+      ] = await Promise.all([
         client.request<BackendHealth>('health.ping', { ffmpegPath: settings.ffmpegPath.trim() || undefined }),
         client.request<DeviceList>('devices.list', { ffmpegPath: settings.ffmpegPath.trim() || undefined }),
         client.request<SessionSummary[]>('sessions.list'),
         client.request<DiagnosticStats>('diagnostics.stats'),
         client.request<StreamScreen[]>('screens.list'),
-        client.request<StreamScreen | null>('screens.active')
+        client.request<StreamScreen | null>('screens.active'),
+        client.request<PlatformAccount[]>('platformAccounts.list')
       ])
       setHealth(nextHealth)
       setDeviceList(nextDevices)
@@ -623,6 +671,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setDiagnosticStats(nextDiagnostics)
       setScreens(nextScreens)
       setActiveScreen(nextActiveScreen)
+      setPlatformAccounts(nextPlatformAccounts)
       if (!sceneEditMode) {
         await reloadSceneFromCaptureConfig()
       }
@@ -1014,6 +1063,33 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [client, reportError])
 
+  const disconnectPlatformAccount = useCallback(
+    async (platform: PlatformAccount['platform']) => {
+      if (!client || wsStatus !== 'connected') {
+        toast.error('Backend socket is not connected.')
+        return
+      }
+
+      try {
+        setLastError(null)
+        await client.request<PlatformAccount | null>('platformAccounts.disconnect', { platform })
+        await refreshPlatformAccountsForClient(client)
+        setCaptureConfig((current) => {
+          const targets = current.streaming.targets.map((target) =>
+            target.platform === platform
+              ? { ...target, accountId: undefined, accountLabel: undefined, streamKeySecretRef: undefined }
+              : target
+          )
+          return bridgeStreamingToLegacy({ ...current, streaming: { ...current.streaming, targets } })
+        })
+        toast.success('Disconnected account.')
+      } catch (error) {
+        reportError(error)
+      }
+    },
+    [client, refreshPlatformAccountsForClient, reportError, wsStatus]
+  )
+
   useEffect(() => {
     if (!client || wsStatus !== 'connected' || isSessionActive || !health?.ffmpeg.available || !deviceList.devices.length) {
       return
@@ -1330,6 +1406,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     sessions,
     screens,
     activeScreen,
+    platformAccounts,
     previewUrl,
     previewLoading,
     previewLiveStatus,
@@ -1359,6 +1436,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     lastError,
     runtimeInfo,
     refreshBackend,
+    refreshPlatformAccounts,
+    disconnectPlatformAccount,
     refreshScreens,
     importScreenImage,
     renameScreen,

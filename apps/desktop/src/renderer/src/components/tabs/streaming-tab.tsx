@@ -2,6 +2,8 @@ import {
   Broadcast,
   CheckCircle,
   Gauge,
+  LinkSimple,
+  SignOut,
   TwitchLogo,
   WarningCircle,
   XLogo,
@@ -19,6 +21,8 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useStudio } from '@/hooks/use-studio'
 import type {
+  PlatformAccount,
+  StreamAuthMode,
   StreamPlatform,
   StreamTargetRuntime,
   StreamTargetSettings,
@@ -36,8 +40,16 @@ const PLATFORM_ICON: Record<StreamPlatform, Icon> = {
 }
 
 export function StreamingTab(): ReactElement {
-  const { captureConfig, patchStreamingTarget, health, isSessionActive, streamTargets, stopSession } =
-    useStudio()
+  const {
+    captureConfig,
+    disconnectPlatformAccount,
+    patchStreamingTarget,
+    platformAccounts,
+    health,
+    isSessionActive,
+    streamTargets,
+    stopSession
+  } = useStudio()
   const streaming = captureConfig.streaming
   const { video } = captureConfig
 
@@ -48,6 +60,14 @@ export function StreamingTab(): ReactElement {
     }
     return map
   }, [streamTargets])
+
+  const accountByPlatform = useMemo(() => {
+    const map = new Map<StreamPlatform, PlatformAccount>()
+    for (const account of platformAccounts) {
+      map.set(account.platform, account)
+    }
+    return map
+  }, [platformAccounts])
 
   // A destination is "in trouble" while live if its leg dropped (failed) or it was
   // skipped this session for incomplete credentials (not-configured).
@@ -79,10 +99,12 @@ export function StreamingTab(): ReactElement {
         ) : null}
         {streaming.targets.map((target) => (
           <DestinationCard
+            account={accountByPlatform.get(target.platform)}
             disabled={isSessionActive}
             key={target.id}
             runtime={runtimeById.get(target.id)}
             target={target}
+            onDisconnect={disconnectPlatformAccount}
             onPatch={patchStreamingTarget}
           />
         ))}
@@ -172,17 +194,23 @@ function runtimeBadge(runtime: StreamTargetRuntime): { tone: BadgeTone; label: s
 
 function DestinationCard({
   target,
+  account,
   disabled,
   runtime,
+  onDisconnect,
   onPatch
 }: {
   target: StreamTargetSettings
+  account?: PlatformAccount
   disabled: boolean
   runtime?: StreamTargetRuntime
+  onDisconnect: (platform: StreamPlatform) => void
   onPatch: (targetId: string, patch: Partial<StreamTargetSettings>) => void
 }): ReactElement {
   const ready = isStreamTargetReady(target)
   const fullUrl = target.urlMode === 'full-url'
+  const nativeDestination = target.platform !== 'custom'
+  const oauthMode = nativeDestination && target.authMode === 'oauth'
   // While a session is live the runtime status (on air / stopped / skipped) takes
   // over the badge; otherwise it reflects the saved-credential readiness.
   const badge = runtime ? runtimeBadge(runtime) : configuredBadge(target.enabled, ready)
@@ -226,41 +254,127 @@ function DestinationCard({
         </Field>
       ) : null}
 
-      <Field>
-        <FieldLabel htmlFor={`${target.id}-server`}>{fullUrl ? 'Full RTMP URL' : 'RTMP server'}</FieldLabel>
-        <Input
-          disabled={disabled}
-          id={`${target.id}-server`}
-          placeholder={fullUrl ? 'rtmp://server/app/key' : 'rtmp://server/app'}
-          value={target.serverUrl}
-          onChange={(event) => onPatch(target.id, { serverUrl: event.target.value })}
-        />
-      </Field>
-
-      {!fullUrl ? (
+      {nativeDestination ? (
         <Field>
-          <FieldLabel htmlFor={`${target.id}-key`}>Stream key</FieldLabel>
-          <Input
-            autoComplete="off"
+          <FieldLabel>Auth mode</FieldLabel>
+          <ToggleGroup
+            className="w-full"
             disabled={disabled}
-            id={`${target.id}-key`}
-            placeholder="paste your stream key"
-            type="password"
-            value={target.streamKey}
-            onChange={(event) => onPatch(target.id, { streamKey: event.target.value })}
-          />
-          <FieldDescription>
-            Saved locally per platform — switching platforms never overwrites another key.
-          </FieldDescription>
+            type="single"
+            value={target.authMode}
+            variant="outline"
+            onValueChange={(value) => value && onPatch(target.id, { authMode: value as StreamAuthMode })}
+          >
+            <ToggleGroupItem value="oauth">OAuth</ToggleGroupItem>
+            <ToggleGroupItem value="manual-rtmp">Manual RTMP</ToggleGroupItem>
+          </ToggleGroup>
         </Field>
       ) : null}
 
-      {target.platform === 'x' ? (
+      {oauthMode ? (
+        <OAuthAccountPanel
+          account={account}
+          disabled={disabled}
+          platform={target.platform}
+          onDisconnect={onDisconnect}
+        />
+      ) : (
+        <>
+          <Field>
+            <FieldLabel htmlFor={`${target.id}-server`}>{fullUrl ? 'Full RTMP URL' : 'RTMP server'}</FieldLabel>
+            <Input
+              disabled={disabled}
+              id={`${target.id}-server`}
+              placeholder={fullUrl ? 'rtmp://server/app/key' : 'rtmp://server/app'}
+              value={target.serverUrl}
+              onChange={(event) => onPatch(target.id, { serverUrl: event.target.value })}
+            />
+          </Field>
+
+          {!fullUrl ? (
+            <Field>
+              <FieldLabel htmlFor={`${target.id}-key`}>Stream key</FieldLabel>
+              <Input
+                autoComplete="off"
+                disabled={disabled}
+                id={`${target.id}-key`}
+                placeholder="paste your stream key"
+                type="password"
+                value={target.streamKey}
+                onChange={(event) => onPatch(target.id, { streamKey: event.target.value })}
+              />
+              <FieldDescription>
+                Saved locally per platform — switching platforms never overwrites another key.
+              </FieldDescription>
+            </Field>
+          ) : null}
+        </>
+      )}
+
+      {target.platform === 'x' && !oauthMode ? (
         <p className="text-xs text-muted-foreground">
           X needs Media Studio Producer access; copy the RTMP URL and key from a Producer source.
         </p>
       ) : null}
     </PanelSection>
+  )
+}
+
+function OAuthAccountPanel({
+  account,
+  disabled,
+  platform,
+  onDisconnect
+}: {
+  account?: PlatformAccount
+  disabled: boolean
+  platform: StreamPlatform
+  onDisconnect: (platform: StreamPlatform) => void
+}): ReactElement {
+  if (!account) {
+    return (
+      <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm font-medium">No account connected</span>
+          <Button disabled size="sm" variant="secondary">
+            <LinkSimple data-icon="inline-start" weight="bold" />
+            Connect
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">Provider setup pending.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="truncate text-sm font-medium">{account.accountLabel}</span>
+          <span className="truncate text-xs text-muted-foreground">
+            {account.accountHandle ?? account.accountId}
+          </span>
+        </div>
+        <Badge variant={account.status === 'connected' ? 'success' : 'warning'}>
+          {account.status === 'connected' ? 'Connected' : 'Reconnect'}
+        </Badge>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {account.scopes.length ? (
+          account.scopes.map((scope) => (
+            <Badge key={scope} variant="outline">
+              {scope}
+            </Badge>
+          ))
+        ) : (
+          <span className="text-xs text-muted-foreground">No granted scopes reported.</span>
+        )}
+      </div>
+      <Button disabled={disabled} size="sm" variant="outline" onClick={() => onDisconnect(platform)}>
+        <SignOut data-icon="inline-start" weight="bold" />
+        Disconnect
+      </Button>
+    </div>
   )
 }
 

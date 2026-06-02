@@ -321,7 +321,7 @@ function normalizeStreamTarget(
   const serverUrl =
     typeof saved.serverUrl === 'string' && saved.serverUrl.trim() ? saved.serverUrl : base.serverUrl
   return {
-    // id, platform, authMode, status keep the built-in identity from base.
+    // id, platform, status keep the built-in identity from base.
     ...base,
     label: typeof saved.label === 'string' && saved.label ? saved.label : base.label,
     enabled: typeof saved.enabled === 'boolean' ? saved.enabled : false,
@@ -330,6 +330,9 @@ function normalizeStreamTarget(
     streamKey,
     streamKeySecretRef: typeof saved.streamKeySecretRef === 'string' ? saved.streamKeySecretRef : undefined,
     streamKeyPresent: streamKey.length > 0,
+    authMode: saved.authMode === 'oauth' ? 'oauth' : 'manual-rtmp',
+    accountId: typeof saved.accountId === 'string' ? saved.accountId : undefined,
+    accountLabel: typeof saved.accountLabel === 'string' ? saved.accountLabel : undefined,
     createdAt: typeof saved.createdAt === 'string' ? saved.createdAt : base.createdAt,
     updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : base.updatedAt
   }
