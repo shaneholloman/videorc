@@ -237,7 +237,7 @@ export function PreviewStage({
             ) : (
               <VideoCamera className="size-10 text-muted-foreground/50" weight="duotone" />
             )}
-            {!showUnavailable ? (
+            {!showUnavailable && layout.layoutPreset === 'screen-camera' ? (
               <div
                 className={cn(
                   'border-2 border-primary/60 bg-primary/10',

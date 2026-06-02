@@ -26,8 +26,8 @@ import { cn } from '@/lib/utils'
 
 const LAYOUT_PRESETS = [
   { id: 'screen-camera', label: 'Screen + camera', enabled: true },
-  { id: 'screen-only', label: 'Screen only', enabled: false },
-  { id: 'camera-only', label: 'Camera only', enabled: false },
+  { id: 'screen-only', label: 'Screen only', enabled: true },
+  { id: 'camera-only', label: 'Camera only', enabled: true },
   { id: 'side-by-side', label: 'Side-by-side', enabled: false }
 ] as const
 
@@ -57,34 +57,47 @@ export function LayoutTab(): ReactElement {
   } = useStudio()
   const layout = captureConfig.layout
   const selectedSource = scene?.sources.find((source) => source.id === selectedSceneSourceId)
+  const hasCamera = Boolean(captureConfig.sources.cameraId)
+  const isScreenOnly = layout.layoutPreset === 'screen-only'
+  const isCameraOnly = layout.layoutPreset === 'camera-only'
+  const showOverlayControls = layout.layoutPreset === 'screen-camera'
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
       <div className="flex flex-col gap-4">
         <PanelSection
-          description="Only the screen/window + camera corner layout is enabled in v1."
+          description="Pick how the screen and camera are composed."
           icon={Layout}
           title="Layout preset"
         >
           <div className="flex flex-wrap gap-2">
-            {LAYOUT_PRESETS.map((preset) => (
-              <button
-                aria-pressed={layout.layoutPreset === preset.id}
-                className="cursor-pointer rounded-xl border bg-card p-3 text-left text-sm font-medium transition-colors aria-pressed:border-primary aria-pressed:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={!preset.enabled}
-                key={preset.id}
-                type="button"
-                onClick={() => patchLayout({ layoutPreset: preset.id })}
-              >
-                <div>{preset.label}</div>
-                {!preset.enabled ? (
-                  <Badge className="mt-1.5" variant="outline">
-                    Soon
-                  </Badge>
-                ) : null}
-              </button>
-            ))}
+            {LAYOUT_PRESETS.map((preset) => {
+              const needsCamera = preset.id === 'camera-only'
+              const disabled = !preset.enabled || isSessionActive || (needsCamera && !hasCamera)
+              return (
+                <button
+                  aria-pressed={layout.layoutPreset === preset.id}
+                  className="cursor-pointer rounded-xl border bg-card p-3 text-left text-sm font-medium transition-colors aria-pressed:border-primary aria-pressed:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={disabled}
+                  key={preset.id}
+                  type="button"
+                  onClick={() => applyCameraPreset({ layoutPreset: preset.id })}
+                >
+                  <div>{preset.label}</div>
+                  {!preset.enabled ? (
+                    <Badge className="mt-1.5" variant="outline">
+                      Soon
+                    </Badge>
+                  ) : null}
+                </button>
+              )
+            })}
           </div>
+          {isSessionActive ? (
+            <p className="text-xs text-muted-foreground">Stop the session to change the layout preset.</p>
+          ) : !hasCamera ? (
+            <p className="text-xs text-muted-foreground">Select a camera in Studio to enable Camera only.</p>
+          ) : null}
         </PanelSection>
 
         <PanelSection icon={FrameCorners} title="Preview">
@@ -102,7 +115,7 @@ export function LayoutTab(): ReactElement {
             selectedSceneSourceId={selectedSceneSourceId}
             onSelectSceneSource={setSelectedSceneSourceId}
             onCameraDragCommit={commitCameraTransform}
-            dragDisabled={isSessionActive}
+            dragDisabled={isSessionActive || layout.layoutPreset !== 'screen-camera'}
           />
         </PanelSection>
 
@@ -118,7 +131,7 @@ export function LayoutTab(): ReactElement {
             <p className="text-xs text-muted-foreground">
               Layout editing is paused while a recording or streaming session is active.
             </p>
-          ) : sceneEditMode ? (
+          ) : sceneEditMode && showOverlayControls ? (
             <p className="text-xs text-muted-foreground">
               Drag the camera in the preview to reposition it. Arrow keys nudge, R resets.
             </p>
@@ -207,108 +220,129 @@ export function LayoutTab(): ReactElement {
       </div>
 
       <PanelSection icon={SlidersHorizontal} title="Camera framing">
-        <Field>
-          <FieldLabel>Corner</FieldLabel>
-          <ToggleGroup
-            className="w-full"
-            type="single"
-            value={layout.cameraTransformMode === 'custom' ? '' : layout.cameraCorner}
-            variant="outline"
-            onValueChange={(value) => value && applyCameraPreset({ cameraCorner: value as CameraCorner })}
-          >
-            <ToggleGroupItem value="top-left">Top L</ToggleGroupItem>
-            <ToggleGroupItem value="top-right">Top R</ToggleGroupItem>
-            <ToggleGroupItem value="bottom-left">Bot L</ToggleGroupItem>
-            <ToggleGroupItem value="bottom-right">Bot R</ToggleGroupItem>
-          </ToggleGroup>
-        </Field>
+        {isScreenOnly ? (
+          <p className="text-sm text-muted-foreground">
+            Screen only records just the screen or window — no camera is captured, so there is nothing to frame.
+          </p>
+        ) : (
+          <>
+            {isCameraOnly ? (
+              <p className="text-sm text-muted-foreground">
+                Camera only fills the frame as a rectangle. Corner, size, and shape do not apply — use fit, mirror,
+                zoom, and pan.
+              </p>
+            ) : null}
 
-        <div className="grid grid-cols-2 gap-4">
-          <Field>
-            <FieldLabel>Size</FieldLabel>
-            <ToggleGroup
-              type="single"
-              value={layout.cameraSize}
-              variant="outline"
-              onValueChange={(value) => value && applyCameraPreset({ cameraSize: value as CameraSize })}
-            >
-              <ToggleGroupItem value="small">S</ToggleGroupItem>
-              <ToggleGroupItem value="medium">M</ToggleGroupItem>
-              <ToggleGroupItem value="large">L</ToggleGroupItem>
-            </ToggleGroup>
-          </Field>
-          <Field>
-            <FieldLabel>Shape</FieldLabel>
-            <ToggleGroup
-              type="single"
-              value={layout.cameraShape}
-              variant="outline"
-              onValueChange={(value) => value && patchLayout({ cameraShape: value as CameraShape })}
-            >
-              <ToggleGroupItem value="rectangle">Rect</ToggleGroupItem>
-              <ToggleGroupItem value="circle">Circle</ToggleGroupItem>
-            </ToggleGroup>
-          </Field>
-        </div>
+            {showOverlayControls ? (
+              <>
+                <Field>
+                  <FieldLabel>Corner</FieldLabel>
+                  <ToggleGroup
+                    className="w-full"
+                    type="single"
+                    value={layout.cameraTransformMode === 'custom' ? '' : layout.cameraCorner}
+                    variant="outline"
+                    onValueChange={(value) => value && applyCameraPreset({ cameraCorner: value as CameraCorner })}
+                  >
+                    <ToggleGroupItem value="top-left">Top L</ToggleGroupItem>
+                    <ToggleGroupItem value="top-right">Top R</ToggleGroupItem>
+                    <ToggleGroupItem value="bottom-left">Bot L</ToggleGroupItem>
+                    <ToggleGroupItem value="bottom-right">Bot R</ToggleGroupItem>
+                  </ToggleGroup>
+                </Field>
 
-        <Field>
-          <FieldLabel>Fit</FieldLabel>
-          <ToggleGroup
-            type="single"
-            value={layout.cameraFit}
-            variant="outline"
-            onValueChange={(value) => value && patchLayout({ cameraFit: value as CameraFit })}
-          >
-            <ToggleGroupItem value="fill">Fill crop</ToggleGroupItem>
-            <ToggleGroupItem value="fit">Fit frame</ToggleGroupItem>
-          </ToggleGroup>
-        </Field>
+                <div className="grid grid-cols-2 gap-4">
+                  <Field>
+                    <FieldLabel>Size</FieldLabel>
+                    <ToggleGroup
+                      type="single"
+                      value={layout.cameraSize}
+                      variant="outline"
+                      onValueChange={(value) => value && applyCameraPreset({ cameraSize: value as CameraSize })}
+                    >
+                      <ToggleGroupItem value="small">S</ToggleGroupItem>
+                      <ToggleGroupItem value="medium">M</ToggleGroupItem>
+                      <ToggleGroupItem value="large">L</ToggleGroupItem>
+                    </ToggleGroup>
+                  </Field>
+                  <Field>
+                    <FieldLabel>Shape</FieldLabel>
+                    <ToggleGroup
+                      type="single"
+                      value={layout.cameraShape}
+                      variant="outline"
+                      onValueChange={(value) => value && patchLayout({ cameraShape: value as CameraShape })}
+                    >
+                      <ToggleGroupItem value="rectangle">Rect</ToggleGroupItem>
+                      <ToggleGroupItem value="circle">Circle</ToggleGroupItem>
+                    </ToggleGroup>
+                  </Field>
+                </div>
+              </>
+            ) : null}
 
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="camera-mirror">Mirror camera</FieldLabel>
-          </FieldContent>
-          <Switch
-            checked={layout.cameraMirror}
-            id="camera-mirror"
-            onCheckedChange={(checked) => patchLayout({ cameraMirror: checked })}
-          />
-        </Field>
+            <Field>
+              <FieldLabel>Fit</FieldLabel>
+              <ToggleGroup
+                type="single"
+                value={layout.cameraFit}
+                variant="outline"
+                onValueChange={(value) => value && patchLayout({ cameraFit: value as CameraFit })}
+              >
+                <ToggleGroupItem value="fill">Fill crop</ToggleGroupItem>
+                <ToggleGroupItem value="fit">Fit frame</ToggleGroupItem>
+              </ToggleGroup>
+            </Field>
 
-        <SliderField
-          label="Margin"
-          max={96}
-          min={8}
-          step={1}
-          suffix="px"
-          value={layout.cameraMargin}
-          onChange={(cameraMargin) => patchLayout({ cameraMargin })}
-        />
-        <SliderField
-          label="Zoom"
-          max={200}
-          min={100}
-          step={5}
-          suffix="%"
-          value={layout.cameraZoom}
-          onChange={(cameraZoom) => patchLayout({ cameraZoom })}
-        />
-        <SliderField
-          label="Pan X"
-          max={100}
-          min={-100}
-          step={5}
-          value={layout.cameraOffsetX}
-          onChange={(cameraOffsetX) => patchLayout({ cameraOffsetX })}
-        />
-        <SliderField
-          label="Pan Y"
-          max={100}
-          min={-100}
-          step={5}
-          value={layout.cameraOffsetY}
-          onChange={(cameraOffsetY) => patchLayout({ cameraOffsetY })}
-        />
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="camera-mirror">Mirror camera</FieldLabel>
+              </FieldContent>
+              <Switch
+                checked={layout.cameraMirror}
+                id="camera-mirror"
+                onCheckedChange={(checked) => patchLayout({ cameraMirror: checked })}
+              />
+            </Field>
+
+            {showOverlayControls ? (
+              <SliderField
+                label="Margin"
+                max={96}
+                min={8}
+                step={1}
+                suffix="px"
+                value={layout.cameraMargin}
+                onChange={(cameraMargin) => patchLayout({ cameraMargin })}
+              />
+            ) : null}
+            <SliderField
+              label="Zoom"
+              max={200}
+              min={100}
+              step={5}
+              suffix="%"
+              value={layout.cameraZoom}
+              onChange={(cameraZoom) => patchLayout({ cameraZoom })}
+            />
+            <SliderField
+              label="Pan X"
+              max={100}
+              min={-100}
+              step={5}
+              value={layout.cameraOffsetX}
+              onChange={(cameraOffsetX) => patchLayout({ cameraOffsetX })}
+            />
+            <SliderField
+              label="Pan Y"
+              max={100}
+              min={-100}
+              step={5}
+              value={layout.cameraOffsetY}
+              onChange={(cameraOffsetY) => patchLayout({ cameraOffsetY })}
+            />
+          </>
+        )}
       </PanelSection>
     </div>
   )

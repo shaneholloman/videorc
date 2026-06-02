@@ -24,10 +24,10 @@ use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
-    CameraTransformMode, HealthLevel, PreviewLiveParams, PreviewLiveSource, PreviewLiveState,
-    PreviewLiveStatus, PreviewSnapshot, PreviewSnapshotParams, RecordingPipelineStage,
-    RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset, RtmpSettings,
-    StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
+    CameraTransformMode, HealthLevel, LayoutPreset, PreviewLiveParams, PreviewLiveSource,
+    PreviewLiveState, PreviewLiveStatus, PreviewSnapshot, PreviewSnapshotParams,
+    RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset,
+    RtmpSettings, StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
 };
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::state::AppState;
@@ -223,15 +223,26 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
         prepare_native_audio_source(&state, &session_id, &mut capture, &params).await;
     let audio_tracks = capture_audio_tracks(&capture);
     if matches!(capture.video, VideoInput::TestPattern) {
-        emit_health_event(
-            &state,
-            Some(&session_id),
-            HealthLevel::Warn,
-            "screen-capture-fallback",
-            "Using FFmpeg test pattern because a macOS screen/window source was not available.",
-        )?;
+        let (code, message) = if matches!(params.layout.layout_preset, LayoutPreset::CameraOnly) {
+            (
+                "camera-capture-fallback",
+                "Using FFmpeg test pattern because the selected camera was not available for camera-only capture.",
+            )
+        } else {
+            (
+                "screen-capture-fallback",
+                "Using FFmpeg test pattern because a macOS screen/window source was not available.",
+            )
+        };
+        emit_health_event(&state, Some(&session_id), HealthLevel::Warn, code, message)?;
     }
-    if params.sources.camera_id.is_some() && capture.camera_index.is_none() {
+    // Only the screen+camera overlay path can lose the camera; camera-only handles
+    // an unavailable camera via the test-pattern fallback above and screen-only
+    // deliberately omits the camera.
+    if matches!(params.layout.layout_preset, LayoutPreset::ScreenCamera)
+        && params.sources.camera_id.is_some()
+        && capture.camera_index.is_none()
+    {
         emit_health_event(
             &state,
             Some(&session_id),
@@ -1537,6 +1548,7 @@ struct CaptureInputs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum VideoInput {
     MacScreen { index: usize },
+    MacCamera { index: usize },
     TestPattern,
 }
 
@@ -1564,16 +1576,6 @@ struct PreparedNativeAudioSource {
 }
 
 async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) -> CaptureInputs {
-    let selected_screen = (!params.sources.test_pattern)
-        .then(|| {
-            params
-                .sources
-                .screen_id
-                .as_deref()
-                .and_then(parse_avfoundation_id)
-        })
-        .flatten();
-    let camera_index = resolve_camera_input(ffmpeg_path, params.sources.camera_id.as_deref()).await;
     let microphone = params.sources.microphone_id.as_deref().and_then(|id| {
         parse_coreaudio_microphone_id(id)
             .map(|device_id| MicrophoneInput::CoreAudio {
@@ -1584,6 +1586,37 @@ async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) 
                 parse_avfoundation_id(id).map(|index| MicrophoneInput::AvFoundation { index })
             })
     });
+
+    // Camera-only makes the camera the primary input. No screen is enumerated or
+    // captured, so macOS Screen Recording permission is never requested.
+    if matches!(params.layout.layout_preset, LayoutPreset::CameraOnly) {
+        let camera_index =
+            resolve_camera_input(ffmpeg_path, params.sources.camera_id.as_deref()).await;
+        return CaptureInputs {
+            video: camera_index
+                .map(|index| VideoInput::MacCamera { index })
+                .unwrap_or(VideoInput::TestPattern),
+            camera_index: None,
+            microphone,
+        };
+    }
+
+    let selected_screen = (!params.sources.test_pattern)
+        .then(|| {
+            params
+                .sources
+                .screen_id
+                .as_deref()
+                .and_then(parse_avfoundation_id)
+        })
+        .flatten();
+    // Screen-only intentionally skips the camera overlay so no camera permission
+    // is requested.
+    let camera_index = if matches!(params.layout.layout_preset, LayoutPreset::ScreenOnly) {
+        None
+    } else {
+        resolve_camera_input(ffmpeg_path, params.sources.camera_id.as_deref()).await
+    };
     let detected_screen = if cfg!(target_os = "macos") && !params.sources.test_pattern {
         selected_screen.or(find_avfoundation_screen_index(ffmpeg_path).await)
     } else {
@@ -1837,8 +1870,10 @@ fn append_input_args(
     let mut audio_inputs = Vec::new();
 
     match capture.video {
-        VideoInput::MacScreen { index } => {
-            append_avfoundation_video_input(args, index, video.fps, true);
+        VideoInput::MacScreen { index } | VideoInput::MacCamera { index } => {
+            // The cursor is only meaningful for screen capture, never the camera.
+            let capture_cursor = matches!(capture.video, VideoInput::MacScreen { .. });
+            append_avfoundation_video_input(args, index, video.fps, capture_cursor);
             next_input_index += 1;
 
             if include_audio
@@ -2140,6 +2175,10 @@ fn video_filter(
     params: &StartSessionParams,
     preview: bool,
 ) -> String {
+    if matches!(params.layout.layout_preset, LayoutPreset::CameraOnly) {
+        return camera_only_video_filter(params, preview);
+    }
+
     let base_scale = if preview {
         "scale=w=960:h=-2".to_string()
     } else {
@@ -2163,11 +2202,45 @@ fn video_filter(
     )
 }
 
+fn camera_only_video_filter(params: &StartSessionParams, preview: bool) -> String {
+    let video = &params.output.video;
+    let prefix = if params.layout.camera_mirror {
+        "[0:v]setpts=PTS-STARTPTS,hflip,"
+    } else {
+        "[0:v]setpts=PTS-STARTPTS,"
+    };
+    // The camera fills the whole canvas as a rectangle, reusing the same
+    // fit/fill/zoom/pan treatment as the overlay box so preview and output match.
+    let frame = camera_frame_filter(video.width, video.height, &params.layout);
+    let final_scale = if preview { ",scale=w=960:h=-2" } else { "" };
+    format!("{prefix}{frame},fps={}{final_scale}[v]", video.fps)
+}
+
 fn output_scale_filter(video: &VideoSettings) -> String {
     format!(
         "scale=w={}:h={}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2",
         video.width, video.height, video.width, video.height
     )
+}
+
+fn camera_frame_filter(
+    width: u32,
+    height: u32,
+    layout: &crate::protocol::LayoutSettings,
+) -> String {
+    let zoom = layout.camera_zoom.clamp(100, 200);
+    let scaled_width = width * zoom / 100;
+    let scaled_height = height * zoom / 100;
+    match layout.camera_fit {
+        CameraFit::Fit if zoom == 100 => format!(
+            "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        ),
+        CameraFit::Fit | CameraFit::Fill => format!(
+            "scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase,crop=w={width}:h={height}:x='{}':y='{}'",
+            crop_offset_expr(layout.camera_offset_x, "iw", "ow"),
+            crop_offset_expr(layout.camera_offset_y, "ih", "oh")
+        ),
+    }
 }
 
 fn camera_chain_filter(camera_input_index: usize, params: &StartSessionParams) -> String {
@@ -2176,24 +2249,12 @@ fn camera_chain_filter(camera_input_index: usize, params: &StartSessionParams) -
         &params.layout.camera_shape,
         &params.output.video,
     );
-    let zoom = params.layout.camera_zoom.clamp(100, 200);
-    let scaled_width = width * zoom / 100;
-    let scaled_height = height * zoom / 100;
     let prefix = if params.layout.camera_mirror {
         format!("[{camera_input_index}:v]setpts=PTS-STARTPTS,hflip,")
     } else {
         format!("[{camera_input_index}:v]setpts=PTS-STARTPTS,")
     };
-    let frame = match params.layout.camera_fit {
-        CameraFit::Fit if zoom == 100 => format!(
-            "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
-        ),
-        CameraFit::Fit | CameraFit::Fill => format!(
-            "scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase,crop=w={width}:h={height}:x='{}':y='{}'",
-            crop_offset_expr(params.layout.camera_offset_x, "iw", "ow"),
-            crop_offset_expr(params.layout.camera_offset_y, "ih", "oh")
-        ),
-    };
+    let frame = camera_frame_filter(width, height, &params.layout);
 
     match params.layout.camera_shape {
         CameraShape::Rectangle => format!("{prefix}{frame}[cam]"),
@@ -2668,6 +2729,65 @@ mod tests {
         let (x, y) = camera_overlay_position(&params.layout, &params.output.video);
         assert_eq!(x, "W*0.25000");
         assert_eq!(y, "H*0.50000");
+    }
+
+    #[test]
+    fn camera_only_filter_fills_canvas_without_overlay() {
+        let mut params = base_params(true, false);
+        params.layout.layout_preset = LayoutPreset::CameraOnly;
+        params.layout.camera_mirror = true;
+
+        let filter = video_filter(None, &params, false);
+
+        assert!(filter.starts_with("[0:v]setpts=PTS-STARTPTS,hflip,"));
+        assert!(
+            filter.contains("crop=w=2560:h=1440"),
+            "expected full-canvas crop: {filter}"
+        );
+        assert!(filter.ends_with("[v]"));
+        assert!(!filter.contains("overlay"));
+        assert!(!filter.contains("[base]"));
+    }
+
+    #[test]
+    fn camera_only_opens_camera_as_primary_input() {
+        let params = base_params(true, false);
+        let mut args = Vec::new();
+        let layout = append_input_args(
+            &mut args,
+            &CaptureInputs {
+                video: VideoInput::MacCamera { index: 0 },
+                camera_index: None,
+                microphone: None,
+            },
+            true,
+            &params.output.video,
+        );
+
+        assert!(layout.camera_input_index.is_none());
+        assert_eq!(ffmpeg_inputs(&args), vec!["0:none"]);
+        assert!(!args.iter().any(|arg| arg == "-capture_cursor"));
+    }
+
+    #[tokio::test]
+    async fn camera_only_resolves_camera_as_video_input() {
+        let mut params = base_params(true, false);
+        params.layout.layout_preset = LayoutPreset::CameraOnly;
+
+        let capture = resolve_capture_inputs("ffmpeg", &params).await;
+
+        assert_eq!(capture.video, VideoInput::MacCamera { index: 0 });
+        assert!(capture.camera_index.is_none());
+    }
+
+    #[tokio::test]
+    async fn screen_only_skips_camera_even_when_selected() {
+        let mut params = base_params(true, false);
+        params.layout.layout_preset = LayoutPreset::ScreenOnly;
+
+        let capture = resolve_capture_inputs("ffmpeg", &params).await;
+
+        assert!(capture.camera_index.is_none());
     }
 
     fn ffmpeg_inputs(args: &[String]) -> Vec<&str> {

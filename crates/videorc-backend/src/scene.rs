@@ -1,5 +1,5 @@
 use crate::protocol::{
-    CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransformMode, Scene,
+    CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransformMode, LayoutPreset, Scene,
     SceneConfigParams, SceneOutput, SceneOutputKind, SceneSource, SceneSourceKind,
     SceneSourceOrderParams, SceneSourceParams, SceneSourceVisibilityParams, SceneTransform,
     SceneTransformPatch, SceneTransformUpdateParams, SourceSelection,
@@ -56,14 +56,34 @@ pub fn scene_from_capture_config(params: SceneConfigParams) -> Scene {
         ],
     };
 
-    scene.sources.push(base_source(&params.sources));
-    if let Some(camera_id) = params.sources.camera_id.clone() {
-        scene.sources.push(camera_source(
-            camera_id,
-            &params.layout,
-            output_width,
-            output_height,
-        ));
+    match params.layout.layout_preset {
+        LayoutPreset::CameraOnly => {
+            // The camera is the full-frame source: no screen base, no overlay.
+            if let Some(camera_id) = params.sources.camera_id.clone() {
+                let mut camera =
+                    camera_source(camera_id, &params.layout, output_width, output_height);
+                camera.transform = full_frame_transform();
+                camera.default_transform = full_frame_transform();
+                scene.sources.push(camera);
+            } else {
+                scene.sources.push(base_source(&params.sources));
+            }
+        }
+        LayoutPreset::ScreenOnly => {
+            // Screen-only never composites the camera.
+            scene.sources.push(base_source(&params.sources));
+        }
+        _ => {
+            scene.sources.push(base_source(&params.sources));
+            if let Some(camera_id) = params.sources.camera_id.clone() {
+                scene.sources.push(camera_source(
+                    camera_id,
+                    &params.layout,
+                    output_width,
+                    output_height,
+                ));
+            }
+        }
     }
 
     scene
@@ -461,6 +481,37 @@ mod tests {
         assert!(camera.default_transform.x > 0.6);
         assert!(camera.default_transform.y > 0.6);
         assert_ne!(camera.default_transform.x, camera.transform.x);
+    }
+
+    #[test]
+    fn screen_only_scene_has_no_camera_source() {
+        let mut params = base_params();
+        params.layout.layout_preset = LayoutPreset::ScreenOnly;
+
+        let scene = scene_from_capture_config(params);
+
+        assert!(
+            scene
+                .sources
+                .iter()
+                .all(|source| source.kind != SceneSourceKind::Camera)
+        );
+    }
+
+    #[test]
+    fn camera_only_scene_is_full_frame_camera() {
+        let mut params = base_params();
+        params.layout.layout_preset = LayoutPreset::CameraOnly;
+
+        let scene = scene_from_capture_config(params);
+
+        assert_eq!(scene.sources.len(), 1);
+        let camera = &scene.sources[0];
+        assert_eq!(camera.kind, SceneSourceKind::Camera);
+        assert!((camera.transform.width - 1.0).abs() < 1e-9);
+        assert!((camera.transform.height - 1.0).abs() < 1e-9);
+        assert!(camera.transform.x.abs() < 1e-9);
+        assert!(camera.transform.y.abs() < 1e-9);
     }
 
     #[test]
