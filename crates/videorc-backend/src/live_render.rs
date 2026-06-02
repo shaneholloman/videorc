@@ -246,11 +246,26 @@ impl LiveRenderConsumer {
         decision
     }
 
-    /// Renders the next frame from the current committed scene.
+    /// Renders the next frame from the current committed scene using fake solid-colour
+    /// sources (the LS2 deterministic loop).
     pub fn render_next(&mut self) -> RenderedFrame {
         self.frames_rendered += 1;
         composite(
             self.scene.sources(),
+            self.scene.revision(),
+            self.width,
+            self.height,
+        )
+    }
+
+    /// Renders the next frame from the current committed scene using real per-source
+    /// pixel frames (one captured frame per source id). This is what the LS3b session
+    /// pipeline drives: capture → `render_frames` → encode.
+    pub fn render_frames(&mut self, frames: &HashMap<String, SourceFrame>) -> RenderedFrame {
+        self.frames_rendered += 1;
+        composite_frames(
+            self.scene.sources(),
+            frames,
             self.scene.revision(),
             self.width,
             self.height,
@@ -272,6 +287,114 @@ impl LiveRenderConsumer {
     pub fn timeline(&self) -> &[LiveEditEvent] {
         self.scene.events()
     }
+}
+
+/// A capture input that feeds one source's frames into the render pipeline as
+/// rawvideo. The LS3b session spawns one FFmpeg capture per source.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureInput {
+    /// A synthetic lavfi source (tests / placeholders), e.g. `testsrc2=size=...`.
+    Lavfi(String),
+    /// A macOS avfoundation video device index (real screen/camera).
+    AvFoundationVideo(usize),
+}
+
+/// FFmpeg args to capture one source as rgb24 rawvideo at the canvas size, written to
+/// stdout. Every capture emits same-size frames so the render loop can read a fixed
+/// number of bytes per source per tick and composite them.
+pub fn capture_ffmpeg_args(
+    input: &CaptureInput,
+    width: usize,
+    height: usize,
+    fps: u32,
+) -> Vec<String> {
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+    ];
+    match input {
+        CaptureInput::Lavfi(pattern) => {
+            args.extend([
+                "-f".to_string(),
+                "lavfi".to_string(),
+                "-i".to_string(),
+                pattern.clone(),
+            ]);
+        }
+        CaptureInput::AvFoundationVideo(index) => {
+            args.extend([
+                "-f".to_string(),
+                "avfoundation".to_string(),
+                "-framerate".to_string(),
+                fps.to_string(),
+                "-i".to_string(),
+                format!("{index}:none"),
+            ]);
+        }
+    }
+    args.extend([
+        "-vf".to_string(),
+        format!("scale={width}:{height},format=rgb24"),
+        "-r".to_string(),
+        fps.to_string(),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "rgb24".to_string(),
+        "pipe:1".to_string(),
+    ]);
+    args
+}
+
+/// FFmpeg args to encode composited rgb24 frames (read from stdin) to a local MKV with
+/// the streaming-safe encode: 2-second keyframes + global headers (the same settings
+/// proven for the tee fan-out). LS3b-2 adds the `tee` to stream targets on top of this
+/// single-output base.
+pub fn render_encode_ffmpeg_args(
+    width: usize,
+    height: usize,
+    fps: u32,
+    bitrate_kbps: u32,
+    output_path: &str,
+) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "rgb24".to_string(),
+        "-s".to_string(),
+        format!("{width}x{height}"),
+        "-r".to_string(),
+        fps.to_string(),
+        "-i".to_string(),
+        "pipe:0".to_string(),
+        "-c:v".to_string(),
+        "h264_videotoolbox".to_string(),
+        "-realtime".to_string(),
+        "1".to_string(),
+        "-prio_speed".to_string(),
+        "1".to_string(),
+        "-b:v".to_string(),
+        format!("{bitrate_kbps}k"),
+        "-maxrate".to_string(),
+        format!("{bitrate_kbps}k"),
+        "-bufsize".to_string(),
+        format!("{}k", bitrate_kbps.saturating_mul(2)),
+        "-g".to_string(),
+        fps.saturating_mul(2).to_string(),
+        "-force_key_frames".to_string(),
+        "expr:gte(t,n_forced*2)".to_string(),
+        "-flags".to_string(),
+        "+global_header".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        output_path.to_string(),
+    ]
 }
 
 #[cfg(test)]
@@ -792,6 +915,182 @@ mod tests {
         assert_eq!(
             produced, total_frames,
             "every captured frame was composited"
+        );
+        let size = std::fs::metadata(&output).expect("recording exists").len();
+        assert!(size > 0, "the recording should contain encoded video");
+    }
+
+    #[test]
+    fn render_frames_reflects_a_live_edit() {
+        let mut consumer = LiveRenderConsumer::start(screen_camera_scene(), 32, 32);
+        let frames = frames_map(&[
+            ("source:base", SourceFrame::solid(2, 2, [200, 0, 0])),
+            ("source:camera", SourceFrame::solid(2, 2, [0, 200, 0])),
+        ]);
+        let before = consumer.render_frames(&frames);
+        assert_eq!(before.sample(0.75, 0.75), [0, 200, 0]);
+
+        consumer.submit(
+            &transform_mutation("m", 0, 0.0, 0.0),
+            &MutationContext::default(),
+            "t",
+        );
+        let after = consumer.render_frames(&frames);
+        assert_eq!(
+            after.sample(0.1, 0.1),
+            [0, 200, 0],
+            "camera moved to top-left"
+        );
+        assert_eq!(
+            after.sample(0.75, 0.75),
+            [200, 0, 0],
+            "base shows where camera was"
+        );
+    }
+
+    #[test]
+    fn capture_args_cover_lavfi_and_avfoundation() {
+        let lavfi = capture_ffmpeg_args(
+            &CaptureInput::Lavfi("testsrc2=size=320x180:rate=30".to_string()),
+            320,
+            180,
+            30,
+        );
+        assert!(lavfi.windows(2).any(|w| w[0] == "-f" && w[1] == "lavfi"));
+        assert!(lavfi.contains(&"testsrc2=size=320x180:rate=30".to_string()));
+        assert!(lavfi.contains(&"rawvideo".to_string()) && lavfi.contains(&"pipe:1".to_string()));
+        assert!(lavfi.iter().any(|arg| arg.contains("scale=320:180")));
+
+        let av = capture_ffmpeg_args(&CaptureInput::AvFoundationVideo(0), 1920, 1080, 30);
+        assert!(
+            av.windows(2)
+                .any(|w| w[0] == "-f" && w[1] == "avfoundation")
+        );
+        assert!(av.contains(&"0:none".to_string()));
+    }
+
+    #[test]
+    fn render_encode_args_use_rawvideo_input_and_keyframes() {
+        let args = render_encode_ffmpeg_args(1920, 1080, 30, 6000, "/tmp/out.mkv");
+        assert!(args.windows(2).any(|w| w[0] == "-f" && w[1] == "rawvideo"));
+        assert!(args.contains(&"pipe:0".to_string()));
+        assert!(args.contains(&"h264_videotoolbox".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "-g" && w[1] == "60"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-force_key_frames" && w[1] == "expr:gte(t,n_forced*2)")
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-flags" && w[1] == "+global_header")
+        );
+        assert_eq!(args.last().unwrap(), "/tmp/out.mkv");
+    }
+
+    /// The realistic LS3b case: two real capture inputs (screen + camera) composited
+    /// live, using the actual `capture_ffmpeg_args` / `render_encode_ffmpeg_args`
+    /// builders. Reads both captures in lockstep, composites via `render_frames` with a
+    /// camera move mid-recording, and encodes. Ignored by default (spawns three ffmpeg
+    /// processes + writes a file); run with `--ignored`.
+    #[test]
+    #[ignore = "spawns three ffmpeg processes and writes a file; run with --ignored"]
+    fn two_source_capture_composite_encode_pipeline() {
+        use std::io::{Read, Write};
+        use std::process::{Command, Stdio};
+
+        let (width, height, fps) = (320usize, 180usize, 30u32);
+        let total_frames = 60usize;
+        let frame_bytes = width * height * 3;
+
+        let mut screen_cap = Command::new("ffmpeg")
+            .args(capture_ffmpeg_args(
+                &CaptureInput::Lavfi("testsrc2=size=320x180:rate=30".to_string()),
+                width,
+                height,
+                fps,
+            ))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("screen capture ffmpeg should be on PATH for this ignored test");
+        let mut camera_cap = Command::new("ffmpeg")
+            .args(capture_ffmpeg_args(
+                &CaptureInput::Lavfi("color=c=green:size=320x180:rate=30".to_string()),
+                width,
+                height,
+                fps,
+            ))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("camera capture ffmpeg");
+        let mut screen_out = screen_cap.stdout.take().expect("screen stdout");
+        let mut camera_out = camera_cap.stdout.take().expect("camera stdout");
+
+        let output = std::env::temp_dir().join("videorc-ls3b-two-source.mkv");
+        let _ = std::fs::remove_file(&output);
+        let mut encode = Command::new("ffmpeg")
+            .args(render_encode_ffmpeg_args(
+                width,
+                height,
+                fps,
+                4000,
+                output.to_str().expect("output path"),
+            ))
+            .stdin(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("encode ffmpeg");
+        let mut encode_in = encode.stdin.take().expect("encode stdin");
+
+        let mut consumer = LiveRenderConsumer::start(screen_camera_scene(), width, height);
+        let mut screen_buf = vec![0u8; frame_bytes];
+        let mut camera_buf = vec![0u8; frame_bytes];
+        let mut produced = 0usize;
+
+        for index in 0..total_frames {
+            if screen_out.read_exact(&mut screen_buf).is_err()
+                || camera_out.read_exact(&mut camera_buf).is_err()
+            {
+                break;
+            }
+            if index == total_frames / 2 {
+                consumer.submit(
+                    &transform_mutation("move", 0, 0.0, 0.0),
+                    &MutationContext::default(),
+                    "mid",
+                );
+            }
+            let frames = frames_map(&[
+                (
+                    "source:base",
+                    SourceFrame::from_rgb24(width, height, &screen_buf),
+                ),
+                (
+                    "source:camera",
+                    SourceFrame::from_rgb24(width, height, &camera_buf),
+                ),
+            ]);
+            let composed = consumer.render_frames(&frames);
+            if encode_in.write_all(&composed.rgb_bytes()).is_err() {
+                break;
+            }
+            produced += 1;
+        }
+        drop(encode_in);
+        let _ = screen_cap.kill();
+        let _ = camera_cap.kill();
+        let _ = screen_cap.wait();
+        let _ = camera_cap.wait();
+        let status = encode.wait().expect("encode wait");
+
+        assert!(
+            status.success(),
+            "the encoder should finalize the recording"
+        );
+        assert_eq!(
+            produced, total_frames,
+            "every paired capture frame was composited"
         );
         let size = std::fs::metadata(&output).expect("recording exists").len();
         assert!(size > 0, "the recording should contain encoded video");
