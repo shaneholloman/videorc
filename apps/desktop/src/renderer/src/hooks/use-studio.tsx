@@ -1434,6 +1434,76 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     [client]
   )
 
+  const completePreparedPlatformBroadcasts = useCallback(
+    async (streamingForCleanup: StreamingSettings = captureConfig.streaming) => {
+      if (!client) {
+        return
+      }
+
+      const youtubeTargets = streamingForCleanup.targets.filter(
+        (target) =>
+          target.enabled &&
+          target.authMode === 'oauth' &&
+          target.platform === 'youtube' &&
+          Boolean(target.platformBroadcastId)
+      )
+      for (const target of youtubeTargets) {
+        const broadcastId = target.platformBroadcastId
+        if (!broadcastId) {
+          continue
+        }
+        try {
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedTarget(current.streaming, target.id, {
+                status: {
+                  state: 'connecting',
+                  message: 'Completing YouTube broadcast.'
+                }
+              })
+            })
+          )
+          const result = await client.request<YouTubeBroadcastTransitionResult>('streamTargets.youtube.transition', {
+            accountId: target.accountId,
+            broadcastId,
+            status: 'complete'
+          })
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedTarget(current.streaming, target.id, {
+                status: {
+                  state: 'stopped',
+                  message: result.lifecycleStatus
+                    ? `YouTube broadcast ended (${result.lifecycleStatus}).`
+                    : 'YouTube broadcast ended.'
+                }
+              })
+            })
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedTarget(current.streaming, target.id, {
+                status: {
+                  state: 'warning',
+                  message: `YouTube cleanup needs review: ${message}`
+                }
+              })
+            })
+          )
+          toast.warning(`Could not complete ${target.label} on YouTube.`, {
+            description: message
+          })
+        }
+      }
+    },
+    [captureConfig.streaming, client]
+  )
+
   const runStartSession = useCallback(async (streamingOverride?: StreamingSettings) => {
     if (!client || startBlockedReason) {
       if (startBlockedReason && !isSessionActive) {
@@ -1442,12 +1512,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       return
     }
 
+    let streamingForStart: StreamingSettings | null = null
     try {
       setLastError(null)
       setStreamHealth(null)
       setStreamTargets([])
       setStartRequestPending(true)
-      const streamingForStart = streamingOverride ?? captureConfig.streaming
+      streamingForStart = streamingOverride ?? captureConfig.streaming
       const lifecycleRunId = platformLifecycleRun.current + 1
       platformLifecycleRun.current = lifecycleRunId
       const enabledOauthTargets = streamingForStart.targets.filter(
@@ -1480,6 +1551,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       await refreshSessions(client)
       await activatePreparedYouTubeBroadcasts(streamingForStart, lifecycleRunId)
     } catch (error) {
+      if (streamingOverride && streamingForStart) {
+        await completePreparedPlatformBroadcasts(streamingForStart)
+      }
       reportError(error)
       setRecording((current) =>
         current.state === 'starting' && !current.sessionId
@@ -1491,8 +1565,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [
     activatePreparedYouTubeBroadcasts,
-    captureConfig.streaming.targets,
+    captureConfig.streaming,
     client,
+    completePreparedPlatformBroadcasts,
     isSessionActive,
     refreshSessions,
     reportError,
@@ -1651,69 +1726,6 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     startRequestPending,
     streamMetadataDraft
   ])
-
-  const completePreparedPlatformBroadcasts = useCallback(async () => {
-    if (!client) {
-      return
-    }
-
-    const youtubeTargets = captureConfig.streaming.targets.filter(
-      (target) =>
-        target.enabled &&
-        target.authMode === 'oauth' &&
-        target.platform === 'youtube' &&
-        Boolean(target.platformBroadcastId)
-    )
-    for (const target of youtubeTargets) {
-      try {
-        setCaptureConfig((current) =>
-          bridgeStreamingToLegacy({
-            ...current,
-            streaming: patchPreparedTarget(current.streaming, target.id, {
-              status: {
-                state: 'connecting',
-                message: 'Completing YouTube broadcast.'
-              }
-            })
-          })
-        )
-        const result = await client.request<YouTubeBroadcastTransitionResult>('streamTargets.youtube.transition', {
-          accountId: target.accountId,
-          broadcastId: target.platformBroadcastId,
-          status: 'complete'
-        })
-        setCaptureConfig((current) =>
-          bridgeStreamingToLegacy({
-            ...current,
-            streaming: patchPreparedTarget(current.streaming, target.id, {
-              status: {
-                state: 'stopped',
-                message: result.lifecycleStatus
-                  ? `YouTube broadcast ended (${result.lifecycleStatus}).`
-                  : 'YouTube broadcast ended.'
-              }
-            })
-          })
-        )
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        setCaptureConfig((current) =>
-          bridgeStreamingToLegacy({
-            ...current,
-            streaming: patchPreparedTarget(current.streaming, target.id, {
-              status: {
-                state: 'warning',
-                message: `YouTube cleanup needs review: ${message}`
-              }
-            })
-          })
-        )
-        toast.warning(`Could not complete ${target.label} on YouTube.`, {
-          description: message
-        })
-      }
-    }
-  }, [captureConfig.streaming.targets, client])
 
   const stopSession = useCallback(async () => {
     if (!client || stopRequestPending) {
