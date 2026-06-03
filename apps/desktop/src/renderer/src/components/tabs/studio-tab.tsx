@@ -87,11 +87,13 @@ export function StudioTab(): ReactElement {
     clearActiveScreen,
     goLiveConfirmationOpen,
     goLiveConfirmationPending,
+    goLivePartialSetup,
     goLivePreflight,
     streamMetadataDraft,
     patchStreamMetadataDraft,
     cancelGoLiveConfirmation,
-    confirmGoLive
+    confirmGoLive,
+    continueGoLiveWithReadyDestinations
   } = studio
 
   const active = recording.state === 'recording' || recording.state === 'streaming'
@@ -109,8 +111,10 @@ export function StudioTab(): ReactElement {
         open={goLiveConfirmationOpen}
         pending={goLiveConfirmationPending || startRequestPending}
         preflight={goLivePreflight}
+        partialSetup={goLivePartialSetup}
         onCancel={cancelGoLiveConfirmation}
         onConfirm={() => void confirmGoLive()}
+        onContinuePartial={() => void continueGoLiveWithReadyDestinations()}
         onPatchDraft={patchStreamMetadataDraft}
       />
 
@@ -279,19 +283,23 @@ export function StudioTab(): ReactElement {
 function GoLiveConfirmationDialog({
   open,
   pending,
+  partialSetup,
   preflight,
   draft,
   onPatchDraft,
   onCancel,
-  onConfirm
+  onConfirm,
+  onContinuePartial
 }: {
   open: boolean
   pending: boolean
+  partialSetup: ReturnType<typeof useStudio>['goLivePartialSetup']
   preflight: ReturnType<typeof useStudio>['goLivePreflight']
   draft: ReturnType<typeof useStudio>['streamMetadataDraft']
   onPatchDraft: ReturnType<typeof useStudio>['patchStreamMetadataDraft']
   onCancel: () => void
   onConfirm: () => void
+  onContinuePartial: () => void
 }): ReactElement {
   const errorCount = preflight?.issues.filter((issue) => issue.severity === 'error').length ?? 0
 
@@ -367,6 +375,25 @@ function GoLiveConfirmationDialog({
                 </ul>
               </div>
             ) : null}
+
+            {partialSetup ? (
+              <div className="flex flex-col gap-2 rounded-md border border-warning/35 bg-warning/10 p-3">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <WarningCircle className="size-4 text-warning" weight="fill" />
+                  Some destinations failed setup
+                </div>
+                <ul className="grid gap-1.5 text-sm text-muted-foreground">
+                  {partialSetup.failures.map((failure) => (
+                    <li key={failure.targetId}>
+                      {platformLabel(failure.platform)}: {failure.label} - {failure.message}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-muted-foreground">
+                  Ready: {partialSetup.readyLabels.join(', ')}
+                </p>
+              </div>
+            ) : null}
           </div>
         </ScrollArea>
 
@@ -374,10 +401,17 @@ function GoLiveConfirmationDialog({
           <Button disabled={pending} variant="outline" onClick={onCancel}>
             Cancel
           </Button>
-          <Button disabled={pending || !preflight} onClick={onConfirm}>
-            <Broadcast data-icon="inline-start" weight="fill" />
-            {pending ? 'Checking…' : 'Confirm Go Live'}
-          </Button>
+          {partialSetup ? (
+            <Button disabled={pending} onClick={onContinuePartial}>
+              <Broadcast data-icon="inline-start" weight="fill" />
+              {pending ? 'Starting…' : 'Continue With Ready'}
+            </Button>
+          ) : (
+            <Button disabled={pending || !preflight} onClick={onConfirm}>
+              <Broadcast data-icon="inline-start" weight="fill" />
+              {pending ? 'Checking…' : 'Confirm Go Live'}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

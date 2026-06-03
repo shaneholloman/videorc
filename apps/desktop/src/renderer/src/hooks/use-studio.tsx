@@ -97,6 +97,7 @@ export type StudioContextValue = {
   goLivePreflight: GoLivePreflight | null
   goLiveConfirmationOpen: boolean
   goLiveConfirmationPending: boolean
+  goLivePartialSetup: GoLivePartialSetup | null
   // preview + audio
   previewUrl: string | null
   previewLoading: boolean
@@ -146,6 +147,7 @@ export type StudioContextValue = {
   saveStreamMetadataDraft: () => Promise<void>
   cancelGoLiveConfirmation: () => void
   confirmGoLive: () => Promise<void>
+  continueGoLiveWithReadyDestinations: () => Promise<void>
   refreshScreens: () => Promise<void>
   importScreenImage: () => Promise<void>
   renameScreen: (screenId: string, name: string) => Promise<void>
@@ -184,6 +186,19 @@ export type StudioContextValue = {
   elapsed: string
   meterLevel: number
   canSampleAudio: boolean
+}
+
+export type GoLiveSetupFailure = {
+  targetId: string
+  platform: StreamTargetSettings['platform']
+  label: string
+  message: string
+}
+
+export type GoLivePartialSetup = {
+  streaming: StreamingSettings
+  failures: GoLiveSetupFailure[]
+  readyLabels: string[]
 }
 
 const StudioContext = createContext<StudioContextValue | null>(null)
@@ -256,6 +271,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [goLivePreflight, setGoLivePreflight] = useState<GoLivePreflight | null>(null)
   const [goLiveConfirmationOpen, setGoLiveConfirmationOpen] = useState(false)
   const [goLiveConfirmationPending, setGoLiveConfirmationPending] = useState(false)
+  const [goLivePartialSetup, setGoLivePartialSetup] = useState<GoLivePartialSetup | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewLiveStatus, setPreviewLiveStatus] = useState<PreviewLiveStatus>({
@@ -1576,58 +1592,80 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     validatePlatformAccountsForClient
   ])
 
-  const prepareOauthTargetsForGoLive = useCallback(async (): Promise<StreamingSettings> => {
+  const prepareOauthTargetsForGoLive = useCallback(async (): Promise<GoLivePartialSetup> => {
     if (!client) {
       throw new Error('Backend socket is not connected.')
     }
 
     let nextStreaming = captureConfig.streaming
+    const failures: GoLiveSetupFailure[] = []
     for (const target of captureConfig.streaming.targets.filter(
       (target) => target.enabled && target.authMode === 'oauth'
     )) {
-      if (target.platform === 'youtube') {
-        const prepared = await client.request<PreparedYouTubeBroadcast>('streamTargets.youtube.prepare', {
-          accountId: target.accountId,
-          video: captureConfig.video
+      try {
+        if (target.platform === 'youtube') {
+          const prepared = await client.request<PreparedYouTubeBroadcast>('streamTargets.youtube.prepare', {
+            accountId: target.accountId,
+            video: captureConfig.video
+          })
+          nextStreaming = patchPreparedTarget(nextStreaming, target.id, {
+            accountId: prepared.accountId,
+            accountLabel: prepared.accountLabel,
+            serverUrl: prepared.serverUrl,
+            streamKeySecretRef: prepared.streamKeySecretRef,
+            streamKeyPresent: true,
+            platformBroadcastId: prepared.broadcastId,
+            platformStreamId: prepared.streamId,
+            status: {
+              state: 'ready',
+              message: 'YouTube broadcast prepared.'
+            }
+          })
+        } else if (target.platform === 'twitch') {
+          const prepared = await client.request<PreparedTwitchBroadcast>('streamTargets.twitch.prepare', {
+            accountId: target.accountId
+          })
+          nextStreaming = patchPreparedTarget(nextStreaming, target.id, {
+            accountId: prepared.accountId,
+            accountLabel: prepared.accountLabel,
+            serverUrl: prepared.serverUrl,
+            streamKeySecretRef: prepared.streamKeySecretRef,
+            streamKeyPresent: true,
+            platformBroadcastId: undefined,
+            platformStreamId: undefined,
+            status: {
+              state: 'ready',
+              message: 'Twitch channel prepared.'
+            }
+          })
+        } else if (target.platform === 'x') {
+          await client.request('streamTargets.x.prepare', { accountId: target.accountId })
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        failures.push({
+          targetId: target.id,
+          platform: target.platform,
+          label: target.label,
+          message
         })
         nextStreaming = patchPreparedTarget(nextStreaming, target.id, {
-          accountId: prepared.accountId,
-          accountLabel: prepared.accountLabel,
-          serverUrl: prepared.serverUrl,
-          streamKeySecretRef: prepared.streamKeySecretRef,
-          streamKeyPresent: true,
-          platformBroadcastId: prepared.broadcastId,
-          platformStreamId: prepared.streamId,
+          enabled: false,
           status: {
-            state: 'ready',
-            message: 'YouTube broadcast prepared.'
+            state: 'failed',
+            message
           }
         })
-      } else if (target.platform === 'twitch') {
-        const prepared = await client.request<PreparedTwitchBroadcast>('streamTargets.twitch.prepare', {
-          accountId: target.accountId
-        })
-        nextStreaming = patchPreparedTarget(nextStreaming, target.id, {
-          accountId: prepared.accountId,
-          accountLabel: prepared.accountLabel,
-          serverUrl: prepared.serverUrl,
-          streamKeySecretRef: prepared.streamKeySecretRef,
-          streamKeyPresent: true,
-          platformBroadcastId: undefined,
-          platformStreamId: undefined,
-          status: {
-            state: 'ready',
-            message: 'Twitch channel prepared.'
-          }
-        })
-      } else if (target.platform === 'x') {
-        await client.request('streamTargets.x.prepare', { accountId: target.accountId })
       }
     }
 
     setCaptureConfig((current) => bridgeStreamingToLegacy({ ...current, streaming: nextStreaming }))
     await refreshPlatformAccountsForClient(client)
-    return nextStreaming
+    return {
+      streaming: nextStreaming,
+      failures,
+      readyLabels: nextStreaming.targets.filter((target) => target.enabled).map((target) => target.label)
+    }
   }, [captureConfig.streaming, captureConfig.video, client, refreshPlatformAccountsForClient])
 
   const openGoLiveConfirmation = useCallback(async () => {
@@ -1640,6 +1678,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
     try {
       setLastError(null)
+      setGoLivePartialSetup(null)
       setGoLiveConfirmationPending(true)
       if (streamMetadataDraft) {
         const saved = await client.request<StreamMetadataDraft>(
@@ -1677,8 +1716,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     if (goLiveConfirmationPending || startRequestPending) {
       return
     }
+    if (goLivePartialSetup) {
+      void completePreparedPlatformBroadcasts(goLivePartialSetup.streaming)
+    }
+    setGoLivePartialSetup(null)
     setGoLiveConfirmationOpen(false)
-  }, [goLiveConfirmationPending, startRequestPending])
+  }, [completePreparedPlatformBroadcasts, goLiveConfirmationPending, goLivePartialSetup, startRequestPending])
 
   const confirmGoLive = useCallback(async () => {
     if (!client || goLiveConfirmationPending || startRequestPending) {
@@ -1708,9 +1751,19 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         toast.error('Resolve Go Live issues before starting.')
         return
       }
-      const streamingForStart = await prepareOauthTargetsForGoLive()
+      const setup = await prepareOauthTargetsForGoLive()
+      if (setup.failures.length) {
+        if (!setup.readyLabels.length) {
+          throw new Error('No livestream destinations are ready after platform setup.')
+        }
+        setGoLivePartialSetup(setup)
+        toast.warning('Some destinations failed setup.', {
+          description: 'Continue with the ready destinations or cancel this Go Live.'
+        })
+        return
+      }
       setGoLiveConfirmationOpen(false)
-      await runStartSession(streamingForStart)
+      await runStartSession(setup.streaming)
     } catch (error) {
       reportError(error)
     } finally {
@@ -1726,6 +1779,25 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     startRequestPending,
     streamMetadataDraft
   ])
+
+  const continueGoLiveWithReadyDestinations = useCallback(async () => {
+    if (!goLivePartialSetup || goLiveConfirmationPending || startRequestPending) {
+      return
+    }
+
+    try {
+      setLastError(null)
+      setGoLiveConfirmationPending(true)
+      const setup = goLivePartialSetup
+      setGoLivePartialSetup(null)
+      setGoLiveConfirmationOpen(false)
+      await runStartSession(setup.streaming)
+    } catch (error) {
+      reportError(error)
+    } finally {
+      setGoLiveConfirmationPending(false)
+    }
+  }, [goLiveConfirmationPending, goLivePartialSetup, reportError, runStartSession, startRequestPending])
 
   const stopSession = useCallback(async () => {
     if (!client || stopRequestPending) {
@@ -1981,6 +2053,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     goLivePreflight,
     goLiveConfirmationOpen,
     goLiveConfirmationPending,
+    goLivePartialSetup,
     previewUrl,
     previewLoading,
     previewLiveStatus,
@@ -2021,6 +2094,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     saveStreamMetadataDraft,
     cancelGoLiveConfirmation,
     confirmGoLive,
+    continueGoLiveWithReadyDestinations,
     refreshScreens,
     importScreenImage,
     renameScreen,
