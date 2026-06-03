@@ -617,6 +617,10 @@ fn hydrate_stream_key_secret_refs_from_credentials(
     mut get_secret: impl FnMut(&str) -> Result<String>,
 ) -> Result<()> {
     for target in streaming.targets.iter_mut().filter(|target| target.enabled) {
+        if matches!(target.url_mode, Some(StreamUrlMode::FullUrl)) && !target.server_url.trim().is_empty() {
+            target.stream_key_present = true;
+            continue;
+        }
         if !target.stream_key.trim().is_empty() {
             target.stream_key_present = true;
             continue;
@@ -641,7 +645,11 @@ fn hydrate_stream_key_secret_refs_from_credentials(
         };
         let stream_key = get_secret(&secret_ref)?;
         if !stream_key.trim().is_empty() {
-            target.stream_key = stream_key;
+            if matches!(target.url_mode, Some(StreamUrlMode::FullUrl)) {
+                target.server_url = stream_key;
+            } else {
+                target.stream_key = stream_key;
+            }
             target.stream_key_secret_ref = Some(secret_ref);
             target.stream_key_present = true;
         }
@@ -3660,6 +3668,38 @@ mod tests {
             twitch.stream_key_secret_ref.as_deref(),
             Some("manual:twitch:stream-key")
         );
+    }
+
+    #[test]
+    fn full_url_stream_targets_hydrate_url_from_target_secret_ref() {
+        let mut streaming = streaming_for(&[(StreamPlatform::Custom, "", "")]);
+        let custom = streaming
+            .targets
+            .iter_mut()
+            .find(|target| target.platform == StreamPlatform::Custom)
+            .unwrap();
+        custom.url_mode = Some(StreamUrlMode::FullUrl);
+        custom.stream_key_secret_ref = Some("stream-target:custom:manual-stream-key".to_string());
+        custom.stream_key_present = true;
+
+        hydrate_stream_key_secret_refs_from_credentials(&mut streaming, &[], |secret_ref| {
+            assert_eq!(secret_ref, "stream-target:custom:manual-stream-key");
+            Ok("rtmp://example.test/live/full-url-secret".to_string())
+        })
+        .unwrap();
+
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].url, "rtmp://example.test/live/full-url-secret");
+        assert_eq!(targets[0].redacted_url, "rtmp://example.test/live/••••");
+        let custom = streaming
+            .targets
+            .iter()
+            .find(|target| target.platform == StreamPlatform::Custom)
+            .unwrap();
+        assert_eq!(custom.server_url, "rtmp://example.test/live/full-url-secret");
+        assert_eq!(custom.stream_key, "");
+        assert!(custom.stream_key_present);
     }
 
     #[test]

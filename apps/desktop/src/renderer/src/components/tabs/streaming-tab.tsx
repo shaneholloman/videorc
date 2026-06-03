@@ -320,10 +320,14 @@ function DestinationCard({
   const badge = runtime ? runtimeBadge(runtime) : (savedStatusBadge ?? configuredBadge(target.enabled, ready))
   const statusMessage = runtime?.message ?? target.status?.message
   const [manualStreamKeyDraft, setManualStreamKeyDraft] = useState(target.streamKey)
+  const [fullUrlDraft, setFullUrlDraft] = useState(target.serverUrl)
 
   useEffect(() => {
     setManualStreamKeyDraft(target.streamKey)
   }, [target.id, target.streamKey])
+  useEffect(() => {
+    setFullUrlDraft(target.serverUrl)
+  }, [target.id, target.serverUrl])
 
   return (
     <PanelSection
@@ -402,13 +406,45 @@ function DestinationCard({
         <>
           <Field>
             <FieldLabel htmlFor={`${target.id}-server`}>{fullUrl ? 'Full RTMP URL' : 'RTMP server'}</FieldLabel>
-            <Input
-              disabled={disabled}
-              id={`${target.id}-server`}
-              placeholder={fullUrl ? 'rtmp://server/app/key' : 'rtmp://server/app'}
-              value={target.serverUrl}
-              onChange={(event) => onPatch(target.id, { serverUrl: event.target.value })}
-            />
+            <div className="flex gap-2">
+              <Input
+                disabled={disabled}
+                id={`${target.id}-server`}
+                placeholder={fullUrl ? 'rtmp://server/app/key' : 'rtmp://server/app'}
+                type={fullUrl ? 'password' : 'text'}
+                value={fullUrl ? fullUrlDraft : target.serverUrl}
+                onBlur={() => {
+                  if (fullUrl && fullUrlDraft.trim()) {
+                    void onSaveManualStreamKey(target.id, fullUrlDraft)
+                  }
+                }}
+                onChange={(event) =>
+                  fullUrl
+                    ? setFullUrlDraft(event.target.value)
+                    : onPatch(target.id, { serverUrl: event.target.value })
+                }
+              />
+              {fullUrl && target.streamKeyPresent ? (
+                <Button
+                  disabled={disabled}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setFullUrlDraft('')
+                    void onSaveManualStreamKey(target.id, '')
+                  }}
+                >
+                  Clear
+                </Button>
+              ) : null}
+            </div>
+            {fullUrl ? (
+              <FieldDescription>
+                {target.streamKeyPresent
+                  ? 'Saved securely. Paste a new full URL to replace it.'
+                  : 'Saved securely because full RTMP URLs can include the stream key.'}
+              </FieldDescription>
+            ) : null}
           </Field>
 
           {!fullUrl ? (

@@ -149,6 +149,36 @@ try {
   assert.equal(persistedManualDraft.streamKey, 'manual-key')
   assert.equal(persistedManualDraftTwitch.streamKey, 'manual-key')
 
+  const persistedFullUrlSecret = persistableCaptureConfig({
+    ...defaultCaptureConfig,
+    rtmpPreset: 'custom',
+    rtmpServerUrl: 'rtmp://example.test/live/full-url-secret',
+    streamKey: '',
+    streaming: {
+      ...defaultCaptureConfig.streaming,
+      targets: defaultCaptureConfig.streaming.targets.map((target) =>
+        target.platform === 'custom'
+          ? {
+              ...target,
+              enabled: true,
+              urlMode: 'full-url',
+              authMode: 'manual-rtmp',
+              serverUrl: 'rtmp://example.test/live/full-url-secret',
+              streamKey: '',
+              streamKeySecretRef: 'stream-target:custom:manual-stream-key',
+              streamKeyPresent: true
+            }
+          : target
+      )
+    }
+  })
+  const persistedFullUrlCustom = persistedFullUrlSecret.streaming.targets.find((target) => target.platform === 'custom')
+  assert.equal(persistedFullUrlSecret.rtmpServerUrl, '')
+  assert.equal(persistedFullUrlCustom.serverUrl, '')
+  assert.equal(persistedFullUrlCustom.streamKey, '')
+  assert.equal(persistedFullUrlCustom.streamKeySecretRef, 'stream-target:custom:manual-stream-key')
+  assert.equal(persistedFullUrlCustom.streamKeyPresent, true)
+
   console.log('Streaming secret smoke OK - OAuth/manual secret refs survive reload and persistence without raw keys.')
 } finally {
   await rm(tempDir, { recursive: true, force: true })

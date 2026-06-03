@@ -410,11 +410,11 @@ export function migrateStreamingSettings(loaded: Partial<CaptureConfig>): Stream
 }
 
 export function isStreamTargetReady(target: StreamTargetSettings): boolean {
+  if (target.urlMode === 'full-url') {
+    return target.serverUrl.trim().length > 0 || Boolean(target.streamKeySecretRef) || target.streamKeyPresent
+  }
   if (!target.serverUrl.trim()) {
     return false
-  }
-  if (target.urlMode === 'full-url') {
-    return true
   }
   return target.streamKey.trim().length > 0 || Boolean(target.streamKeySecretRef) || target.streamKeyPresent
 }
@@ -449,6 +449,7 @@ export function persistableCaptureConfig(config: CaptureConfig): CaptureConfig {
     }
     return {
       ...target,
+      serverUrl: target.urlMode === 'full-url' ? '' : target.serverUrl,
       streamKey: '',
       streamKeyPresent: Boolean(target.streamKeySecretRef)
     }
@@ -458,6 +459,8 @@ export function persistableCaptureConfig(config: CaptureConfig): CaptureConfig {
   return {
     ...config,
     streaming,
+    rtmpServerUrl:
+      primary?.urlMode === 'full-url' && primary.streamKeySecretRef ? '' : config.rtmpServerUrl,
     streamKey: primary?.authMode === 'oauth' || primary?.streamKeySecretRef ? '' : config.streamKey
   }
 }

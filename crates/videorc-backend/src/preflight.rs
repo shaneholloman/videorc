@@ -133,7 +133,12 @@ fn destination_preflight(
 
     match target.auth_mode {
         StreamAuthMode::ManualRtmp => {
-            if target.server_url.trim().is_empty() || !target_has_stream_key(target) {
+            let missing_credentials = if matches!(target.url_mode, Some(crate::streaming::StreamUrlMode::FullUrl)) {
+                target.server_url.trim().is_empty() && target.stream_key_secret_ref.is_none()
+            } else {
+                target.server_url.trim().is_empty() || !target_has_stream_key(target)
+            };
+            if missing_credentials {
                 ready = false;
                 let issue =
                     "Manual RTMP destination needs a server URL and stream key.".to_string();
@@ -368,6 +373,42 @@ mod tests {
         assert_eq!(preflight.destinations.len(), 1);
         assert!(!preflight.destinations[0].ready);
         assert!(preflight.issues[0].message.contains("stream key"));
+    }
+
+    #[test]
+    fn preflight_accepts_secret_ref_for_full_url_manual_target() {
+        let metadata = StreamMetadataDraft {
+            title: "Launch stream".to_string(),
+            ..default_stream_metadata_draft("2026-06-03T00:00:00Z".to_string())
+        };
+        let mut targets = default_stream_targets();
+        let custom = targets
+            .iter_mut()
+            .find(|target| target.platform == StreamPlatform::Custom)
+            .unwrap();
+        custom.enabled = true;
+        custom.url_mode = Some(crate::streaming::StreamUrlMode::FullUrl);
+        custom.server_url = "".to_string();
+        custom.stream_key = "".to_string();
+        custom.stream_key_secret_ref = Some("stream-target:custom:manual-stream-key".to_string());
+        custom.stream_key_present = true;
+        let streaming = StreamingSettings {
+            enabled: true,
+            mode: StreamMode::Single,
+            selected_target_id: Some("custom".to_string()),
+            default_output_preset: crate::protocol::VideoPreset::Stream1080p60,
+            default_bitrate_kbps: 6000,
+            enabled_target_ids: vec![custom.id.clone()],
+            targets,
+        };
+
+        let preflight =
+            validate_go_live_preflight(GoLivePreflightParams { streaming }, &metadata, &[]);
+
+        assert!(preflight.valid, "{preflight:?}");
+        assert_eq!(preflight.destinations.len(), 1);
+        assert!(preflight.destinations[0].ready);
+        assert!(preflight.issues.is_empty());
     }
 
     fn account(platform: StreamPlatform, account_id: &str, label: &str) -> PlatformAccount {

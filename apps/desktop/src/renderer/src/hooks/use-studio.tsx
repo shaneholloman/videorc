@@ -2073,7 +2073,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           streamKey
         })
         setCaptureConfig((current) => {
+          const target = current.streaming.targets.find((item) => item.id === targetId)
           const streaming = patchPreparedTarget(current.streaming, targetId, {
+            serverUrl: target?.urlMode === 'full-url' ? '' : target?.serverUrl,
             streamKey: '',
             streamKeySecretRef: result.streamKeySecretRef,
             streamKeyPresent: result.streamKeyPresent
