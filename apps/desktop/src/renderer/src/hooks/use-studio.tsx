@@ -63,6 +63,7 @@ import type {
   StreamTargetSettings,
   StreamTargetsSnapshot,
   SystemPermissionPane,
+  TwitchCategory,
   VideoPreset,
   VideoSettings,
   YouTubeBroadcastTransitionResult,
@@ -97,6 +98,8 @@ export type StudioContextValue = {
   oauthProviderCredentials: OAuthProviderCredentialStatus[]
   youtubeChannels: YouTubeChannel[]
   youtubeChannelsLoading: boolean
+  twitchCategories: TwitchCategory[]
+  twitchCategorySearchPending: boolean
   streamMetadataDraft: StreamMetadataDraft | null
   streamMetadataValidation: StreamMetadataValidation | null
   goLivePreflight: GoLivePreflight | null
@@ -150,6 +153,7 @@ export type StudioContextValue = {
   disconnectPlatformAccount: (platform: PlatformAccount['platform']) => Promise<void>
   refreshYouTubeChannels: (accountId?: string) => Promise<void>
   selectYouTubeChannel: (channelId: string, accountId?: string) => Promise<void>
+  searchTwitchCategories: (query: string) => Promise<void>
   refreshStreamMetadata: () => Promise<void>
   saveStreamMetadataDraft: () => Promise<void>
   cancelGoLiveConfirmation: () => void
@@ -276,6 +280,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [oauthProviderCredentials, setOauthProviderCredentials] = useState<OAuthProviderCredentialStatus[]>([])
   const [youtubeChannels, setYoutubeChannels] = useState<YouTubeChannel[]>([])
   const [youtubeChannelsLoading, setYoutubeChannelsLoading] = useState(false)
+  const [twitchCategories, setTwitchCategories] = useState<TwitchCategory[]>([])
+  const [twitchCategorySearchPending, setTwitchCategorySearchPending] = useState(false)
   const [streamMetadataDraft, setStreamMetadataDraft] = useState<StreamMetadataDraft | null>(null)
   const [streamMetadataValidation, setStreamMetadataValidation] = useState<StreamMetadataValidation | null>(null)
   const [goLivePreflight, setGoLivePreflight] = useState<GoLivePreflight | null>(null)
@@ -531,6 +537,40 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
     void refreshYouTubeChannels(account.accountId)
   }, [platformAccounts, refreshYouTubeChannels])
+
+  const searchTwitchCategories = useCallback(
+    async (query: string) => {
+      const trimmed = query.trim()
+      if (!client || trimmed.length < 2) {
+        setTwitchCategories([])
+        return
+      }
+
+      try {
+        setLastError(null)
+        setTwitchCategorySearchPending(true)
+        const account = platformAccounts.find((item) => item.platform === 'twitch')
+        const result = await client.request<{ categories: TwitchCategory[] }>('streamTargets.twitch.searchCategories', {
+          accountId: account?.accountId,
+          query: trimmed,
+          first: 10
+        })
+        setTwitchCategories(result.categories)
+      } catch (error) {
+        setTwitchCategories([])
+        reportError(error)
+      } finally {
+        setTwitchCategorySearchPending(false)
+      }
+    },
+    [client, platformAccounts, reportError]
+  )
+
+  useEffect(() => {
+    if (!platformAccounts.some((item) => item.platform === 'twitch')) {
+      setTwitchCategories([])
+    }
+  }, [platformAccounts])
 
   const refreshStreamMetadataForClient = useCallback(async (activeClient: BackendClient | null) => {
     if (!activeClient) {
@@ -2152,6 +2192,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     oauthProviderCredentials,
     youtubeChannels,
     youtubeChannelsLoading,
+    twitchCategories,
+    twitchCategorySearchPending,
     streamMetadataDraft,
     streamMetadataValidation,
     goLivePreflight,
@@ -2196,6 +2238,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     disconnectPlatformAccount,
     refreshYouTubeChannels,
     selectYouTubeChannel,
+    searchTwitchCategories,
     refreshStreamMetadata,
     saveStreamMetadataDraft,
     cancelGoLiveConfirmation,

@@ -5,6 +5,7 @@ import {
   FloppyDisk,
   Gauge,
   LinkSimple,
+  MagnifyingGlass,
   SignOut,
   TextAa,
   TwitchLogo,
@@ -42,6 +43,7 @@ import type {
   StreamTargetRuntime,
   StreamTargetSettings,
   StreamUrlMode,
+  TwitchCategory,
   YouTubeChannel
 } from '@/lib/backend'
 import { isStreamTargetReady } from '@/lib/capture'
@@ -77,6 +79,9 @@ export function StreamingTab(): ReactElement {
     streamMetadataSavePending,
     streamMetadataValidation,
     streamTargets,
+    twitchCategories,
+    twitchCategorySearchPending,
+    searchTwitchCategories,
     stopSession
   } = useStudio()
   const streaming = captureConfig.streaming
@@ -167,11 +172,14 @@ export function StreamingTab(): ReactElement {
           disabled={isSessionActive}
           draft={streamMetadataDraft}
           pending={streamMetadataSavePending}
+          twitchCategories={twitchCategories}
+          twitchCategorySearchPending={twitchCategorySearchPending}
           targets={streaming.targets}
           validation={streamMetadataValidation}
           onPatchDraft={patchStreamMetadataDraft}
           onPatchTarget={patchStreamTargetMetadataDraft}
           onSave={() => void saveStreamMetadataDraft()}
+          onSearchTwitchCategories={searchTwitchCategories}
         />
         <StreamingReadiness
           bitrateKbps={video.bitrateKbps}
@@ -598,21 +606,27 @@ function MetadataEditor({
   targets,
   disabled,
   pending,
+  twitchCategories,
+  twitchCategorySearchPending,
   onPatchDraft,
   onPatchTarget,
-  onSave
+  onSave,
+  onSearchTwitchCategories
 }: {
   draft: StreamMetadataDraft | null
   validation: StreamMetadataValidation | null
   targets: StreamTargetSettings[]
   disabled: boolean
   pending: boolean
+  twitchCategories: TwitchCategory[]
+  twitchCategorySearchPending: boolean
   onPatchDraft: (patch: Partial<StreamMetadataDraft>) => void
   onPatchTarget: (
     platform: StreamMetadataDraft['targetOverrides'][number]['platform'],
     patch: Partial<StreamMetadataDraft['targetOverrides'][number]>
   ) => void
   onSave: () => void
+  onSearchTwitchCategories: (query: string) => Promise<void>
 }): ReactElement {
   const nativeTargets = targets.filter((target) => target.platform !== 'custom')
   const globalTitleIssue = metadataIssue(validation, 'title')
@@ -685,8 +699,11 @@ function MetadataEditor({
                   key={override.platform}
                   label={target?.label ?? platformLabel(override.platform)}
                   override={override}
+                  twitchCategories={twitchCategories}
+                  twitchCategorySearchPending={twitchCategorySearchPending}
                   validation={validation}
                   onPatch={(patch) => onPatchTarget(override.platform, patch)}
+                  onSearchTwitchCategories={onSearchTwitchCategories}
                 />
               )
             })}
@@ -712,21 +729,42 @@ function MetadataOverride({
   draft,
   label,
   disabled,
+  twitchCategories,
+  twitchCategorySearchPending,
   validation,
-  onPatch
+  onPatch,
+  onSearchTwitchCategories
 }: {
   override: StreamMetadataDraft['targetOverrides'][number]
   draft: StreamMetadataDraft
   label: string
   disabled: boolean
+  twitchCategories: TwitchCategory[]
+  twitchCategorySearchPending: boolean
   validation: StreamMetadataValidation | null
   onPatch: (patch: Partial<StreamMetadataDraft['targetOverrides'][number]>) => void
+  onSearchTwitchCategories: (query: string) => Promise<void>
 }): ReactElement {
   const titleIssue = metadataIssue(validation, 'title', override.platform)
   const fieldsDisabled = disabled || !override.customize
   const twitch = override.platform === 'twitch'
   const youtube = override.platform === 'youtube'
   const x = override.platform === 'x'
+  const [twitchCategoryQuery, setTwitchCategoryQuery] = useState(override.twitchCategoryName ?? '')
+  const twitchCategoryOptions =
+    twitch && override.twitchCategoryId && !twitchCategories.some((category) => category.id === override.twitchCategoryId)
+      ? [
+          {
+            id: override.twitchCategoryId,
+            name: override.twitchCategoryName ?? override.twitchCategoryId
+          },
+          ...twitchCategories
+        ]
+      : twitchCategories
+
+  useEffect(() => {
+    setTwitchCategoryQuery(override.twitchCategoryName ?? '')
+  }, [override.twitchCategoryName])
 
   return (
     <div className="flex flex-col gap-3 border-t pt-4 first:border-t-0 first:pt-0">
@@ -811,13 +849,51 @@ function MetadataOverride({
         <div className="grid gap-3 sm:grid-cols-2">
           <Field>
             <FieldLabel htmlFor="twitch-category">Category</FieldLabel>
-            <Input
-              disabled={fieldsDisabled}
-              id="twitch-category"
-              placeholder="Just Chatting"
-              value={override.twitchCategoryName ?? ''}
-              onChange={(event) => onPatch({ twitchCategoryName: event.target.value })}
-            />
+            <div className="flex gap-2">
+              <Input
+                disabled={fieldsDisabled}
+                id="twitch-category"
+                placeholder="Just Chatting"
+                value={twitchCategoryQuery}
+                onChange={(event) => {
+                  setTwitchCategoryQuery(event.target.value)
+                  onPatch({ twitchCategoryId: undefined, twitchCategoryName: event.target.value })
+                }}
+              />
+              <Button
+                disabled={fieldsDisabled || twitchCategorySearchPending || twitchCategoryQuery.trim().length < 2}
+                size="sm"
+                variant="outline"
+                onClick={() => void onSearchTwitchCategories(twitchCategoryQuery)}
+              >
+                <MagnifyingGlass data-icon="inline-start" weight="bold" />
+                {twitchCategorySearchPending ? 'Searching' : 'Search'}
+              </Button>
+            </div>
+            {twitchCategoryOptions.length ? (
+              <Select
+                disabled={fieldsDisabled || twitchCategorySearchPending}
+                value={override.twitchCategoryId ?? ''}
+                onValueChange={(categoryId) => {
+                  const category = twitchCategoryOptions.find((item) => item.id === categoryId)
+                  if (category) {
+                    setTwitchCategoryQuery(category.name)
+                    onPatch({ twitchCategoryId: category.id, twitchCategoryName: category.name })
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {twitchCategoryOptions.map((category) => (
+                    <SelectItem key={category.id} value={category.id}>
+                      {category.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
           </Field>
           <Field>
             <FieldLabel htmlFor="twitch-language">Language</FieldLabel>
