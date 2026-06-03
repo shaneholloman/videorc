@@ -399,6 +399,123 @@ pub fn render_encode_ffmpeg_args(
     ]
 }
 
+/// FFmpeg args to encode composited rgb24 frames (stdin) and fan them out to a local
+/// recording and/or RTMP stream targets via `tee` — the same proven settings as the
+/// avfoundation recorder (2s keyframes, `+global_header`, `use_fifo` slave isolation).
+/// This is what the LS3b session pipeline uses to record + multistream one composite.
+/// Errors only when neither a recording path nor any stream target is supplied.
+pub fn render_tee_encode_args(
+    width: usize,
+    height: usize,
+    fps: u32,
+    bitrate_kbps: u32,
+    output_path: Option<&str>,
+    stream_urls: &[String],
+) -> Result<Vec<String>, String> {
+    let mut args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "rgb24".to_string(),
+        "-s".to_string(),
+        format!("{width}x{height}"),
+        "-r".to_string(),
+        fps.to_string(),
+        "-i".to_string(),
+        "pipe:0".to_string(),
+        "-c:v".to_string(),
+        "h264_videotoolbox".to_string(),
+        "-allow_sw".to_string(),
+        "1".to_string(),
+        "-realtime".to_string(),
+        "1".to_string(),
+        "-prio_speed".to_string(),
+        "1".to_string(),
+        "-b:v".to_string(),
+        format!("{bitrate_kbps}k"),
+        "-maxrate".to_string(),
+        format!("{bitrate_kbps}k"),
+        "-bufsize".to_string(),
+        format!("{}k", bitrate_kbps.saturating_mul(2)),
+        "-g".to_string(),
+        fps.saturating_mul(2).to_string(),
+        "-force_key_frames".to_string(),
+        "expr:gte(t,n_forced*2)".to_string(),
+        "-flags".to_string(),
+        "+global_header".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+    ];
+
+    let stream_legs = stream_urls
+        .iter()
+        .map(|url| {
+            format!(
+                "[f=flv:onfail=ignore:flvflags=no_duration_filesize]{}",
+                escape_tee_render_target(url)
+            )
+        })
+        .collect::<Vec<_>>();
+
+    match (output_path, stream_urls.is_empty()) {
+        // Local recording only.
+        (Some(path), true) => args.push(path.to_string()),
+        // Recording + one or more streams: tee the MKV (onfail=abort) and every flv
+        // leg (onfail=ignore so a failing platform can't kill the recording or peers).
+        (Some(path), false) => {
+            let mut legs = vec![format!(
+                "[f=matroska:onfail=abort]{}",
+                escape_tee_render_target(path)
+            )];
+            legs.extend(stream_legs);
+            args.extend(tee_render_output_args(legs.join("|")));
+        }
+        // A single stream with no recording uses a plain flv output.
+        (None, false) if stream_urls.len() == 1 => {
+            args.extend([
+                "-flvflags".to_string(),
+                "no_duration_filesize".to_string(),
+                "-f".to_string(),
+                "flv".to_string(),
+                stream_urls[0].clone(),
+            ]);
+        }
+        // Multiple streams with no recording: tee of flv legs only.
+        (None, false) => args.extend(tee_render_output_args(stream_legs.join("|"))),
+        (None, true) => {
+            return Err("render encode needs a recording path or a stream target".to_string());
+        }
+    }
+    Ok(args)
+}
+
+/// Wraps a tee spec with the same FIFO slave isolation as the avfoundation recorder so
+/// a slow stream target cannot back-pressure the encoder or the recording.
+fn tee_render_output_args(spec: String) -> Vec<String> {
+    vec![
+        "-f".to_string(),
+        "tee".to_string(),
+        "-use_fifo".to_string(),
+        "1".to_string(),
+        "-fifo_options".to_string(),
+        "queue_size=512:drop_pkts_on_overflow=1".to_string(),
+        spec,
+    ]
+}
+
+/// Escapes a tee slave target (`\ | [ ]`) so a URL/path can't break the filtergraph.
+fn escape_tee_render_target(target: &str) -> String {
+    target
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -988,6 +1105,55 @@ mod tests {
                 .any(|w| w[0] == "-flags" && w[1] == "+global_header")
         );
         assert_eq!(args.last().unwrap(), "/tmp/out.mkv");
+    }
+
+    #[test]
+    fn render_tee_encode_records_only_without_streams() {
+        let args = render_tee_encode_args(1280, 720, 30, 4500, Some("/tmp/rec.mkv"), &[]).unwrap();
+        assert!(
+            !args.contains(&"tee".to_string()),
+            "no streams -> plain mkv"
+        );
+        assert_eq!(args.last().unwrap(), "/tmp/rec.mkv");
+    }
+
+    #[test]
+    fn render_tee_encode_tees_recording_and_streams() {
+        let streams = vec![
+            "rtmp://a.rtmp.youtube.com/live2/yt".to_string(),
+            "rtmp://live.twitch.tv/app/tw".to_string(),
+        ];
+        let args =
+            render_tee_encode_args(1920, 1080, 30, 6000, Some("/tmp/rec.mkv"), &streams).unwrap();
+        assert!(args.contains(&"tee".to_string()));
+        let spec = args.iter().find(|a| a.contains("[f=matroska")).unwrap();
+        assert!(spec.contains("[f=matroska:onfail=abort]/tmp/rec.mkv"));
+        assert_eq!(
+            spec.matches("[f=flv:onfail=ignore").count(),
+            2,
+            "two flv legs: {spec}"
+        );
+        assert!(spec.contains("/yt") && spec.contains("/tw"));
+        // Same proven safeguards as the avfoundation tee.
+        assert!(args.windows(2).any(|w| w[0] == "-use_fifo" && w[1] == "1"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-flags" && w[1] == "+global_header")
+        );
+    }
+
+    #[test]
+    fn render_tee_encode_stream_only_multi_has_no_recording_leg() {
+        let streams = vec!["rtmp://x/app/a".to_string(), "rtmp://y/app/b".to_string()];
+        let args = render_tee_encode_args(1280, 720, 30, 4500, None, &streams).unwrap();
+        let spec = args.iter().find(|a| a.contains("[f=flv")).unwrap();
+        assert!(!spec.contains("[f=matroska"));
+        assert_eq!(spec.matches("[f=flv").count(), 2);
+    }
+
+    #[test]
+    fn render_tee_encode_requires_an_output() {
+        assert!(render_tee_encode_args(1280, 720, 30, 4500, None, &[]).is_err());
     }
 
     /// The realistic LS3b case: two real capture inputs (screen + camera) composited
