@@ -53,6 +53,17 @@ pub struct OAuthStartResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct OAuthProviderCredentialStatus {
+    pub platform: StreamPlatform,
+    pub ready: bool,
+    pub client_id_present: bool,
+    pub client_secret_present: bool,
+    pub pkce: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct OAuthCompleteParams {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -691,6 +702,52 @@ pub fn provider_client_id(platform: StreamPlatform) -> Result<String> {
     Ok(provider_config(platform)?.client_id)
 }
 
+pub fn provider_credential_statuses() -> Vec<OAuthProviderCredentialStatus> {
+    vec![
+        provider_credential_status(
+            StreamPlatform::Youtube,
+            "VIDEORC_YOUTUBE_CLIENT_ID",
+            "VIDEORC_YOUTUBE_CLIENT_SECRET",
+            true,
+        ),
+        provider_credential_status(
+            StreamPlatform::Twitch,
+            "VIDEORC_TWITCH_CLIENT_ID",
+            "VIDEORC_TWITCH_CLIENT_SECRET",
+            false,
+        ),
+        provider_credential_status(
+            StreamPlatform::X,
+            "VIDEORC_X_CLIENT_ID",
+            "VIDEORC_X_CLIENT_SECRET",
+            true,
+        ),
+    ]
+}
+
+fn provider_credential_status(
+    platform: StreamPlatform,
+    client_id_env: &str,
+    client_secret_env: &str,
+    pkce: bool,
+) -> OAuthProviderCredentialStatus {
+    let client_id_present = optional_env(client_id_env).is_some();
+    let client_secret_present = optional_env(client_secret_env).is_some();
+    let label = stream_platform_label(platform);
+    OAuthProviderCredentialStatus {
+        platform,
+        ready: client_id_present,
+        client_id_present,
+        client_secret_present,
+        pkce,
+        message: if client_id_present {
+            format!("{label} OAuth client ID is configured.")
+        } else {
+            format!("{label} OAuth requires {client_id_env}.")
+        },
+    }
+}
+
 fn required_env(name: &str) -> Result<String> {
     optional_env(name).ok_or_else(|| anyhow::anyhow!("{name} is not configured."))
 }
@@ -1073,6 +1130,33 @@ mod tests {
         assert_eq!(
             profile.avatar_url.as_deref(),
             Some("https://x.example/avatar.jpg")
+        );
+    }
+
+    #[test]
+    fn provider_credential_statuses_cover_native_platforms_without_secret_values() {
+        let statuses = provider_credential_statuses();
+
+        assert_eq!(statuses.len(), 3);
+        assert!(
+            statuses
+                .iter()
+                .any(|status| status.platform == StreamPlatform::Youtube && status.pkce)
+        );
+        assert!(
+            statuses
+                .iter()
+                .any(|status| status.platform == StreamPlatform::Twitch && !status.pkce)
+        );
+        assert!(
+            statuses
+                .iter()
+                .any(|status| status.platform == StreamPlatform::X && status.pkce)
+        );
+        assert!(
+            statuses
+                .iter()
+                .all(|status| !status.message.contains("CLIENT_SECRET"))
         );
     }
 }

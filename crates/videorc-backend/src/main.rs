@@ -1176,6 +1176,9 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
         "platformAccounts.validate" => {
             ServerResponse::ok(command.id, validate_platform_accounts(state).await)
         }
+        "platformAccounts.oauth.providerCredentials" => {
+            ServerResponse::ok(command.id, oauth::provider_credential_statuses())
+        }
         "streamTargets.metadata.get" => match state.database.stream_metadata_draft() {
             Ok(draft) => ServerResponse::ok(command.id, draft),
             Err(error) => {

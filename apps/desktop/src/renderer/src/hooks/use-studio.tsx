@@ -46,6 +46,7 @@ import type {
   PreparedTwitchBroadcast,
   PreparedYouTubeBroadcast,
   OAuthStartResult,
+  OAuthProviderCredentialStatus,
   RecordingStatus,
   RuntimeInfo,
   RtmpPreset,
@@ -92,6 +93,7 @@ export type StudioContextValue = {
   activeScreen: StreamScreen | null
   platformAccounts: PlatformAccount[]
   platformAccountValidations: PlatformAccountValidation[]
+  oauthProviderCredentials: OAuthProviderCredentialStatus[]
   streamMetadataDraft: StreamMetadataDraft | null
   streamMetadataValidation: StreamMetadataValidation | null
   goLivePreflight: GoLivePreflight | null
@@ -266,6 +268,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [activeScreen, setActiveScreen] = useState<StreamScreen | null>(null)
   const [platformAccounts, setPlatformAccounts] = useState<PlatformAccount[]>([])
   const [platformAccountValidations, setPlatformAccountValidations] = useState<PlatformAccountValidation[]>([])
+  const [oauthProviderCredentials, setOauthProviderCredentials] = useState<OAuthProviderCredentialStatus[]>([])
   const [streamMetadataDraft, setStreamMetadataDraft] = useState<StreamMetadataDraft | null>(null)
   const [streamMetadataValidation, setStreamMetadataValidation] = useState<StreamMetadataValidation | null>(null)
   const [goLivePreflight, setGoLivePreflight] = useState<GoLivePreflight | null>(null)
@@ -400,10 +403,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const refreshPlatformAccountsForClient = useCallback(async (activeClient: BackendClient | null) => {
     if (!activeClient) {
       setPlatformAccounts([])
+      setOauthProviderCredentials([])
       return
     }
 
-    setPlatformAccounts(await activeClient.request<PlatformAccount[]>('platformAccounts.list'))
+    const [accounts, credentials] = await Promise.all([
+      activeClient.request<PlatformAccount[]>('platformAccounts.list'),
+      activeClient.request<OAuthProviderCredentialStatus[]>('platformAccounts.oauth.providerCredentials')
+    ])
+    setPlatformAccounts(accounts)
+    setOauthProviderCredentials(credentials)
   }, [])
 
   const refreshPlatformAccounts = useCallback(async () => {
@@ -765,6 +774,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         nextScreens,
         nextActiveScreen,
         nextPlatformAccounts,
+        nextOauthProviderCredentials,
         nextPlatformAccountValidations,
         nextStreamMetadataDraft
       ] = await Promise.all([
@@ -775,6 +785,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         client.request<StreamScreen[]>('screens.list'),
         client.request<StreamScreen | null>('screens.active'),
         client.request<PlatformAccount[]>('platformAccounts.list'),
+        client.request<OAuthProviderCredentialStatus[]>('platformAccounts.oauth.providerCredentials'),
         client.request<PlatformAccountValidation[]>('platformAccounts.validate'),
         client.request<StreamMetadataDraft>('streamTargets.metadata.get')
       ])
@@ -789,6 +800,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setScreens(nextScreens)
       setActiveScreen(nextActiveScreen)
       setPlatformAccounts(nextPlatformAccounts)
+      setOauthProviderCredentials(nextOauthProviderCredentials)
       setPlatformAccountValidations(nextPlatformAccountValidations)
       setStreamMetadataDraft(nextStreamMetadataDraft)
       setStreamMetadataValidation(nextStreamMetadataValidation)
@@ -2048,6 +2060,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     activeScreen,
     platformAccounts,
     platformAccountValidations,
+    oauthProviderCredentials,
     streamMetadataDraft,
     streamMetadataValidation,
     goLivePreflight,

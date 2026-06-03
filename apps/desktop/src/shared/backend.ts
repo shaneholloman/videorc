@@ -617,6 +617,15 @@ export interface OAuthStartResult {
   expiresAt: string
 }
 
+export interface OAuthProviderCredentialStatus {
+  platform: StreamPlatform
+  ready: boolean
+  clientIdPresent: boolean
+  clientSecretPresent: boolean
+  pkce: boolean
+  message: string
+}
+
 export interface OAuthCompleteParams {
   state: string
   code?: string

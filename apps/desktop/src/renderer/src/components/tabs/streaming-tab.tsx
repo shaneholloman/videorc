@@ -32,6 +32,7 @@ import { useStudio } from '@/hooks/use-studio'
 import type {
   PlatformAccount,
   PlatformAccountValidation,
+  OAuthProviderCredentialStatus,
   StreamAuthMode,
   StreamMetadataDraft,
   StreamMetadataValidation,
@@ -62,6 +63,7 @@ export function StreamingTab(): ReactElement {
     patchStreamingTarget,
     platformAccountValidations,
     platformAccounts,
+    oauthProviderCredentials,
     saveStreamMetadataDraft,
     health,
     isSessionActive,
@@ -98,6 +100,14 @@ export function StreamingTab(): ReactElement {
     return map
   }, [platformAccountValidations])
 
+  const credentialsByPlatform = useMemo(() => {
+    const map = new Map<StreamPlatform, OAuthProviderCredentialStatus>()
+    for (const status of oauthProviderCredentials) {
+      map.set(status.platform, status)
+    }
+    return map
+  }, [oauthProviderCredentials])
+
   // A destination is "in trouble" while live if its leg dropped (failed) or it was
   // skipped this session for incomplete credentials (not-configured).
   const problems = streamTargets.filter(
@@ -129,6 +139,7 @@ export function StreamingTab(): ReactElement {
         {streaming.targets.map((target) => (
           <DestinationCard
             account={accountByPlatform.get(target.platform)}
+            credentials={credentialsByPlatform.get(target.platform)}
             disabled={isSessionActive}
             key={target.id}
             runtime={runtimeById.get(target.id)}
@@ -238,6 +249,7 @@ function runtimeBadge(runtime: StreamTargetRuntime): { tone: BadgeTone; label: s
 function DestinationCard({
   target,
   account,
+  credentials,
   disabled,
   runtime,
   validation,
@@ -247,6 +259,7 @@ function DestinationCard({
 }: {
   target: StreamTargetSettings
   account?: PlatformAccount
+  credentials?: OAuthProviderCredentialStatus
   disabled: boolean
   runtime?: StreamTargetRuntime
   validation?: PlatformAccountValidation
@@ -323,6 +336,7 @@ function DestinationCard({
       {oauthMode ? (
         <OAuthAccountPanel
           account={account}
+          credentials={credentials}
           disabled={disabled}
           platform={target.platform}
           validation={validation}
@@ -395,6 +409,7 @@ function streamTargetStatusBadge(state: NonNullable<StreamTargetSettings['status
 
 function OAuthAccountPanel({
   account,
+  credentials,
   disabled,
   platform,
   validation,
@@ -402,6 +417,7 @@ function OAuthAccountPanel({
   onDisconnect
 }: {
   account?: PlatformAccount
+  credentials?: OAuthProviderCredentialStatus
   disabled: boolean
   platform: StreamPlatform
   validation?: PlatformAccountValidation
@@ -409,16 +425,19 @@ function OAuthAccountPanel({
   onDisconnect: (platform: StreamPlatform) => void
 }): ReactElement {
   if (!account) {
+    const connectDisabled = disabled || credentials?.ready === false
     return (
       <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm font-medium">No account connected</span>
-          <Button disabled={disabled} size="sm" variant="secondary" onClick={() => onConnect(platform)}>
+          <Button disabled={connectDisabled} size="sm" variant="secondary" onClick={() => onConnect(platform)}>
             <LinkSimple data-icon="inline-start" weight="bold" />
             Connect
           </Button>
         </div>
-        <p className="text-xs text-muted-foreground">Uses backend provider credentials.</p>
+        <p className="text-xs text-muted-foreground">
+          {credentials?.message ?? 'Uses backend provider credentials.'}
+        </p>
       </div>
     )
   }
