@@ -130,7 +130,7 @@ Before a release candidate, run the redacted provider readiness check:
 
 ```sh
 pnpm smoke:provider-readiness
-VIDEORC_SMOKE_REQUIRE_PROVIDER_READY=1 pnpm smoke:provider-readiness
+pnpm smoke:provider-readiness:strict
 ```
 
 The strict run requires OAuth client IDs, Twitch's runtime client secret, eligible YouTube/Twitch test accounts, and validated X native live partner/API access. See [OAuth Live Smoke Runbook](oauth-live-smoke.md) for the full external acceptance workflow.

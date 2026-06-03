@@ -42,7 +42,7 @@ pnpm smoke:packaged:bundled
 For release candidates, make missing prerequisites fail:
 
 ```sh
-VIDEORC_SMOKE_REQUIRE_PROVIDER_READY=1 pnpm smoke:provider-readiness
+pnpm smoke:provider-readiness:strict
 ```
 
 ## Provider Prerequisites
