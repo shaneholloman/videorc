@@ -504,6 +504,193 @@ pub fn detect_freezes(
     Ok(parse_freezedetect(&String::from_utf8_lossy(&output.stderr)))
 }
 
+// --- Repair strategy selection (slice 5) ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoRepair {
+    /// Video is good; stream-copy it untouched.
+    Copy,
+    /// Frames are good but container timestamps are bad; copy + regenerate timestamps.
+    CleanRemux,
+    /// Variable/wrong frame rate; re-encode to a constant rate (visually lossless).
+    CfrTranscode,
+    /// Dropped/missing frames cause visible stutter; motion-interpolate to fill them.
+    Interpolate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum AudioRepair {
+    /// Audio is good; stream-copy it.
+    Copy,
+    /// One-sided mic: duplicate the active channel to both (0-indexed for `pan`).
+    CenterChannel { source_channel: usize },
+    /// A/V skew: shift audio to realign (positive = audio starts after video).
+    Resync { offset_ms: f64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairPlan {
+    pub video: VideoRepair,
+    pub audio: AudioRepair,
+    pub target_fps: f64,
+    /// True when interpolation was used (drives the transparent "interpolated" badge).
+    pub interpolated: bool,
+}
+
+/// Selects the max-quality FFmpeg repair plan, or `None` when nothing can/should be
+/// repaired (already clean, or only FFmpeg-unrepairable issues like a missing stream).
+/// Quality-first: dropped/frozen frames get motion interpolation, plain VFR gets a CFR
+/// transcode, one-sided audio is centered, and A/V skew is resynced.
+pub fn select_repair_plan(
+    report: &QualityReport,
+    probe: &MediaProbe,
+    expectations: &QualityExpectations,
+) -> Option<RepairPlan> {
+    let target_fps = expectations
+        .intended_fps
+        .or_else(|| probe.video.as_ref().and_then(|video| video.nominal_fps))
+        .or_else(|| probe.video.as_ref().and_then(|video| video.avg_fps))
+        .unwrap_or(30.0);
+
+    let mut video = VideoRepair::Copy;
+    let mut audio = AudioRepair::Copy;
+    let mut repairable = false;
+
+    for issue in &report.issues {
+        match issue {
+            QualityIssue::DroppedFrames { .. } | QualityIssue::FrozenSegments { .. } => {
+                video = VideoRepair::Interpolate;
+                repairable = true;
+            }
+            QualityIssue::VariableFrameRate { .. } => {
+                if video == VideoRepair::Copy {
+                    video = VideoRepair::CfrTranscode;
+                }
+                repairable = true;
+            }
+            QualityIssue::OneSidedAudio { silent_channel } => {
+                // astats channels are 1-indexed; the active (source) channel for `pan`
+                // is 0-indexed. For stereo: silent ch 1 -> source c1, silent ch 2 -> c0.
+                let source_channel = usize::from(*silent_channel == 1);
+                audio = AudioRepair::CenterChannel { source_channel };
+                repairable = true;
+            }
+            QualityIssue::AvSkew { .. } => {
+                if matches!(audio, AudioRepair::Copy) {
+                    let offset_ms = signed_av_offset_ms(probe).unwrap_or(0.0);
+                    audio = AudioRepair::Resync { offset_ms };
+                }
+                repairable = true;
+            }
+            // FFmpeg-only repair cannot synthesise a missing stream.
+            QualityIssue::MissingVideo | QualityIssue::MissingAudio => {}
+        }
+    }
+
+    if !repairable {
+        return None;
+    }
+    let interpolated = video == VideoRepair::Interpolate;
+    Some(RepairPlan {
+        video,
+        audio,
+        target_fps,
+        interpolated,
+    })
+}
+
+/// Signed A/V offset in ms (positive = audio starts after video), from stream start
+/// times, used to pick the resync direction.
+fn signed_av_offset_ms(probe: &MediaProbe) -> Option<f64> {
+    let video = probe.video.as_ref()?;
+    let audio = probe.audio.first()?;
+    Some((audio.start_time? - video.start_time?) * 1000.0)
+}
+
+/// Builds the FFmpeg command for a repair plan. Re-encodes are visually lossless
+/// (libx264 CRF 18); audio repairs re-encode to AAC. Resync trims a late audio start or
+/// delays an early one.
+pub fn build_repair_args(input: &str, output: &str, plan: &RepairPlan) -> Vec<String> {
+    let mut args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-i".to_string(),
+        input.to_string(),
+    ];
+
+    let mut video_filters: Vec<String> = Vec::new();
+    match plan.video {
+        VideoRepair::Copy => args.extend(["-c:v".to_string(), "copy".to_string()]),
+        VideoRepair::CleanRemux => args.extend([
+            "-c:v".to_string(),
+            "copy".to_string(),
+            "-fflags".to_string(),
+            "+genpts".to_string(),
+        ]),
+        VideoRepair::CfrTranscode => video_filters.push(format!("fps={}", plan.target_fps)),
+        VideoRepair::Interpolate => video_filters.push(format!(
+            "minterpolate=fps={}:mi_mode=mci:mc_mode=aobmc",
+            plan.target_fps
+        )),
+    }
+
+    let mut audio_filters: Vec<String> = Vec::new();
+    let mut audio_copy = false;
+    match &plan.audio {
+        AudioRepair::Copy => audio_copy = true,
+        AudioRepair::CenterChannel { source_channel } => {
+            audio_filters.push(format!(
+                "pan=stereo|c0=c{source_channel}|c1=c{source_channel}"
+            ));
+        }
+        AudioRepair::Resync { offset_ms } => {
+            if *offset_ms >= 0.0 {
+                // Audio starts late → trim its leading offset to realign with video.
+                let seconds = offset_ms / 1000.0;
+                audio_filters.push(format!("atrim=start={seconds},asetpts=PTS-STARTPTS"));
+            } else {
+                // Audio starts early → delay it.
+                let ms = offset_ms.abs().round() as i64;
+                audio_filters.push(format!("adelay={ms}:all=1"));
+            }
+        }
+    }
+
+    if !video_filters.is_empty() {
+        args.extend([
+            "-vf".to_string(),
+            video_filters.join(","),
+            "-c:v".to_string(),
+            "libx264".to_string(),
+            "-crf".to_string(),
+            "18".to_string(),
+            "-preset".to_string(),
+            "medium".to_string(),
+            "-pix_fmt".to_string(),
+            "yuv420p".to_string(),
+        ]);
+    }
+    if audio_copy {
+        args.extend(["-c:a".to_string(), "copy".to_string()]);
+    } else if !audio_filters.is_empty() {
+        args.extend([
+            "-af".to_string(),
+            audio_filters.join(","),
+            "-c:a".to_string(),
+            "aac".to_string(),
+            "-b:a".to_string(),
+            "192k".to_string(),
+        ]);
+    }
+    args.push(output.to_string());
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -761,5 +948,158 @@ mod tests {
         let long = long_freezes(&segments, 2.0);
         assert_eq!(long.len(), 1, "only the 3.5s freeze is long");
         assert_eq!(long[0].duration, 3.5);
+    }
+
+    fn probe_for_strategy() -> MediaProbe {
+        MediaProbe {
+            format_duration: Some(10.0),
+            video: Some(VideoStreamInfo {
+                codec: "h264".to_string(),
+                width: 1920,
+                height: 1080,
+                avg_fps: Some(30.0),
+                nominal_fps: Some(30.0),
+                nb_frames: Some(300),
+                duration: Some(10.0),
+                start_time: Some(0.0),
+            }),
+            audio: vec![AudioStreamInfo {
+                codec: "aac".to_string(),
+                channels: 2,
+                channel_layout: Some("stereo".to_string()),
+                sample_rate: Some(48000),
+                duration: Some(10.0),
+                start_time: Some(0.5),
+            }],
+        }
+    }
+
+    fn report_with(issues: Vec<QualityIssue>) -> QualityReport {
+        QualityReport {
+            verdict: QualityVerdict::Repairable,
+            issues,
+        }
+    }
+
+    #[test]
+    fn vfr_selects_cfr_transcode() {
+        let report = report_with(vec![QualityIssue::VariableFrameRate {
+            avg_fps: 24.0,
+            nominal_fps: 30.0,
+        }]);
+        let plan = select_repair_plan(
+            &report,
+            &probe_for_strategy(),
+            &QualityExpectations::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.video, VideoRepair::CfrTranscode);
+        assert_eq!(plan.audio, AudioRepair::Copy);
+        assert!(!plan.interpolated);
+        assert_eq!(plan.target_fps, 30.0);
+    }
+
+    #[test]
+    fn dropped_frames_select_interpolation() {
+        let report = report_with(vec![QualityIssue::DroppedFrames {
+            observed: 250,
+            expected: 300,
+        }]);
+        let plan = select_repair_plan(
+            &report,
+            &probe_for_strategy(),
+            &QualityExpectations::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.video, VideoRepair::Interpolate);
+        assert!(plan.interpolated);
+    }
+
+    #[test]
+    fn one_sided_audio_centers_active_channel() {
+        // Silent astats channel 2 -> active source channel c0.
+        let report = report_with(vec![QualityIssue::OneSidedAudio { silent_channel: 2 }]);
+        let plan = select_repair_plan(
+            &report,
+            &probe_for_strategy(),
+            &QualityExpectations::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.audio, AudioRepair::CenterChannel { source_channel: 0 });
+    }
+
+    #[test]
+    fn skew_selects_signed_resync() {
+        // Probe audio starts 0.5s after video → +500 ms (audio late).
+        let report = report_with(vec![QualityIssue::AvSkew { ms: 500.0 }]);
+        let plan = select_repair_plan(
+            &report,
+            &probe_for_strategy(),
+            &QualityExpectations::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            plan.audio,
+            AudioRepair::Resync { offset_ms } if (offset_ms - 500.0).abs() < 1.0
+        ));
+    }
+
+    #[test]
+    fn clean_or_missing_stream_needs_no_repair() {
+        let clean = QualityReport {
+            verdict: QualityVerdict::Clean,
+            issues: vec![],
+        };
+        assert!(
+            select_repair_plan(
+                &clean,
+                &probe_for_strategy(),
+                &QualityExpectations::default()
+            )
+            .is_none()
+        );
+
+        let missing = QualityReport {
+            verdict: QualityVerdict::NeedsReview,
+            issues: vec![QualityIssue::MissingVideo],
+        };
+        assert!(
+            select_repair_plan(
+                &missing,
+                &probe_for_strategy(),
+                &QualityExpectations::default()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn build_args_for_cfr_transcode() {
+        let plan = RepairPlan {
+            video: VideoRepair::CfrTranscode,
+            audio: AudioRepair::Copy,
+            target_fps: 30.0,
+            interpolated: false,
+        };
+        let args = build_repair_args("in.mp4", "out.mp4", &plan);
+        assert!(args.iter().any(|arg| arg == "fps=30"));
+        assert!(args.windows(2).any(|w| w[0] == "-c:v" && w[1] == "libx264"));
+        assert!(args.windows(2).any(|w| w[0] == "-crf" && w[1] == "18"));
+        assert!(args.windows(2).any(|w| w[0] == "-c:a" && w[1] == "copy"));
+        assert_eq!(args.last().unwrap(), "out.mp4");
+    }
+
+    #[test]
+    fn build_args_for_channel_repair_uses_pan() {
+        let plan = RepairPlan {
+            video: VideoRepair::Copy,
+            audio: AudioRepair::CenterChannel { source_channel: 0 },
+            target_fps: 30.0,
+            interpolated: false,
+        };
+        let args = build_repair_args("in.mp4", "out.mp4", &plan);
+        assert!(args.windows(2).any(|w| w[0] == "-c:v" && w[1] == "copy"));
+        assert!(args.iter().any(|arg| arg == "pan=stereo|c0=c0|c1=c0"));
+        assert!(args.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"));
     }
 }
