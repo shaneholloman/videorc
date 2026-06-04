@@ -60,7 +60,10 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Skipped frames" value={diagnosticStats.skippedFrames.toString()} />
             <DiagnosticMetric label="Dropped frames" value={formatDroppedFrames(diagnosticStats.droppedFrames || streamHealth?.droppedFrames)} />
             <DiagnosticMetric label="Encoder speed" value={formatMetric(diagnosticStats.encoderSpeed ?? streamHealth?.speed, 'x')} />
-            <DiagnosticMetric label="Preview latency" value={formatMs(diagnosticStats.previewLatencyMs)} />
+            <DiagnosticMetric label="Preview mode" value={formatPreviewTransport(diagnosticStats.previewTransport)} />
+            <DiagnosticMetric label="Preview target" value={formatMetric(diagnosticStats.previewTargetFps, 'fps')} />
+            <DiagnosticMetric label="Preview cadence" value={formatMs(diagnosticStats.previewLatencyMs)} />
+            <DiagnosticMetric label="Preview age" value={formatMs(diagnosticStats.previewFrameAgeMs)} />
             <DiagnosticMetric label="Preview drops" value={diagnosticStats.previewDroppedFrames.toString()} />
             <DiagnosticMetric label="Mic drops" value={diagnosticStats.micDroppedFrames.toString()} />
             <DiagnosticMetric label="Device state" value={diagnosticStats.deviceDisconnected ? 'Disconnected' : 'Connected'} />
@@ -68,6 +71,7 @@ export function DiagnosticsTab(): ReactElement {
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge label="Likely bottleneck" tone={bottleneck.tone} value={bottleneck.label} />
             <StatusBadge label="Preview" tone={previewLiveStatus.state === 'live' ? 'good' : 'warn'} value={previewLiveStatus.state} />
+            <StatusBadge label="Preview path" tone={previewLiveStatus.transport === 'native-surface' ? 'good' : 'neutral'} value={formatPreviewTransport(previewLiveStatus.transport)} />
             {diagnosticStats.targetFps ? (
               <Badge variant="outline">Target {diagnosticStats.targetFps} FPS</Badge>
             ) : null}
@@ -308,4 +312,17 @@ function recordingQualityWarning(bottleneck: DiagnosticBottleneck): string | nul
 
 function formatMs(value?: number): string {
   return typeof value === 'number' ? `${value.toFixed(0)} ms` : '-- ms'
+}
+
+function formatPreviewTransport(transport?: string): string {
+  switch (transport) {
+    case 'native-surface':
+      return 'Native'
+    case 'latest-jpeg-polling':
+      return 'JPEG'
+    case 'mjpeg-stream':
+      return 'MJPEG'
+    default:
+      return 'Unavailable'
+  }
 }

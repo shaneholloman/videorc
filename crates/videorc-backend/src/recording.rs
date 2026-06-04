@@ -27,14 +27,16 @@ use crate::audio::{
 use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
 use crate::devices::{find_avfoundation_camera_index, find_avfoundation_screen_index};
 use crate::diagnostics::{
-    apply_audio_stats, apply_preview_stats, apply_stream_health, starting_diagnostics,
+    apply_audio_stats, apply_preview_frame_age, apply_preview_stats, apply_stream_health,
+    starting_diagnostics,
 };
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
+use crate::ffmpeg_work::CapturePermit;
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
     CameraTransformMode, HealthLevel, LayoutPreset, PreviewLiveParams, PreviewLiveSource,
-    PreviewLiveState, PreviewLiveStatus, PreviewSnapshot, PreviewSnapshotParams,
+    PreviewLiveState, PreviewLiveStatus, PreviewSnapshot, PreviewSnapshotParams, PreviewTransport,
     RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset,
     RtmpSettings, SideBySideCameraSide, SideBySideSplit, StartSessionParams, StreamHealth,
     VideoPreset, VideoSettings,
@@ -44,7 +46,7 @@ use crate::repair::{
 };
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::secrets;
-use crate::state::AppState;
+use crate::state::{AppState, PreviewFrame};
 use crate::storage::{NewSession, PlatformAccountCredentials, default_preview_dir};
 use crate::streaming::{
     StreamAuthMode, StreamPlatform, StreamTargetRuntime, StreamTargetSettings, StreamTargetState,
@@ -78,6 +80,7 @@ const PREVIEW_READ_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_PENDING_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 const SCREEN_OVERLAY_FPS: u32 = 4;
 const SCREEN_OVERLAY_FIFO_OPEN_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
+const POST_RECORDING_GATE_IDLE_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub struct ActiveRecording {
@@ -93,6 +96,7 @@ pub struct ActiveRecording {
     pub pipeline: RecordingPipeline,
     pub native_audio: Option<NativeAudioCaptureSession>,
     pub screen_overlay: Option<ScreenOverlaySession>,
+    pub _capture_permit: Option<CapturePermit>,
     pub stop_requested: bool,
 }
 
@@ -249,6 +253,7 @@ pub async fn start_session(
         bail!("A capture session is already running");
     }
 
+    let capture_permit = state.ffmpeg_work.begin_capture_when_available().await;
     hydrate_stream_key_secret_refs(&state, &mut params)?;
     validate_outputs(&params)?;
 
@@ -488,6 +493,7 @@ pub async fn start_session(
             )?),
             None => None,
         },
+        _capture_permit: Some(capture_permit),
         stop_requested: false,
     };
     let running_state = if params.output.stream_enabled && !params.output.record_enabled {
@@ -1040,6 +1046,10 @@ async fn start_idle_live_preview(
         guard.status = PreviewLiveStatus {
             state: starting_state,
             source: PreviewLiveSource::IdlePreview,
+            transport: PreviewTransport::LatestJpegPolling,
+            target_fps: Some(IDLE_PREVIEW_FPS),
+            width: Some(IDLE_PREVIEW_WIDTH),
+            height: Some(IDLE_PREVIEW_HEIGHT),
             url: Some(live_preview_url(&state)),
             message: Some("Starting live preview.".to_string()),
         };
@@ -1146,6 +1156,10 @@ async fn stop_idle_live_preview_for_recording(state: AppState) {
             guard.status = PreviewLiveStatus {
                 state: PreviewLiveState::Connecting,
                 source: PreviewLiveSource::RecordingSession,
+                transport: PreviewTransport::LatestJpegPolling,
+                target_fps: Some(RECORDING_PREVIEW_FPS),
+                width: Some(RECORDING_PREVIEW_WIDTH),
+                height: Some(RECORDING_PREVIEW_HEIGHT),
                 url: Some(live_preview_url(&state)),
                 message: Some("Switching preview to the recording session.".to_string()),
             };
@@ -1180,6 +1194,10 @@ async fn restart_idle_live_preview_if_desired(state: AppState) {
             guard.status = PreviewLiveStatus {
                 state: PreviewLiveState::Reconnecting,
                 source: PreviewLiveSource::IdlePreview,
+                transport: PreviewTransport::LatestJpegPolling,
+                target_fps: Some(IDLE_PREVIEW_FPS),
+                width: Some(IDLE_PREVIEW_WIDTH),
+                height: Some(IDLE_PREVIEW_HEIGHT),
                 url: Some(live_preview_url(&state)),
                 message: Some("Restarting idle live preview.".to_string()),
             };
@@ -1235,11 +1253,14 @@ async fn publish_preview_stdout(state: AppState, idle_pid: Option<u32>, mut stdo
 
                 while let Some(part) = drain_next_mjpeg_part(&mut pending) {
                     if let Some(jpeg) = jpeg_bytes_from_mjpeg_part(&part) {
-                        *state.preview_latest_frame.write().await = Some(jpeg);
+                        let now = Instant::now();
+                        *state.preview_latest_frame.write().await = Some(PreviewFrame {
+                            bytes: jpeg,
+                            published_at: now,
+                        });
                         if let Some(pid) = idle_pid {
                             mark_idle_live_preview_frame_received(&state, pid).await;
                         }
-                        let now = Instant::now();
                         let preview_latency_ms = last_frame_at.map(|last_frame_at| {
                             now.saturating_duration_since(last_frame_at).as_millis() as u64
                         });
@@ -1248,6 +1269,7 @@ async fn publish_preview_stdout(state: AppState, idle_pid: Option<u32>, mut stdo
                             &state,
                             preview_latency_ms,
                             dropped_preview_frames,
+                            preview_target_fps_for_source(idle_pid),
                         )
                         .await;
                     }
@@ -1275,6 +1297,7 @@ async fn update_preview_diagnostics(
     state: &AppState,
     preview_latency_ms: Option<u64>,
     preview_dropped_frames: u64,
+    preview_target_fps: Option<f64>,
 ) {
     let diagnostic_stats = {
         let mut diagnostics = state.diagnostics.lock().await;
@@ -1282,11 +1305,31 @@ async fn update_preview_diagnostics(
             diagnostics.clone(),
             preview_latency_ms,
             preview_dropped_frames,
+            preview_target_fps,
+            PreviewTransport::LatestJpegPolling,
         );
         *diagnostics = next.clone();
         next
     };
     state.emit_event("diagnostics.stats", diagnostic_stats);
+}
+
+pub async fn update_preview_frame_age(state: &AppState, preview_frame_age_ms: u64) {
+    let diagnostic_stats = {
+        let mut diagnostics = state.diagnostics.lock().await;
+        let next = apply_preview_frame_age(diagnostics.clone(), preview_frame_age_ms);
+        *diagnostics = next.clone();
+        next
+    };
+    state.emit_event("diagnostics.stats", diagnostic_stats);
+}
+
+fn preview_target_fps_for_source(idle_pid: Option<u32>) -> Option<f64> {
+    Some(f64::from(if idle_pid.is_some() {
+        IDLE_PREVIEW_FPS
+    } else {
+        RECORDING_PREVIEW_FPS
+    }))
 }
 
 fn drain_next_mjpeg_part(pending: &mut Vec<u8>) -> Option<Vec<u8>> {
@@ -1346,6 +1389,10 @@ async fn mark_idle_live_preview_frame_received(state: &AppState, pid: u32) {
             guard.status = PreviewLiveStatus {
                 state: PreviewLiveState::Live,
                 source: PreviewLiveSource::IdlePreview,
+                transport: PreviewTransport::LatestJpegPolling,
+                target_fps: Some(IDLE_PREVIEW_FPS),
+                width: Some(IDLE_PREVIEW_WIDTH),
+                height: Some(IDLE_PREVIEW_HEIGHT),
                 url: Some(live_preview_url(state)),
                 message: Some("Live preview is receiving frames.".to_string()),
             };
@@ -1444,6 +1491,10 @@ fn recording_live_preview_status(state: &AppState, message: Option<String>) -> P
     PreviewLiveStatus {
         state: PreviewLiveState::Live,
         source: PreviewLiveSource::RecordingSession,
+        transport: PreviewTransport::LatestJpegPolling,
+        target_fps: Some(RECORDING_PREVIEW_FPS),
+        width: Some(RECORDING_PREVIEW_WIDTH),
+        height: Some(RECORDING_PREVIEW_HEIGHT),
         url: Some(live_preview_url(state)),
         message: Some(message.unwrap_or_else(|| {
             "Live preview is following the active recording session.".to_string()
@@ -1455,6 +1506,10 @@ fn unavailable_live_preview_status(message: Option<String>) -> PreviewLiveStatus
     PreviewLiveStatus {
         state: PreviewLiveState::Unavailable,
         source: PreviewLiveSource::Unavailable,
+        transport: PreviewTransport::Unavailable,
+        target_fps: None,
+        width: None,
+        height: None,
         url: None,
         message,
     }
@@ -1594,6 +1649,7 @@ async fn monitor_session(
     gate: PostRecordingGate,
 ) {
     let status = child.wait().await;
+    let finalizing_permit = state.ffmpeg_work.begin_finalizing();
     let mut guard = state.recording.lock().await;
     let monitored_recording = guard
         .as_ref()
@@ -1746,7 +1802,7 @@ async fn monitor_session(
             // the hot path. The recording is already marked complete; the gate only ever
             // replaces the visible file with a validated better version, keeping a backup.
             if let Some(final_path) = mp4_path.clone().or(output_path.clone()) {
-                spawn_post_recording_gate(
+                enqueue_post_recording_gate(
                     state.clone(),
                     gate_session_id,
                     monitored_recording.ffmpeg_path.clone(),
@@ -1826,18 +1882,15 @@ async fn monitor_session(
             );
         }
     }
+    drop(finalizing_permit);
 
     restart_idle_live_preview_if_desired(state).await;
 }
 
-/// Runs the post-recording quality gate (slices 8 & 9) off the hot path: persists a
-/// repair job, probes the finalized file and — if it is not already clean — attempts a
-/// backup-safe repair, then reports the verdict as a health event and records the
-/// outcome on the job. Because the recording is already marked complete, this never
-/// blocks finalization, and the visible file is only ever replaced by a validated better
-/// version (with the original kept in a hidden backup). The persisted job is what lets an
-/// interrupted check resume on the next launch.
-fn spawn_post_recording_gate(
+/// Queues the post-recording quality gate through the idle-only maintenance coordinator.
+/// The job is persisted immediately, but FFmpeg analysis/repair only starts after capture
+/// and finalization are idle.
+fn enqueue_post_recording_gate(
     state: AppState,
     session_id: String,
     ffmpeg_path: String,
@@ -1856,12 +1909,21 @@ fn spawn_post_recording_gate(
             &expectations,
             Utc::now().to_rfc3339(),
         );
+        let _ = state.database.upsert_repair_job(&job);
+
+        state.emit_log(
+            "info",
+            format!("Queued post-recording quality check for {path_str}."),
+        );
+
+        sleep(POST_RECORDING_GATE_IDLE_DELAY).await;
+        let _maintenance = state.ffmpeg_work.begin_maintenance_when_idle().await;
         job.mark_running(Utc::now().to_rfc3339());
         let _ = state.database.upsert_repair_job(&job);
 
         state.emit_log(
             "info",
-            format!("Running post-recording quality check on {path_str}."),
+            format!("Running idle post-recording quality check on {path_str}."),
         );
 
         match run_quality_gate(ffmpeg_path, path_str, expectations).await {
@@ -1956,11 +2018,9 @@ fn emit_gate_health(state: &AppState, session_id: Option<&str>, status: &GateSta
     }
 }
 
-/// On launch, re-runs any repair jobs left unfinished (pending or running) when the app
-/// last quit. Each job is re-analyzed from scratch — the stored plan is intentionally not
-/// trusted — and its result is persisted, so an interrupted repair always converges to a
-/// final, recorded state. Backup-then-validate keeps a half-run repair from corrupting
-/// the visible file, and re-running a job whose file is already clean is a cheap no-op.
+/// On launch, queues any repair jobs left unfinished (pending or running) when the app
+/// last quit. FFmpeg work still waits for the idle-only maintenance coordinator, so
+/// startup never races the user's first capture.
 pub async fn resume_pending_repair_jobs(state: AppState) {
     let jobs = match state.database.incomplete_repair_jobs() {
         Ok(jobs) => jobs,
@@ -1978,36 +2038,38 @@ pub async fn resume_pending_repair_jobs(state: AppState) {
 
     state.emit_log(
         "info",
-        format!("Resuming {} interrupted repair job(s).", jobs.len()),
+        format!("Queued {} interrupted repair job(s).", jobs.len()),
     );
     let ffmpeg_path = resolve_ffmpeg_path(None);
 
     for mut job in jobs {
-        job.mark_running(Utc::now().to_rfc3339());
-        let _ = state.database.upsert_repair_job(&job);
+        let state = state.clone();
+        let ffmpeg_path = ffmpeg_path.clone();
+        tokio::spawn(async move {
+            sleep(POST_RECORDING_GATE_IDLE_DELAY).await;
+            let _maintenance = state.ffmpeg_work.begin_maintenance_when_idle().await;
+            job.mark_running(Utc::now().to_rfc3339());
+            let _ = state.database.upsert_repair_job(&job);
 
-        let gate = run_quality_gate(
-            ffmpeg_path.clone(),
-            job.file_path.clone(),
-            job.expectations(),
-        );
-        match gate.await {
-            Ok(status) => {
-                emit_gate_health(&state, None, &status);
-                job.complete_with_gate(&status, Utc::now().to_rfc3339());
+            let gate = run_quality_gate(ffmpeg_path, job.file_path.clone(), job.expectations());
+            match gate.await {
+                Ok(status) => {
+                    emit_gate_health(&state, None, &status);
+                    job.complete_with_gate(&status, Utc::now().to_rfc3339());
+                }
+                Err(error) => {
+                    state.emit_log(
+                        "warn",
+                        format!("Could not resume repair for {}: {error}", job.file_path),
+                    );
+                    job.fail(
+                        format!("resume task failed: {error}"),
+                        Utc::now().to_rfc3339(),
+                    );
+                }
             }
-            Err(error) => {
-                state.emit_log(
-                    "warn",
-                    format!("Could not resume repair for {}: {error}", job.file_path),
-                );
-                job.fail(
-                    format!("resume task failed: {error}"),
-                    Utc::now().to_rfc3339(),
-                );
-            }
-        }
-        let _ = state.database.upsert_repair_job(&job);
+            let _ = state.database.upsert_repair_job(&job);
+        });
     }
 }
 
@@ -4418,6 +4480,10 @@ mod tests {
             status: PreviewLiveStatus {
                 state: PreviewLiveState::Connecting,
                 source: PreviewLiveSource::IdlePreview,
+                transport: PreviewTransport::LatestJpegPolling,
+                target_fps: Some(IDLE_PREVIEW_FPS),
+                width: Some(IDLE_PREVIEW_WIDTH),
+                height: Some(IDLE_PREVIEW_HEIGHT),
                 url: Some("http://127.0.0.1:1234/preview/live.mjpeg?token=test".to_string()),
                 message: Some("Starting live preview.".to_string()),
             },

@@ -237,6 +237,7 @@ const StudioContext = createContext<StudioContextValue | null>(null)
 const idleDiagnosticStats = (): DiagnosticStats => ({
   skippedFrames: 0,
   droppedFrames: 0,
+  previewTransport: 'unavailable',
   previewDroppedFrames: 0,
   micDroppedFrames: 0,
   deviceDisconnected: false,
@@ -287,6 +288,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [previewLiveStatus, setPreviewLiveStatus] = useState<PreviewLiveStatus>({
     state: 'unavailable',
     source: 'unavailable',
+    transport: 'unavailable',
     message: 'Live preview is not running.'
   })
   const [scene, setScene] = useState<Scene | null>(null)
@@ -1116,6 +1118,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setPreviewLiveStatus({
         state: 'unavailable',
         source: 'unavailable',
+        transport: 'unavailable',
         message: error instanceof Error ? error.message : 'Live preview failed.'
       })
       setPreviewUrl(null)

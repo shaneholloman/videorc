@@ -17,6 +17,7 @@
     "smoke:dev": "node scripts/smoke-dev-app.mjs",
     "smoke:sources": "node scripts/smoke-source-reconciliation.mjs",
     "smoke:start-labels": "node scripts/smoke-start-labels.mjs",
+    "smoke:preview-performance": "node scripts/smoke-preview-performance-app.mjs",
     "smoke:recording-performance": "node scripts/smoke-recording-performance-app.mjs",
     "smoke:streaming-secrets": "node scripts/smoke-streaming-secrets.mjs",
     "smoke:platform-lifecycle": "node scripts/smoke-platform-lifecycle.mjs",

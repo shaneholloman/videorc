@@ -425,6 +425,10 @@ pub fn analyze_audio_balance(
         .args([
             "-hide_banner",
             "-nostats",
+            "-threads",
+            "1",
+            "-filter_threads",
+            "1",
             "-i",
             file_path,
             "-map",
@@ -491,6 +495,10 @@ pub fn detect_freezes(
     let output = Command::new(ffmpeg_path)
         .args([
             "-hide_banner",
+            "-threads",
+            "1",
+            "-filter_threads",
+            "1",
             "-i",
             file_path,
             "-map",
@@ -621,6 +629,10 @@ pub fn build_repair_args(input: &str, output: &str, plan: &RepairPlan) -> Vec<St
         "-hide_banner".to_string(),
         "-loglevel".to_string(),
         "error".to_string(),
+        "-filter_threads".to_string(),
+        "1".to_string(),
+        "-filter_complex_threads".to_string(),
+        "1".to_string(),
         "-i".to_string(),
         input.to_string(),
     ];
@@ -673,6 +685,8 @@ pub fn build_repair_args(input: &str, output: &str, plan: &RepairPlan) -> Vec<St
             "18".to_string(),
             "-preset".to_string(),
             "medium".to_string(),
+            "-threads".to_string(),
+            "1".to_string(),
             "-pix_fmt".to_string(),
             "yuv420p".to_string(),
         ]);

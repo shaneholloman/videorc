@@ -754,10 +754,15 @@ export interface PreviewSnapshot {
 
 export type PreviewLiveState = 'connecting' | 'live' | 'reconnecting' | 'unavailable'
 export type PreviewLiveSource = 'idle-preview' | 'recording-session' | 'unavailable'
+export type PreviewTransport = 'native-surface' | 'latest-jpeg-polling' | 'mjpeg-stream' | 'unavailable'
 
 export interface PreviewLiveStatus {
   state: PreviewLiveState
   source: PreviewLiveSource
+  transport: PreviewTransport
+  targetFps?: number
+  width?: number
+  height?: number
   url?: string
   message?: string
 }
@@ -804,6 +809,9 @@ export interface DiagnosticStats {
   skippedFrames: number
   droppedFrames: number
   encoderSpeed?: number
+  previewTargetFps?: number
+  previewFrameAgeMs?: number
+  previewTransport: PreviewTransport
   previewLatencyMs?: number
   previewDroppedFrames: number
   micCapturedFrames?: number
@@ -979,7 +987,8 @@ export type GateStatus =
 /** Live per-file progress emitted on the `repair.status` event during a repair. */
 export interface RepairStatusEvent {
   path: string
-  status: 'checking' | 'repairing' | 'ready' | 'repaired' | 'not-100' | 'failed'
+  status: 'checking' | 'repairing' | 'deferred' | 'ready' | 'repaired' | 'not-100' | 'failed'
+  reason?: string
 }
 
 export interface RepairFileParams {

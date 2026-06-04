@@ -4,6 +4,7 @@ mod camera_capture;
 mod devices;
 mod diagnostics;
 mod ffmpeg;
+mod ffmpeg_work;
 mod live_pipeline;
 mod live_render;
 mod live_scene;
@@ -47,7 +48,7 @@ use protocol::{
 use recording::{
     create_preview_snapshot, idle_status, live_preview_status, preview_file_path, remux_session,
     resume_pending_repair_jobs, shutdown_capture_processes, start_live_preview, start_session,
-    stop_live_preview, stop_recording, subscribe_live_preview_frames,
+    stop_live_preview, stop_recording, subscribe_live_preview_frames, update_preview_frame_age,
 };
 use scene::{
     nudge_source, reorder_sources, reset_source_transform, scene_from_capture_config,
@@ -121,7 +122,7 @@ async fn main() -> Result<()> {
     std::io::stdout().flush()?;
 
     state.emit_log("info", "Videorc backend ready.");
-    // Resume any repair jobs that were interrupted by a previous quit (slice 9).
+    // Resume interrupted repair jobs through the idle-only maintenance queue.
     tokio::spawn(resume_pending_repair_jobs(state.clone()));
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state.clone()))
@@ -256,16 +257,19 @@ async fn live_preview_frame_handler(
     }
 
     match state.preview_latest_frame.read().await.clone() {
-        Some(bytes) => (
-            [
-                (header::CONTENT_TYPE, "image/jpeg"),
-                (header::CACHE_CONTROL, "no-store, no-cache, must-revalidate"),
-                (header::PRAGMA, "no-cache"),
-                (header::EXPIRES, "0"),
-            ],
-            bytes,
-        )
-            .into_response(),
+        Some(frame) => {
+            update_preview_frame_age(&state, frame.published_at.elapsed().as_millis() as u64).await;
+            (
+                [
+                    (header::CONTENT_TYPE, "image/jpeg"),
+                    (header::CACHE_CONTROL, "no-store, no-cache, must-revalidate"),
+                    (header::PRAGMA, "no-cache"),
+                    (header::EXPIRES, "0"),
+                ],
+                frame.bytes,
+            )
+                .into_response()
+        }
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -1662,7 +1666,7 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
         }
         "repair.assess_file" => {
             match serde_json::from_value::<protocol::RepairFileParams>(command.params) {
-                Ok(params) => match repair_service::assess_file(params).await {
+                Ok(params) => match repair_service::assess_file(state.clone(), params).await {
                     Ok(result) => ServerResponse::ok(command.id, result),
                     Err(error) => ServerResponse::error(command.id, "repair-assess-failed", error),
                 },

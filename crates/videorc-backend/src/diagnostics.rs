@@ -1,6 +1,8 @@
 use chrono::Utc;
 
-use crate::protocol::{DiagnosticBottleneck, DiagnosticStats, PermissionPane, StreamHealth};
+use crate::protocol::{
+    DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewTransport, StreamHealth,
+};
 
 pub fn idle_diagnostics() -> DiagnosticStats {
     DiagnosticStats {
@@ -11,6 +13,9 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         skipped_frames: 0,
         dropped_frames: 0,
         encoder_speed: None,
+        preview_target_fps: None,
+        preview_frame_age_ms: None,
+        preview_transport: PreviewTransport::Unavailable,
         preview_latency_ms: None,
         preview_dropped_frames: 0,
         mic_captured_frames: None,
@@ -64,12 +69,25 @@ pub fn apply_preview_stats(
     mut stats: DiagnosticStats,
     preview_latency_ms: Option<u64>,
     preview_dropped_frames: u64,
+    preview_target_fps: Option<f64>,
+    preview_transport: PreviewTransport,
 ) -> DiagnosticStats {
     stats.preview_latency_ms = preview_latency_ms;
     stats.preview_dropped_frames = preview_dropped_frames;
+    stats.preview_target_fps = preview_target_fps;
+    stats.preview_transport = preview_transport;
     if preview_dropped_frames > 0 {
         stats.bottleneck = DiagnosticBottleneck::Preview;
     }
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
+}
+
+pub fn apply_preview_frame_age(
+    mut stats: DiagnosticStats,
+    preview_frame_age_ms: u64,
+) -> DiagnosticStats {
+    stats.preview_frame_age_ms = Some(preview_frame_age_ms);
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }

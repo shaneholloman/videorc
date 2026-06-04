@@ -11,6 +11,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
+use crate::ffmpeg_work::MaintenanceDeferral;
 use crate::protocol::{RepairFileParams, RepairRestoreParams};
 use crate::repair::{
     GateStatus, QualityExpectations, QualityIssue, QualityThresholds, QualityVerdict,
@@ -50,6 +51,17 @@ fn emit_status(state: &AppState, path: &str, status: &str) {
     );
 }
 
+fn emit_deferred_status(state: &AppState, path: &str, deferral: MaintenanceDeferral) {
+    state.emit_event(
+        "repair.status",
+        serde_json::json!({
+            "path": path,
+            "status": "deferred",
+            "reason": deferral.message(),
+        }),
+    );
+}
+
 /// The renderer status label for a finished gate verdict.
 fn gate_status_label(status: &GateStatus) -> &'static str {
     match status {
@@ -71,10 +83,20 @@ fn gate_status_path(status: &GateStatus) -> &str {
 
 /// Assesses a single recording without modifying it: returns the verdict, issues, plain
 /// reasons, whether a repair is possible, and whether a backup already exists.
-pub async fn assess_file(params: RepairFileParams) -> Result<FileAssessment, String> {
+pub async fn assess_file(
+    state: AppState,
+    params: RepairFileParams,
+) -> Result<FileAssessment, String> {
     let path = params.path.clone();
     let ffmpeg_path = resolve_ffmpeg_path(params.ffmpeg_path.clone());
     let expectations = expectations_from(&params);
+    let _maintenance = match state.ffmpeg_work.try_begin_maintenance() {
+        Ok(permit) => permit,
+        Err(deferral) => {
+            emit_deferred_status(&state, &path, deferral);
+            return Err(deferral.message().to_string());
+        }
+    };
 
     let probe_path = path.clone();
     let (report, repairable) = tokio::task::spawn_blocking(move || {
@@ -113,6 +135,13 @@ pub async fn repair_file(state: AppState, params: RepairFileParams) -> Result<Ga
     let path = params.path.clone();
     let ffmpeg_path = resolve_ffmpeg_path(params.ffmpeg_path.clone());
     let expectations = expectations_from(&params);
+    let _maintenance = match state.ffmpeg_work.try_begin_maintenance() {
+        Ok(permit) => permit,
+        Err(deferral) => {
+            emit_deferred_status(&state, &path, deferral);
+            return Err(deferral.message().to_string());
+        }
+    };
 
     emit_status(&state, &path, "checking");
     emit_status(&state, &path, "repairing");

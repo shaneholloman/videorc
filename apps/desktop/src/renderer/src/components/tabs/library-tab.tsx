@@ -19,7 +19,7 @@ import { Empty, EmptyDescription, EmptyMedia, EmptyTitle } from '@/components/ui
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useStudio } from '@/hooks/use-studio'
 import type { FileAssessment, GateStatus, SessionSummary } from '@/lib/backend'
-import { dayLabel, durationMsLabel } from '@/lib/format'
+import { dayLabel, durationMsLabel, isActiveRecordingState } from '@/lib/format'
 
 export function LibraryTab({ onOpenInAi }: { onOpenInAi: (sessionId: string) => void }): ReactElement {
   const { sessions } = useStudio()
@@ -104,7 +104,7 @@ function SessionRow({
 type RepairPhase = 'idle' | 'checking' | 'assessed' | 'repairing' | 'done'
 
 function RepairControls({ filePath }: { filePath: string }): ReactElement {
-  const { assessRecording, repairRecording, restoreRecording, wsStatus } = useStudio()
+  const { assessRecording, repairRecording, restoreRecording, recording, wsStatus } = useStudio()
   const [phase, setPhase] = useState<RepairPhase>('idle')
   const [assessment, setAssessment] = useState<FileAssessment | null>(null)
   const [result, setResult] = useState<GateStatus | null>(null)
@@ -112,6 +112,7 @@ function RepairControls({ filePath }: { filePath: string }): ReactElement {
 
   const busy = phase === 'checking' || phase === 'repairing'
   const disconnected = wsStatus !== 'connected'
+  const captureProtected = isActiveRecordingState(recording.state)
   const canRepair = assessment?.repairable ?? false
 
   const runCheck = async (): Promise<void> => {
@@ -172,7 +173,7 @@ function RepairControls({ filePath }: { filePath: string }): ReactElement {
   return (
     <div className="flex flex-col gap-2 border-t pt-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Button disabled={busy || disconnected} size="sm" variant="outline" onClick={runCheck}>
+        <Button disabled={busy || disconnected || captureProtected} size="sm" variant="outline" onClick={runCheck}>
           {phase === 'checking' ? (
             <CircleNotch className="animate-spin" data-icon="inline-start" />
           ) : (
@@ -181,7 +182,7 @@ function RepairControls({ filePath }: { filePath: string }): ReactElement {
           {phase === 'checking' ? 'Checking…' : 'Check quality'}
         </Button>
         {canRepair ? (
-          <Button disabled={busy || disconnected} size="sm" onClick={runRepair}>
+          <Button disabled={busy || disconnected || captureProtected} size="sm" onClick={runRepair}>
             {phase === 'repairing' ? (
               <CircleNotch className="animate-spin" data-icon="inline-start" />
             ) : (
@@ -191,11 +192,12 @@ function RepairControls({ filePath }: { filePath: string }): ReactElement {
           </Button>
         ) : null}
         {hasBackup ? (
-          <Button disabled={busy || disconnected} size="sm" variant="ghost" onClick={runRestore}>
+          <Button disabled={busy || disconnected || captureProtected} size="sm" variant="ghost" onClick={runRestore}>
             <ArrowCounterClockwise data-icon="inline-start" />
             Restore original
           </Button>
         ) : null}
+        {captureProtected ? <Badge variant="outline">Deferred while recording</Badge> : null}
         <RepairBadge assessment={assessment} result={result} />
       </div>
       {reasons.length > 0 ? (

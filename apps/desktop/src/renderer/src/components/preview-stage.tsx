@@ -116,6 +116,8 @@ export function PreviewStage({
   const [displayPreviewUrl, setDisplayPreviewUrl] = useState<string | null>(previewUrl)
   const isLive = previewLiveStatus.state === 'live'
   const latestFrameUrl = useMemo(() => latestPreviewFrameUrl(previewUrl), [previewUrl])
+  const previewPollMs = useMemo(() => previewPollingIntervalMs(previewLiveStatus), [previewLiveStatus])
+  const transportLabel = previewTransportLabel(previewLiveStatus.transport)
   const showActiveScreen = Boolean(activeScreen && activeScreen.status === 'ready' && !screenImageFailed)
   const showUnavailable = !showActiveScreen && (previewLiveStatus.state === 'unavailable' || imageFailed)
   const badgeLabel =
@@ -153,9 +155,9 @@ export function PreviewStage({
     }
 
     updateFrame()
-    const timer = window.setInterval(updateFrame, 250)
+    const timer = window.setInterval(updateFrame, previewPollMs)
     return () => window.clearInterval(timer)
-  }, [isLive, latestFrameUrl, previewUrl])
+  }, [isLive, latestFrameUrl, previewPollMs, previewUrl])
 
   const stageRef = useRef<HTMLDivElement | null>(null)
   const [cameraDrag, setCameraDrag] = useState<CameraDrag | null>(null)
@@ -266,6 +268,11 @@ export function PreviewStage({
         <Badge className="absolute top-2 left-2" variant={isLive ? 'success' : 'secondary'}>
           {previewLoading ? 'Connecting' : badgeLabel}
         </Badge>
+        {transportLabel ? (
+          <Badge className="absolute top-9 left-2" variant={previewLiveStatus.transport === 'native-surface' ? 'success' : 'secondary'}>
+            {transportLabel}
+          </Badge>
+        ) : null}
         {activeScreen ? (
           <Badge className="absolute top-2 right-2" variant={showActiveScreen ? 'warning' : 'destructive'}>
             {showActiveScreen ? activeScreen.name : 'Screen missing'}
@@ -361,6 +368,28 @@ function latestPreviewFrameUrl(previewUrl: string | null): string | null {
   return previewUrl.includes('/preview/live.mjpeg')
     ? previewUrl.replace('/preview/live.mjpeg', '/preview/live.jpg')
     : null
+}
+
+function previewPollingIntervalMs(status: PreviewLiveStatus): number {
+  if (status.transport !== 'latest-jpeg-polling') {
+    return 250
+  }
+
+  const targetFps = status.targetFps && Number.isFinite(status.targetFps) ? status.targetFps : 4
+  return clampRange(Math.round(1000 / Math.max(1, targetFps)), 80, 250)
+}
+
+function previewTransportLabel(transport: PreviewLiveStatus['transport']): string | null {
+  switch (transport) {
+    case 'native-surface':
+      return 'Native preview'
+    case 'latest-jpeg-polling':
+      return 'JPEG fallback'
+    case 'mjpeg-stream':
+      return 'MJPEG debug'
+    default:
+      return null
+  }
 }
 
 function fileUrlFromPath(path: string): string {

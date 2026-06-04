@@ -649,6 +649,13 @@ pub struct PreviewLiveParams {
 pub struct PreviewLiveStatus {
     pub state: PreviewLiveState,
     pub source: PreviewLiveSource,
+    pub transport: PreviewTransport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_fps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -669,6 +676,15 @@ pub enum PreviewLiveState {
 pub enum PreviewLiveSource {
     IdlePreview,
     RecordingSession,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviewTransport {
+    NativeSurface,
+    LatestJpegPolling,
+    MjpegStream,
     Unavailable,
 }
 
@@ -713,6 +729,9 @@ pub struct DiagnosticStats {
     pub skipped_frames: u64,
     pub dropped_frames: u64,
     pub encoder_speed: Option<f64>,
+    pub preview_target_fps: Option<f64>,
+    pub preview_frame_age_ms: Option<u64>,
+    pub preview_transport: PreviewTransport,
     pub preview_latency_ms: Option<u64>,
     pub preview_dropped_frames: u64,
     pub mic_captured_frames: Option<u64>,

@@ -1,9 +1,11 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::Utc;
 use tokio::sync::broadcast;
 
 use crate::diagnostics::idle_diagnostics;
+use crate::ffmpeg_work::FfmpegWorkCoordinator;
 use crate::oauth::OAuthSessions;
 use crate::protocol::{BackendLogEvent, DiagnosticStats, Scene, ServerEvent};
 use crate::recording::{LivePreviewSlot, RecordingSlot, initial_live_preview_state};
@@ -13,6 +15,12 @@ use crate::storage::Database;
 const PREVIEW_FRAME_CHANNEL_CAPACITY: usize = 256;
 
 #[derive(Clone)]
+pub struct PreviewFrame {
+    pub bytes: Vec<u8>,
+    pub published_at: Instant,
+}
+
+#[derive(Clone)]
 pub struct AppState {
     pub token: String,
     pub port: u16,
@@ -20,11 +28,12 @@ pub struct AppState {
     pub recording: RecordingSlot,
     pub live_preview: LivePreviewSlot,
     pub preview_frames: broadcast::Sender<Vec<u8>>,
-    pub preview_latest_frame: Arc<tokio::sync::RwLock<Option<Vec<u8>>>>,
+    pub preview_latest_frame: Arc<tokio::sync::RwLock<Option<PreviewFrame>>>,
     pub scene: Arc<tokio::sync::Mutex<Scene>>,
     pub diagnostics: Arc<tokio::sync::Mutex<DiagnosticStats>>,
     pub database: Database,
     pub oauth: Arc<OAuthSessions>,
+    pub ffmpeg_work: Arc<FfmpegWorkCoordinator>,
 }
 
 impl AppState {
@@ -46,6 +55,7 @@ impl AppState {
             diagnostics: Arc::new(tokio::sync::Mutex::new(idle_diagnostics())),
             database,
             oauth: Arc::new(OAuthSessions::default()),
+            ffmpeg_work: Arc::new(FfmpegWorkCoordinator::new()),
         }
     }
 
