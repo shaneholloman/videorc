@@ -15,6 +15,8 @@ use crate::protocol::{
     VideoSettings,
 };
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
+use crate::source_registry::{SourceConsumerReason, SourceIdentityConfidence, SourceKey};
+use crate::source_status::SourceLifecycleStatus;
 use crate::state::AppState;
 
 const PREVIEW_SCREEN_MAX_PNG_WIDTH: u32 = 960;
@@ -27,6 +29,7 @@ pub type PreviewScreenSlot = Arc<tokio::sync::Mutex<PreviewScreenRuntime>>;
 pub struct PreviewScreenRuntime {
     pub status: PreviewScreenStatus,
     run_id: Option<String>,
+    source_key: Option<SourceKey>,
     active: Option<NativeScreenPreviewThread>,
     poll_task: Option<JoinHandle<()>>,
 }
@@ -36,6 +39,7 @@ struct NativeScreenPreviewThread {
     stop_tx: std_mpsc::Sender<()>,
     join_handle: Option<thread::JoinHandle<()>>,
     shared: Arc<StdMutex<PreviewScreenShared>>,
+    video: VideoSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +72,7 @@ pub fn initial_preview_screen_state() -> PreviewScreenRuntime {
     PreviewScreenRuntime {
         status: idle_status(Some("Native screen preview is not running.".to_string())),
         run_id: None,
+        source_key: None,
         active: None,
         poll_task: None,
     }
@@ -77,19 +82,49 @@ pub async fn start_preview_screen(
     state: AppState,
     params: PreviewScreenStartParams,
 ) -> PreviewScreenStatus {
-    stop_current_screen(&state).await;
-
     let Some(source) = selected_screen_source(&params) else {
+        stop_preview_screen(&state).await;
         let status =
             status_for_missing_source(None, None, "No screen or window source is selected.");
         set_screen_status(&state, status.clone()).await;
         return status;
     };
 
-    let run_id = Uuid::new_v4().to_string();
     let target_fps = params.video.fps.clamp(1, 120);
     let include_cursor = true;
     let exclude_current_process_windows = true;
+    let source_key = source_key_for_source(&source);
+    let existing_source_key = current_screen_source_key(&state).await;
+    if existing_source_key.as_ref() != Some(&source_key) {
+        let keep_alive = release_current_preview_screen_source(&state).await;
+        if !keep_alive {
+            stop_current_screen(&state).await;
+        }
+    }
+    acquire_preview_screen_source(
+        &state,
+        source_key.clone(),
+        SourceLifecycleStatus::Starting,
+        SourceIdentityConfidence::Exact,
+    )
+    .await;
+    if let Some(status) =
+        reuse_current_screen_source(&state, &source_key, &params.video, target_fps).await
+    {
+        acquire_preview_screen_source(
+            &state,
+            source_key,
+            SourceLifecycleStatus::Live,
+            SourceIdentityConfidence::Exact,
+        )
+        .await;
+        state.emit_event("preview.screen.status", status.clone());
+        return status;
+    }
+
+    stop_current_screen(&state).await;
+
+    let run_id = Uuid::new_v4().to_string();
     let shared = Arc::new(StdMutex::new(PreviewScreenShared::default()));
     let (stop_tx, stop_rx) = std_mpsc::channel();
     let (startup_tx, startup_rx) = std_mpsc::channel();
@@ -140,6 +175,13 @@ pub async fn start_preview_screen(
                 exclude_current_process_windows,
                 format!("Could not start screen preview thread: {error}"),
             );
+            acquire_preview_screen_source(
+                &state,
+                source_key,
+                SourceLifecycleStatus::Failed,
+                SourceIdentityConfidence::Exact,
+            )
+            .await;
             set_screen_status(&state, status.clone()).await;
             return status;
         }
@@ -193,13 +235,22 @@ pub async fn start_preview_screen(
                 let mut slot = state.preview_screen.lock().await;
                 slot.status = status.clone();
                 slot.run_id = Some(run_id);
+                slot.source_key = Some(source_key.clone());
                 slot.active = Some(NativeScreenPreviewThread {
                     stop_tx,
                     join_handle: Some(join_handle),
                     shared,
+                    video: params.video,
                 });
                 slot.poll_task = Some(poll_task);
             }
+            acquire_preview_screen_source(
+                &state,
+                source_key,
+                SourceLifecycleStatus::Live,
+                SourceIdentityConfidence::Exact,
+            )
+            .await;
             state.emit_event("preview.screen.status", status.clone());
             status
         }
@@ -223,6 +274,13 @@ pub async fn start_preview_screen(
                 updated_at: Utc::now().to_rfc3339(),
                 message: Some(message),
             };
+            acquire_preview_screen_source(
+                &state,
+                source_key,
+                SourceLifecycleStatus::PermissionNeeded,
+                SourceIdentityConfidence::Exact,
+            )
+            .await;
             set_screen_status(&state, status.clone()).await;
             status
         }
@@ -234,6 +292,13 @@ pub async fn start_preview_screen(
                 Some(source.source_kind),
                 &message,
             );
+            acquire_preview_screen_source(
+                &state,
+                source_key,
+                SourceLifecycleStatus::SourceMissing,
+                SourceIdentityConfidence::Exact,
+            )
+            .await;
             set_screen_status(&state, status.clone()).await;
             status
         }
@@ -248,6 +313,13 @@ pub async fn start_preview_screen(
                 exclude_current_process_windows,
                 message,
             );
+            acquire_preview_screen_source(
+                &state,
+                source_key,
+                SourceLifecycleStatus::Failed,
+                SourceIdentityConfidence::Exact,
+            )
+            .await;
             set_screen_status(&state, status.clone()).await;
             status
         }
@@ -255,6 +327,21 @@ pub async fn start_preview_screen(
 }
 
 pub async fn stop_preview_screen(state: &AppState) -> PreviewScreenStatus {
+    let keep_alive = release_current_preview_screen_source(state).await;
+    if keep_alive {
+        let status = {
+            let mut slot = state.preview_screen.lock().await;
+            let mut status = slot.status.clone();
+            status.updated_at = Utc::now().to_rfc3339();
+            status.message =
+                Some("Preview consumer released; screen source is still in use.".to_string());
+            slot.status = status.clone();
+            status
+        };
+        state.emit_event("preview.screen.status", status.clone());
+        return status;
+    }
+
     stop_current_screen(state).await;
     let status = idle_status(Some("Native screen preview stopped.".to_string()));
     set_screen_status(state, status.clone()).await;
@@ -329,11 +416,28 @@ fn selected_screen_source(params: &PreviewScreenStartParams) -> Option<SelectedS
     None
 }
 
+fn source_key_for_source(source: &SelectedScreenSource) -> SourceKey {
+    match source.source_kind {
+        PreviewScreenSourceKind::Screen => SourceKey::screen(source.source_id.clone()),
+        PreviewScreenSourceKind::Window => SourceKey::window(source.source_id.clone()),
+    }
+}
+
+fn source_key_from_status(status: &PreviewScreenStatus) -> Option<SourceKey> {
+    let source_id = status.source_id.clone()?;
+    match status.source_kind {
+        Some(PreviewScreenSourceKind::Screen) => Some(SourceKey::screen(source_id)),
+        Some(PreviewScreenSourceKind::Window) => Some(SourceKey::window(source_id)),
+        None => None,
+    }
+}
+
 async fn set_screen_status(state: &AppState, status: PreviewScreenStatus) {
     {
         let mut slot = state.preview_screen.lock().await;
         slot.status = status.clone();
         slot.run_id = None;
+        slot.source_key = source_key_from_status(&status);
     }
     {
         let mut diagnostics = state.diagnostics.lock().await;
@@ -346,6 +450,7 @@ async fn stop_current_screen(state: &AppState) {
     let (previous, poll_task) = {
         let mut slot = state.preview_screen.lock().await;
         slot.run_id = None;
+        slot.source_key = None;
         (slot.active.take(), slot.poll_task.take())
     };
 
@@ -359,6 +464,63 @@ async fn stop_current_screen(state: &AppState) {
             let _ = tokio::task::spawn_blocking(move || join_handle.join()).await;
         }
     }
+}
+
+async fn current_screen_source_key(state: &AppState) -> Option<SourceKey> {
+    state.preview_screen.lock().await.source_key.clone()
+}
+
+async fn acquire_preview_screen_source(
+    state: &AppState,
+    source_key: SourceKey,
+    status: SourceLifecycleStatus,
+    confidence: SourceIdentityConfidence,
+) {
+    let mut registry = state.source_registry.lock().await;
+    registry.acquire(source_key.clone(), SourceConsumerReason::Preview);
+    registry.set_status(source_key.clone(), status);
+    registry.set_identity_confidence(source_key, confidence);
+}
+
+async fn release_current_preview_screen_source(state: &AppState) -> bool {
+    let Some(source_key) = current_screen_source_key(state).await else {
+        return false;
+    };
+    let snapshot = state
+        .source_registry
+        .lock()
+        .await
+        .release(&source_key, &SourceConsumerReason::Preview);
+    snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.key == source_key)
+        .is_some_and(|entry| !entry.consumers.is_empty())
+}
+
+async fn reuse_current_screen_source(
+    state: &AppState,
+    source_key: &SourceKey,
+    video: &VideoSettings,
+    target_fps: u32,
+) -> Option<PreviewScreenStatus> {
+    let mut slot = state.preview_screen.lock().await;
+    if slot.source_key.as_ref() != Some(source_key) {
+        return None;
+    }
+    let can_reuse = slot
+        .active
+        .as_ref()
+        .is_some_and(|active| active.video == *video && slot.status.target_fps == target_fps);
+    if !can_reuse {
+        return None;
+    }
+
+    let mut status = slot.status.clone();
+    status.updated_at = Utc::now().to_rfc3339();
+    status.message = Some("Native screen preview source reused.".to_string());
+    slot.status = status.clone();
+    Some(status)
 }
 
 async fn poll_screen_metrics(
@@ -1156,25 +1318,48 @@ mod macos {
 mod tests {
     use super::*;
     use crate::protocol::{SourceSelection, VideoPreset};
+    use crate::storage::Database;
+    use tokio::sync::broadcast;
 
-    #[test]
-    fn selects_window_source_before_screen_source() {
-        let params = PreviewScreenStartParams {
+    fn test_state() -> AppState {
+        let (events, _) = broadcast::channel(16);
+        AppState::new(
+            "test-token".to_string(),
+            1234,
+            events,
+            Database::open_in_memory_for_tests(),
+        )
+    }
+
+    fn test_video() -> VideoSettings {
+        VideoSettings {
+            preset: VideoPreset::Tutorial1080p30,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            bitrate_kbps: 6000,
+        }
+    }
+
+    fn screen_params(screen_id: Option<&str>, window_id: Option<&str>) -> PreviewScreenStartParams {
+        PreviewScreenStartParams {
             sources: SourceSelection {
-                screen_id: Some("screen:screencapturekit:5".to_string()),
-                window_id: Some("window:screencapturekit:42".to_string()),
+                screen_id: screen_id.map(str::to_string),
+                window_id: window_id.map(str::to_string),
                 camera_id: None,
                 microphone_id: None,
                 test_pattern: false,
             },
-            video: VideoSettings {
-                preset: VideoPreset::Tutorial1080p30,
-                width: 1920,
-                height: 1080,
-                fps: 30,
-                bitrate_kbps: 6000,
-            },
-        };
+            video: test_video(),
+        }
+    }
+
+    #[test]
+    fn selects_window_source_before_screen_source() {
+        let params = screen_params(
+            Some("screen:screencapturekit:5"),
+            Some("window:screencapturekit:42"),
+        );
 
         let selected = selected_screen_source(&params).unwrap();
 
@@ -1185,22 +1370,7 @@ mod tests {
 
     #[test]
     fn selects_screen_source_when_no_window_source_exists() {
-        let params = PreviewScreenStartParams {
-            sources: SourceSelection {
-                screen_id: Some("screen:screencapturekit:5".to_string()),
-                window_id: None,
-                camera_id: None,
-                microphone_id: None,
-                test_pattern: false,
-            },
-            video: VideoSettings {
-                preset: VideoPreset::Tutorial1080p30,
-                width: 1920,
-                height: 1080,
-                fps: 30,
-                bitrate_kbps: 6000,
-            },
-        };
+        let params = screen_params(Some("screen:screencapturekit:5"), None);
 
         let selected = selected_screen_source(&params).unwrap();
 
@@ -1210,24 +1380,28 @@ mod tests {
 
     #[test]
     fn ignores_non_native_screen_sources() {
-        let params = PreviewScreenStartParams {
-            sources: SourceSelection {
-                screen_id: Some("screen:avfoundation:1".to_string()),
-                window_id: None,
-                camera_id: None,
-                microphone_id: None,
-                test_pattern: false,
-            },
-            video: VideoSettings {
-                preset: VideoPreset::Tutorial1080p30,
-                width: 1920,
-                height: 1080,
-                fps: 30,
-                bitrate_kbps: 6000,
-            },
-        };
+        let params = screen_params(Some("screen:avfoundation:1"), None);
 
         assert!(selected_screen_source(&params).is_none());
+    }
+
+    #[test]
+    fn source_key_preserves_screen_or_window_kind() {
+        let screen =
+            selected_screen_source(&screen_params(Some("screen:screencapturekit:5"), None))
+                .unwrap();
+        let window =
+            selected_screen_source(&screen_params(None, Some("window:screencapturekit:42")))
+                .unwrap();
+
+        assert_eq!(
+            source_key_for_source(&screen),
+            SourceKey::screen("screen:screencapturekit:5")
+        );
+        assert_eq!(
+            source_key_for_source(&window),
+            SourceKey::window("window:screencapturekit:42")
+        );
     }
 
     #[test]
@@ -1239,5 +1413,83 @@ mod tests {
         assert_eq!(width, 4);
         assert_eq!(height, 2);
         assert_eq!(scaled.len(), 4 * 2 * 4);
+    }
+
+    #[tokio::test]
+    async fn screen_registry_preview_consumer_releases_on_stop() {
+        let state = test_state();
+        let source_key = SourceKey::screen("screen:screencapturekit:5");
+        {
+            let mut slot = state.preview_screen.lock().await;
+            slot.source_key = Some(source_key.clone());
+        }
+
+        acquire_preview_screen_source(
+            &state,
+            source_key.clone(),
+            SourceLifecycleStatus::Live,
+            SourceIdentityConfidence::Exact,
+        )
+        .await;
+        let keep_alive = release_current_preview_screen_source(&state).await;
+        let snapshot = state.source_registry.lock().await.snapshot();
+        let entry = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.key == source_key)
+            .expect("screen source entry");
+
+        assert!(!keep_alive);
+        assert!(entry.consumers.is_empty());
+        assert_eq!(entry.status, SourceLifecycleStatus::Stopped);
+        assert_eq!(entry.identity_confidence, SourceIdentityConfidence::Exact);
+    }
+
+    #[tokio::test]
+    async fn same_screen_source_reuse_keeps_run_and_status_sequence() {
+        let state = test_state();
+        let source_key = SourceKey::screen("screen:screencapturekit:5");
+        let (stop_tx, _stop_rx) = std_mpsc::channel();
+        let video = test_video();
+        {
+            let mut slot = state.preview_screen.lock().await;
+            slot.source_key = Some(source_key.clone());
+            slot.run_id = Some("run-1".to_string());
+            slot.status = PreviewScreenStatus {
+                state: PreviewScreenState::Live,
+                source_id: Some(source_key.id.clone()),
+                source_kind: Some(PreviewScreenSourceKind::Screen),
+                target_fps: video.fps,
+                width: Some(video.width),
+                height: Some(video.height),
+                source_fps: Some(f64::from(video.fps)),
+                frame_age_ms: Some(6),
+                frames_captured: 24,
+                dropped_frames: 0,
+                sequence: Some(24),
+                include_cursor: true,
+                exclude_current_process_windows: true,
+                updated_at: Utc::now().to_rfc3339(),
+                message: Some("Live".to_string()),
+            };
+            slot.active = Some(NativeScreenPreviewThread {
+                stop_tx,
+                join_handle: None,
+                shared: Arc::new(StdMutex::new(PreviewScreenShared::default())),
+                video: video.clone(),
+            });
+        }
+
+        let status = reuse_current_screen_source(&state, &source_key, &video, video.fps)
+            .await
+            .expect("screen source should be reused");
+        let slot = state.preview_screen.lock().await;
+
+        assert_eq!(status.sequence, Some(24));
+        assert_eq!(slot.run_id.as_deref(), Some("run-1"));
+        assert_eq!(
+            status.message.as_deref(),
+            Some("Native screen preview source reused.")
+        );
     }
 }

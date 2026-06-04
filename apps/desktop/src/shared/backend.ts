@@ -927,6 +927,7 @@ export type SourceRegistryLifecycleStatus =
   | 'source-missing'
   | 'failed'
 export type SourceRegistryConsumerReason = 'preview' | 'recording' | 'streaming' | 'diagnostics'
+export type SourceRegistryIdentityConfidence = 'exact' | 'name-rematch' | 'fallback' | 'unknown'
 
 export interface SourceRegistryKey {
   kind: SourceRegistrySourceKind
@@ -937,6 +938,7 @@ export interface SourceRegistryEntrySnapshot {
   key: SourceRegistryKey
   status: SourceRegistryLifecycleStatus
   consumers: SourceRegistryConsumerReason[]
+  identityConfidence: SourceRegistryIdentityConfidence
 }
 
 export interface SourceRegistrySnapshot {

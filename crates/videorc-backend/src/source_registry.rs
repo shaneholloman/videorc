@@ -68,12 +68,23 @@ pub enum SourceConsumerReason {
     Diagnostics,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceIdentityConfidence {
+    #[default]
+    Exact,
+    NameRematch,
+    Fallback,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceRegistryEntrySnapshot {
     pub key: SourceKey,
     pub status: SourceLifecycleStatus,
     pub consumers: Vec<SourceConsumerReason>,
+    pub identity_confidence: SourceIdentityConfidence,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,6 +99,7 @@ struct SourceRegistryEntry {
     key: SourceKey,
     status: SourceLifecycleStatus,
     consumers: BTreeSet<SourceConsumerReason>,
+    identity_confidence: SourceIdentityConfidence,
 }
 
 #[allow(dead_code)]
@@ -97,6 +109,7 @@ impl SourceRegistryEntry {
             key,
             status: SourceLifecycleStatus::Stopped,
             consumers: BTreeSet::new(),
+            identity_confidence: SourceIdentityConfidence::Exact,
         }
     }
 
@@ -105,6 +118,7 @@ impl SourceRegistryEntry {
             key: self.key.clone(),
             status: self.status.clone(),
             consumers: self.consumers.iter().cloned().collect(),
+            identity_confidence: self.identity_confidence.clone(),
         }
     }
 }
@@ -157,6 +171,19 @@ impl SourceRegistry {
             .entry(key.clone())
             .or_insert_with(|| SourceRegistryEntry::new(key));
         entry.status = status;
+        self.snapshot()
+    }
+
+    pub fn set_identity_confidence(
+        &mut self,
+        key: SourceKey,
+        confidence: SourceIdentityConfidence,
+    ) -> SourceRegistrySnapshot {
+        let entry = self
+            .entries
+            .entry(key.clone())
+            .or_insert_with(|| SourceRegistryEntry::new(key));
+        entry.identity_confidence = confidence;
         self.snapshot()
     }
 
@@ -223,6 +250,26 @@ mod tests {
         let snapshot = registry.set_status(key, SourceLifecycleStatus::Live);
 
         assert_eq!(snapshot.entries[0].status, SourceLifecycleStatus::Live);
+    }
+
+    #[test]
+    fn source_identity_confidence_defaults_to_exact_and_can_be_updated() {
+        let mut registry = SourceRegistry::new();
+        let key = SourceKey::screen("screen:screencapturekit:1");
+
+        let snapshot = registry.acquire(key.clone(), SourceConsumerReason::Preview);
+
+        assert_eq!(
+            snapshot.entries[0].identity_confidence,
+            SourceIdentityConfidence::Exact
+        );
+
+        let snapshot = registry.set_identity_confidence(key, SourceIdentityConfidence::Fallback);
+
+        assert_eq!(
+            snapshot.entries[0].identity_confidence,
+            SourceIdentityConfidence::Fallback
+        );
     }
 
     #[test]

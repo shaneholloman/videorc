@@ -545,7 +545,10 @@ function formatSourceRegistry(registry?: DiagnosticStats['sourceRegistry']): str
     return 'None'
   }
   return entries
-    .map((entry) => `${entry.key.kind}:${entry.key.id} ${entry.status} [${entry.consumers.join(', ') || 'no consumers'}]`)
+    .map(
+      (entry) =>
+        `${entry.key.kind}:${entry.key.id} ${entry.status} [${entry.consumers.join(', ') || 'no consumers'}] ${entry.identityConfidence}`
+    )
     .join('; ')
 }
 
