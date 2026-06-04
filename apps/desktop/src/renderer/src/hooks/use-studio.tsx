@@ -253,12 +253,17 @@ const idleDiagnosticStats = (): DiagnosticStats => ({
   previewRepeatedFrames: 0,
   previewSurfaceResizeCount: 0,
   previewDroppedFrames: 0,
+  previewCameraDroppedFrames: 0,
+  previewScreenDroppedFrames: 0,
   micDroppedFrames: 0,
   deviceDisconnected: false,
+  activeFfmpegProcesses: 0,
+  activeFfprobeProcesses: 0,
   ffmpegCaptureActive: false,
   ffmpegFinalizingActive: false,
   ffmpegMaintenanceRunning: false,
   ffmpegMaintenanceCancelRequested: false,
+  duplicateCaptureSources: [],
   bottleneck: 'none',
   updatedAt: new Date().toISOString()
 })

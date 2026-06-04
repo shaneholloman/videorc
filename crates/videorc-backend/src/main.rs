@@ -1077,7 +1077,7 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             ServerResponse::ok(command.id, devices)
         }
         "diagnostics.stats" => {
-            let stats = diagnostics::apply_ffmpeg_work_snapshot(
+            let stats = diagnostics::apply_runtime_diagnostics_snapshot(
                 state.diagnostics.lock().await.clone(),
                 state.ffmpeg_work.snapshot(),
             );

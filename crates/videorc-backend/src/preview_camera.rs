@@ -10,6 +10,7 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use crate::camera_capture::parse_native_camera_id;
+use crate::diagnostics::apply_preview_camera_source_stats;
 use crate::protocol::{
     LayoutSettings, PreviewCameraStartParams, PreviewCameraState, PreviewCameraStatus,
     VideoSettings,
@@ -111,6 +112,7 @@ pub async fn start_preview_camera(
         width: None,
         height: None,
         source_fps: None,
+        frame_age_ms: None,
         frames_captured: 0,
         dropped_frames: 0,
         sequence: None,
@@ -174,6 +176,7 @@ pub async fn start_preview_camera(
                 width: Some(width),
                 height: Some(height),
                 source_fps: Some(selected_fps),
+                frame_age_ms: None,
                 frames_captured: 0,
                 dropped_frames: 0,
                 sequence: None,
@@ -206,6 +209,7 @@ pub async fn start_preview_camera(
                 width: None,
                 height: None,
                 source_fps: None,
+                frame_age_ms: None,
                 frames_captured: 0,
                 dropped_frames: 0,
                 sequence: None,
@@ -226,6 +230,7 @@ pub async fn start_preview_camera(
                 width: None,
                 height: None,
                 source_fps: None,
+                frame_age_ms: None,
                 frames_captured: 0,
                 dropped_frames: 0,
                 sequence: None,
@@ -295,6 +300,10 @@ async fn set_camera_status(state: &AppState, status: PreviewCameraStatus) {
         slot.status = status.clone();
         slot.run_id = None;
     }
+    {
+        let mut diagnostics = state.diagnostics.lock().await;
+        *diagnostics = apply_preview_camera_source_stats(diagnostics.clone(), &status);
+    }
     state.emit_event("preview.camera.status", status);
 }
 
@@ -354,7 +363,7 @@ async fn poll_camera_metrics(
                 slot.status.height = Some(frame.height);
                 slot.status.sequence = Some(frame.sequence);
                 let _frame_bytes = frame.bytes.len();
-                let _frame_age = frame.captured_at.elapsed();
+                slot.status.frame_age_ms = Some(frame.captured_at.elapsed().as_millis() as u64);
                 match frame.pixel_format {
                     PreviewCameraPixelFormat::Bgra8 => {}
                 }
@@ -362,6 +371,10 @@ async fn poll_camera_metrics(
             slot.status.updated_at = Utc::now().to_rfc3339();
             slot.status.clone()
         };
+        {
+            let mut diagnostics = state.diagnostics.lock().await;
+            *diagnostics = apply_preview_camera_source_stats(diagnostics.clone(), &status);
+        }
         state.emit_event("preview.camera.status", status);
     }
 }
@@ -383,6 +396,7 @@ fn idle_status(message: Option<String>) -> PreviewCameraStatus {
         width: None,
         height: None,
         source_fps: None,
+        frame_age_ms: None,
         frames_captured: 0,
         dropped_frames: 0,
         sequence: None,
@@ -400,6 +414,7 @@ fn status_for_missing_camera(camera_id: Option<String>, message: &str) -> Previe
         width: None,
         height: None,
         source_fps: None,
+        frame_age_ms: None,
         frames_captured: 0,
         dropped_frames: 0,
         sequence: None,
@@ -422,6 +437,7 @@ fn failed_status(
         width: None,
         height: None,
         source_fps: None,
+        frame_age_ms: None,
         frames_captured: 0,
         dropped_frames: 0,
         sequence: None,

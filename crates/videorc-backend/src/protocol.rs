@@ -747,14 +747,25 @@ pub struct DiagnosticStats {
     pub preview_surface_resize_count: u64,
     pub preview_latency_ms: Option<u64>,
     pub preview_dropped_frames: u64,
+    pub preview_camera_frame_age_ms: Option<u64>,
+    pub preview_camera_source_fps: Option<f64>,
+    pub preview_camera_dropped_frames: u64,
+    pub preview_screen_frame_age_ms: Option<u64>,
+    pub preview_screen_source_fps: Option<f64>,
+    pub preview_screen_dropped_frames: u64,
     pub mic_captured_frames: Option<u64>,
     pub mic_dropped_frames: u64,
     pub device_disconnected: bool,
+    pub backend_rss_bytes: Option<u64>,
+    pub active_ffmpeg_processes: u64,
+    pub active_ffprobe_processes: u64,
     pub ffmpeg_capture_active: bool,
     pub ffmpeg_finalizing_active: bool,
     pub ffmpeg_maintenance_running: bool,
     pub ffmpeg_maintenance_cancel_requested: bool,
     pub ffmpeg_maintenance_deferred_reason: Option<String>,
+    #[serde(default)]
+    pub duplicate_capture_sources: Vec<String>,
     pub bottleneck: DiagnosticBottleneck,
     pub updated_at: String,
 }
@@ -868,6 +879,7 @@ pub struct PreviewCameraStatus {
     pub height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_fps: Option<f64>,
+    pub frame_age_ms: Option<u64>,
     pub frames_captured: u64,
     pub dropped_frames: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -909,6 +921,7 @@ pub struct PreviewScreenStatus {
     pub height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_fps: Option<f64>,
+    pub frame_age_ms: Option<u64>,
     pub frames_captured: u64,
     pub dropped_frames: u64,
     #[serde(skip_serializing_if = "Option::is_none")]

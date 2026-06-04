@@ -98,7 +98,7 @@ async function runScenario(ws, connection, samples, scenario) {
   }
 
   console.log(
-    `Recording performance [${scenario.label}] OK: ${outputPath} (${size} bytes), min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, maintenance samples ${stats.maintenanceSamples}`
+    `Recording performance [${scenario.label}] OK: ${outputPath} (${size} bytes), min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, maintenance samples ${stats.maintenanceSamples}, duplicate samples ${stats.duplicateCaptureSamples}, max RSS ${formatBytes(stats.maxBackendRssBytes)}, max FFmpeg procs ${stats.maxActiveFfmpegProcesses}, max FFprobe procs ${stats.maxActiveFfprobeProcesses}`
   )
 }
 
@@ -179,6 +179,15 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt) {
     .flatMap((sample) => [numeric(sample.captureFps), numeric(sample.renderFps)])
     .filter((value) => value !== null)
   const speedValues = measuredSamples.map((sample) => numeric(sample.encoderSpeed)).filter((value) => value !== null)
+  const backendRssValues = measuredSamples
+    .map((sample) => numeric(sample.backendRssBytes))
+    .filter((value) => value !== null)
+  const ffmpegProcessValues = measuredSamples
+    .map((sample) => numeric(sample.activeFfmpegProcesses))
+    .filter((value) => value !== null)
+  const ffprobeProcessValues = measuredSamples
+    .map((sample) => numeric(sample.activeFfprobeProcesses))
+    .filter((value) => value !== null)
   return {
     minFps: fpsValues.length ? Math.min(...fpsValues) : null,
     minSpeed: speedValues.length ? Math.min(...speedValues) : null,
@@ -187,6 +196,10 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt) {
     previewDroppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.previewDroppedFrames ?? 0)),
     maintenanceSamples: measuredSamples.filter((sample) => sample.ffmpegMaintenanceRunning).length,
     maintenanceCancelSamples: measuredSamples.filter((sample) => sample.ffmpegMaintenanceCancelRequested).length,
+    duplicateCaptureSamples: measuredSamples.filter((sample) => Array.isArray(sample.duplicateCaptureSources) && sample.duplicateCaptureSources.length > 0).length,
+    maxBackendRssBytes: backendRssValues.length ? Math.max(...backendRssValues) : null,
+    maxActiveFfmpegProcesses: ffmpegProcessValues.length ? Math.max(...ffmpegProcessValues) : 0,
+    maxActiveFfprobeProcesses: ffprobeProcessValues.length ? Math.max(...ffprobeProcessValues) : 0,
     steadySamples: steadySamples.length,
     targetFps
   }
@@ -214,6 +227,9 @@ function assertStatsHealthy(scenario, stats) {
   }
   if (stats.maintenanceSamples > 0) {
     throw new Error(`[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`)
+  }
+  if (stats.duplicateCaptureSamples > 0) {
+    throw new Error(`[${scenario.label}] Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`)
   }
 }
 
@@ -373,4 +389,14 @@ function sleep(ms) {
 
 function format(value) {
   return typeof value === 'number' ? value.toFixed(2) : 'n/a'
+}
+
+function formatBytes(value) {
+  if (typeof value !== 'number') {
+    return 'n/a'
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(0)}KiB`
+  }
+  return `${(value / (1024 * 1024)).toFixed(1)}MiB`
 }

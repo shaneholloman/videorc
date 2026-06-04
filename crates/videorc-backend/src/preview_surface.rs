@@ -7,7 +7,8 @@ use tokio::time::{Duration, MissedTickBehavior};
 use uuid::Uuid;
 
 use crate::diagnostics::{
-    apply_ffmpeg_work_snapshot, apply_native_preview_surface_stats, apply_preview_surface_resize,
+    apply_native_preview_surface_stats, apply_preview_surface_resize,
+    apply_runtime_diagnostics_snapshot,
 };
 use crate::protocol::{
     PreviewSurfaceBoundsParams, PreviewSurfaceCreateParams, PreviewSurfaceSource,
@@ -144,7 +145,7 @@ pub async fn register_preview_surface_resize(state: &AppState) {
     };
     state.emit_event(
         "diagnostics.stats",
-        apply_ffmpeg_work_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+        apply_runtime_diagnostics_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
     );
 }
 
@@ -222,7 +223,7 @@ async fn run_synthetic_surface_loop(
                     state.emit_event("preview.surface.status", status);
                     state.emit_event(
                         "diagnostics.stats",
-                        apply_ffmpeg_work_snapshot(
+                        apply_runtime_diagnostics_snapshot(
                             diagnostic_stats,
                             state.ffmpeg_work.snapshot(),
                         ),

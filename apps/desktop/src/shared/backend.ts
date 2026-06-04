@@ -850,6 +850,7 @@ export interface PreviewCameraStatus {
   width?: number
   height?: number
   sourceFps?: number
+  frameAgeMs?: number
   framesCaptured: number
   droppedFrames: number
   sequence?: number
@@ -873,6 +874,7 @@ export interface PreviewScreenStatus {
   width?: number
   height?: number
   sourceFps?: number
+  frameAgeMs?: number
   framesCaptured: number
   droppedFrames: number
   sequence?: number
@@ -937,14 +939,24 @@ export interface DiagnosticStats {
   previewSurfaceResizeCount: number
   previewLatencyMs?: number
   previewDroppedFrames: number
+  previewCameraFrameAgeMs?: number
+  previewCameraSourceFps?: number
+  previewCameraDroppedFrames: number
+  previewScreenFrameAgeMs?: number
+  previewScreenSourceFps?: number
+  previewScreenDroppedFrames: number
   micCapturedFrames?: number
   micDroppedFrames: number
   deviceDisconnected: boolean
+  backendRssBytes?: number
+  activeFfmpegProcesses: number
+  activeFfprobeProcesses: number
   ffmpegCaptureActive: boolean
   ffmpegFinalizingActive: boolean
   ffmpegMaintenanceRunning: boolean
   ffmpegMaintenanceCancelRequested: boolean
   ffmpegMaintenanceDeferredReason?: string
+  duplicateCaptureSources: string[]
   bottleneck: DiagnosticBottleneck
   updatedAt: string
 }

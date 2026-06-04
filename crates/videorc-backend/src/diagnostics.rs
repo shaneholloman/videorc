@@ -1,8 +1,12 @@
+use std::path::Path;
+use std::process::Command;
+
 use chrono::Utc;
 
 use crate::ffmpeg_work::FfmpegWorkSnapshot;
 use crate::protocol::{
-    DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewTransport, StreamHealth,
+    DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewCameraStatus,
+    PreviewScreenStatus, PreviewTransport, StreamHealth,
 };
 
 pub fn idle_diagnostics() -> DiagnosticStats {
@@ -27,17 +31,34 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         preview_surface_resize_count: 0,
         preview_latency_ms: None,
         preview_dropped_frames: 0,
+        preview_camera_frame_age_ms: None,
+        preview_camera_source_fps: None,
+        preview_camera_dropped_frames: 0,
+        preview_screen_frame_age_ms: None,
+        preview_screen_source_fps: None,
+        preview_screen_dropped_frames: 0,
         mic_captured_frames: None,
         mic_dropped_frames: 0,
         device_disconnected: false,
+        backend_rss_bytes: None,
+        active_ffmpeg_processes: 0,
+        active_ffprobe_processes: 0,
         ffmpeg_capture_active: false,
         ffmpeg_finalizing_active: false,
         ffmpeg_maintenance_running: false,
         ffmpeg_maintenance_cancel_requested: false,
         ffmpeg_maintenance_deferred_reason: None,
+        duplicate_capture_sources: Vec::new(),
         bottleneck: DiagnosticBottleneck::None,
         updated_at: Utc::now().to_rfc3339(),
     }
+}
+
+pub fn apply_runtime_diagnostics_snapshot(
+    stats: DiagnosticStats,
+    snapshot: FfmpegWorkSnapshot,
+) -> DiagnosticStats {
+    apply_runtime_resource_snapshot(apply_ffmpeg_work_snapshot(stats, snapshot))
 }
 
 pub fn apply_ffmpeg_work_snapshot(
@@ -51,6 +72,32 @@ pub fn apply_ffmpeg_work_snapshot(
     stats.ffmpeg_maintenance_deferred_reason = snapshot
         .current_deferral()
         .map(|deferral| deferral.message().to_string());
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
+}
+
+pub fn apply_runtime_resource_snapshot(mut stats: DiagnosticStats) -> DiagnosticStats {
+    let snapshot = collect_runtime_resource_snapshot();
+    stats.backend_rss_bytes = snapshot.backend_rss_bytes;
+    stats.active_ffmpeg_processes = snapshot.active_ffmpeg_processes;
+    stats.active_ffprobe_processes = snapshot.active_ffprobe_processes;
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
+}
+
+pub fn apply_duplicate_capture_sources(
+    mut stats: DiagnosticStats,
+    sources: Vec<String>,
+) -> DiagnosticStats {
+    stats.duplicate_capture_sources = sources;
+    if !stats.duplicate_capture_sources.is_empty()
+        && matches!(
+            stats.bottleneck,
+            DiagnosticBottleneck::None | DiagnosticBottleneck::Unknown
+        )
+    {
+        stats.bottleneck = DiagnosticBottleneck::Capture;
+    }
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }
@@ -90,6 +137,34 @@ pub fn apply_stream_health(
         target_fps,
         stats.device_disconnected,
     );
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
+}
+
+pub fn apply_preview_camera_source_stats(
+    mut stats: DiagnosticStats,
+    status: &PreviewCameraStatus,
+) -> DiagnosticStats {
+    stats.preview_camera_frame_age_ms = status.frame_age_ms;
+    stats.preview_camera_source_fps = status.source_fps;
+    stats.preview_camera_dropped_frames = status.dropped_frames;
+    if status.dropped_frames > 0 {
+        stats.bottleneck = DiagnosticBottleneck::Capture;
+    }
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
+}
+
+pub fn apply_preview_screen_source_stats(
+    mut stats: DiagnosticStats,
+    status: &PreviewScreenStatus,
+) -> DiagnosticStats {
+    stats.preview_screen_frame_age_ms = status.frame_age_ms;
+    stats.preview_screen_source_fps = status.source_fps;
+    stats.preview_screen_dropped_frames = status.dropped_frames;
+    if status.dropped_frames > 0 {
+        stats.bottleneck = DiagnosticBottleneck::Capture;
+    }
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }
@@ -249,6 +324,53 @@ pub fn permission_pane_for_log(code: &str, message: &str) -> Option<PermissionPa
     None
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct RuntimeResourceSnapshot {
+    backend_rss_bytes: Option<u64>,
+    active_ffmpeg_processes: u64,
+    active_ffprobe_processes: u64,
+}
+
+fn collect_runtime_resource_snapshot() -> RuntimeResourceSnapshot {
+    RuntimeResourceSnapshot {
+        backend_rss_bytes: backend_rss_bytes(),
+        active_ffmpeg_processes: active_media_process_count("ffmpeg"),
+        active_ffprobe_processes: active_media_process_count("ffprobe"),
+    }
+}
+
+fn backend_rss_bytes() -> Option<u64> {
+    let pid = std::process::id().to_string();
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let rss_kib = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(rss_kib.saturating_mul(1024))
+}
+
+fn active_media_process_count(name: &str) -> u64 {
+    let output = match Command::new("ps").args(["-axo", "comm="]).output() {
+        Ok(output) if output.status.success() => output,
+        _ => return 0,
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| {
+            Path::new(line.trim())
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .is_some_and(|file_name| file_name.eq_ignore_ascii_case(name))
+        })
+        .count() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +419,21 @@ mod tests {
             permission_pane_for_log("audio-device", "microphone permission denied"),
             Some(PermissionPane::Microphone)
         );
+    }
+
+    #[test]
+    fn idle_diagnostics_include_resource_and_preview_source_defaults() {
+        let stats = idle_diagnostics();
+
+        assert_eq!(stats.preview_camera_frame_age_ms, None);
+        assert_eq!(stats.preview_camera_source_fps, None);
+        assert_eq!(stats.preview_camera_dropped_frames, 0);
+        assert_eq!(stats.preview_screen_frame_age_ms, None);
+        assert_eq!(stats.preview_screen_source_fps, None);
+        assert_eq!(stats.preview_screen_dropped_frames, 0);
+        assert_eq!(stats.backend_rss_bytes, None);
+        assert_eq!(stats.active_ffmpeg_processes, 0);
+        assert_eq!(stats.active_ffprobe_processes, 0);
+        assert!(stats.duplicate_capture_sources.is_empty());
     }
 }

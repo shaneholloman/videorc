@@ -27,16 +27,18 @@ use crate::audio::{
 use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
 use crate::devices::{find_avfoundation_camera_index, find_avfoundation_screen_index};
 use crate::diagnostics::{
-    apply_audio_stats, apply_ffmpeg_work_snapshot, apply_preview_frame_age, apply_preview_stats,
-    apply_stream_health, starting_diagnostics,
+    apply_audio_stats, apply_duplicate_capture_sources, apply_preview_frame_age,
+    apply_preview_stats, apply_runtime_diagnostics_snapshot, apply_stream_health,
+    starting_diagnostics,
 };
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
 use crate::ffmpeg_work::{CapturePermit, MaintenanceCancelToken};
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
-    CameraTransformMode, HealthLevel, LayoutPreset, PreviewLiveParams, PreviewLiveSource,
-    PreviewLiveState, PreviewLiveStatus, PreviewSnapshot, PreviewSnapshotParams, PreviewTransport,
+    CameraTransformMode, HealthLevel, LayoutPreset, PreviewCameraState, PreviewLiveParams,
+    PreviewLiveSource, PreviewLiveState, PreviewLiveStatus, PreviewScreenSourceKind,
+    PreviewScreenState, PreviewSnapshot, PreviewSnapshotParams, PreviewTransport,
     RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset,
     RtmpSettings, Scene, SceneSourceKind, SideBySideCameraSide, SideBySideSplit,
     StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
@@ -418,14 +420,18 @@ pub async fn start_session(
         params.output.stream_enabled,
         &audio_tracks,
     );
-    let initial_diagnostics = starting_diagnostics(&session_id, params.output.video.fps);
+    let duplicate_capture_sources = duplicate_capture_sources_for_capture(&state, &capture).await;
+    let initial_diagnostics = apply_duplicate_capture_sources(
+        starting_diagnostics(&session_id, params.output.video.fps),
+        duplicate_capture_sources,
+    );
     {
         let mut diagnostics = state.diagnostics.lock().await;
         *diagnostics = initial_diagnostics.clone();
     }
     state.emit_event(
         "diagnostics.stats",
-        apply_ffmpeg_work_snapshot(initial_diagnostics, state.ffmpeg_work.snapshot()),
+        apply_runtime_diagnostics_snapshot(initial_diagnostics, state.ffmpeg_work.snapshot()),
     );
     let screen_overlay = screen_overlay_fifo
         .as_ref()
@@ -551,7 +557,7 @@ pub async fn start_session(
                     };
                     log_state.emit_event(
                         "diagnostics.stats",
-                        apply_ffmpeg_work_snapshot(
+                        apply_runtime_diagnostics_snapshot(
                             diagnostic_stats,
                             log_state.ffmpeg_work.snapshot(),
                         ),
@@ -1336,7 +1342,7 @@ async fn update_preview_diagnostics(
     };
     state.emit_event(
         "diagnostics.stats",
-        apply_ffmpeg_work_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+        apply_runtime_diagnostics_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
     );
 }
 
@@ -1379,7 +1385,7 @@ pub async fn update_preview_frame_age(
     };
     state.emit_event(
         "diagnostics.stats",
-        apply_ffmpeg_work_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+        apply_runtime_diagnostics_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
     );
 }
 
@@ -1749,7 +1755,7 @@ async fn monitor_session(
         };
         state.emit_event(
             "diagnostics.stats",
-            apply_ffmpeg_work_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+            apply_runtime_diagnostics_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
         );
         state.emit_log(
             if native_audio_stats.dropped_frames > 0 {
@@ -2393,6 +2399,60 @@ async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) 
             .unwrap_or(VideoInput::TestPattern),
         camera_index,
         microphone,
+    }
+}
+
+async fn duplicate_capture_sources_for_capture(
+    state: &AppState,
+    capture: &CaptureInputs,
+) -> Vec<String> {
+    let camera_status = state.preview_camera.lock().await.status.clone();
+    let screen_status = state.preview_screen.lock().await.status.clone();
+    duplicate_capture_sources_for_statuses(
+        capture,
+        camera_status.state,
+        camera_status.camera_id.as_deref(),
+        screen_status.state,
+        screen_status.source_kind,
+        screen_status.source_id.as_deref(),
+    )
+}
+
+fn duplicate_capture_sources_for_statuses(
+    capture: &CaptureInputs,
+    camera_state: PreviewCameraState,
+    camera_id: Option<&str>,
+    screen_state: PreviewScreenState,
+    screen_source_kind: Option<PreviewScreenSourceKind>,
+    screen_source_id: Option<&str>,
+) -> Vec<String> {
+    let mut sources = Vec::new();
+    let recording_uses_camera =
+        capture.camera_index.is_some() || matches!(capture.video, VideoInput::MacCamera { .. });
+    let recording_uses_screen = matches!(capture.video, VideoInput::MacScreen { .. });
+
+    if recording_uses_camera && camera_state == PreviewCameraState::Live {
+        let source_id = camera_id.unwrap_or("unknown");
+        sources.push(duplicate_capture_source_label("camera", source_id));
+    }
+    if recording_uses_screen && screen_state == PreviewScreenState::Live {
+        let source_kind = match screen_source_kind {
+            Some(PreviewScreenSourceKind::Screen) => "screen",
+            Some(PreviewScreenSourceKind::Window) => "window",
+            None => "screen",
+        };
+        let source_id = screen_source_id.unwrap_or("unknown");
+        sources.push(duplicate_capture_source_label(source_kind, source_id));
+    }
+
+    sources
+}
+
+fn duplicate_capture_source_label(kind: &str, source_id: &str) -> String {
+    if source_id.starts_with(&format!("{kind}:")) {
+        source_id.to_string()
+    } else {
+        format!("{kind}:{source_id}")
     }
 }
 
@@ -4114,6 +4174,52 @@ mod tests {
             },
             "t0".to_string(),
         )
+    }
+
+    #[test]
+    fn duplicate_capture_sources_report_live_native_preview_overlap() {
+        let capture = CaptureInputs {
+            video: VideoInput::MacScreen { index: 3 },
+            camera_index: Some(0),
+            microphone: None,
+        };
+
+        let sources = duplicate_capture_sources_for_statuses(
+            &capture,
+            PreviewCameraState::Live,
+            Some("camera:avfoundation:0"),
+            PreviewScreenState::Live,
+            Some(PreviewScreenSourceKind::Screen),
+            Some("screen:avfoundation:3"),
+        );
+
+        assert_eq!(
+            sources,
+            vec![
+                "camera:avfoundation:0".to_string(),
+                "screen:avfoundation:3".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_capture_sources_ignore_idle_preview_sources() {
+        let capture = CaptureInputs {
+            video: VideoInput::MacScreen { index: 3 },
+            camera_index: Some(0),
+            microphone: None,
+        };
+
+        let sources = duplicate_capture_sources_for_statuses(
+            &capture,
+            PreviewCameraState::DeviceMissing,
+            Some("camera:avfoundation:0"),
+            PreviewScreenState::SourceMissing,
+            Some(PreviewScreenSourceKind::Screen),
+            Some("screen:avfoundation:3"),
+        );
+
+        assert!(sources.is_empty());
     }
 
     #[test]

@@ -103,14 +103,34 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Input to present" value={formatMs(diagnosticStats.previewInputToPresentLatencyMs)} />
             <DiagnosticMetric label="Render p95" value={formatMs(diagnosticStats.previewRenderFrameTimeP95Ms)} />
             <DiagnosticMetric label="Preview drops" value={diagnosticStats.previewDroppedFrames.toString()} />
+            <DiagnosticMetric label="Camera age" value={formatMs(diagnosticStats.previewCameraFrameAgeMs ?? previewCameraStatus.frameAgeMs)} />
+            <DiagnosticMetric label="Screen age" value={formatMs(diagnosticStats.previewScreenFrameAgeMs ?? previewScreenStatus.frameAgeMs)} />
             <DiagnosticMetric label="Repeated frames" value={diagnosticStats.previewRepeatedFrames.toString()} />
             <DiagnosticMetric label="Surface resizes" value={diagnosticStats.previewSurfaceResizeCount.toString()} />
-            <DiagnosticMetric label="Camera source" value={formatPreviewSourceStatus(previewCameraStatus.state, previewCameraStatus.sourceFps, previewCameraStatus.droppedFrames)} />
-            <DiagnosticMetric label="Screen source" value={formatPreviewSourceStatus(previewScreenStatus.state, previewScreenStatus.sourceFps, previewScreenStatus.droppedFrames)} />
+            <DiagnosticMetric
+              label="Camera source"
+              value={formatPreviewSourceStatus(
+                previewCameraStatus.state,
+                diagnosticStats.previewCameraSourceFps ?? previewCameraStatus.sourceFps,
+                diagnosticStats.previewCameraDroppedFrames ?? previewCameraStatus.droppedFrames
+              )}
+            />
+            <DiagnosticMetric
+              label="Screen source"
+              value={formatPreviewSourceStatus(
+                previewScreenStatus.state,
+                diagnosticStats.previewScreenSourceFps ?? previewScreenStatus.sourceFps,
+                diagnosticStats.previewScreenDroppedFrames ?? previewScreenStatus.droppedFrames
+              )}
+            />
             <DiagnosticMetric label="Surface state" value={`${previewSurfaceStatus.state} (${previewSurfaceStatus.framesRendered} frames)`} />
             <DiagnosticMetric label="Mic drops" value={diagnosticStats.micDroppedFrames.toString()} />
             <DiagnosticMetric label="Device state" value={diagnosticStats.deviceDisconnected ? 'Disconnected' : 'Connected'} />
             <DiagnosticMetric label="FFmpeg work" value={formatFfmpegWork(diagnosticStats)} />
+            <DiagnosticMetric label="FFmpeg procs" value={diagnosticStats.activeFfmpegProcesses.toString()} />
+            <DiagnosticMetric label="FFprobe procs" value={diagnosticStats.activeFfprobeProcesses.toString()} />
+            <DiagnosticMetric label="Backend RSS" value={formatBytes(diagnosticStats.backendRssBytes)} />
+            <DiagnosticMetric label="Duplicate capture" value={formatDuplicateCapture(diagnosticStats.duplicateCaptureSources)} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge label="Likely bottleneck" tone={bottleneck.tone} value={bottleneck.label} />
@@ -120,6 +140,9 @@ export function DiagnosticsTab(): ReactElement {
             <StatusBadge label="Camera" tone={previewSourceTone(previewCameraStatus.state)} value={previewCameraStatus.state} />
             <StatusBadge label="Screen" tone={previewSourceTone(previewScreenStatus.state)} value={previewScreenStatus.state} />
             <StatusBadge label="Maintenance" tone={diagnosticStats.ffmpegMaintenanceRunning ? 'warn' : 'good'} value={diagnosticStats.ffmpegMaintenanceRunning ? 'Running' : 'Idle'} />
+            {diagnosticStats.duplicateCaptureSources.length ? (
+              <StatusBadge label="Duplicate capture" tone="warn" value={diagnosticStats.duplicateCaptureSources.length.toString()} />
+            ) : null}
             {diagnosticStats.targetFps ? (
               <Badge variant="outline">Target {diagnosticStats.targetFps} FPS</Badge>
             ) : null}
@@ -499,6 +522,20 @@ function formatFfmpegWork(stats: DiagnosticStats): string {
 
 function formatMs(value?: number): string {
   return typeof value === 'number' ? `${value.toFixed(0)} ms` : '-- ms'
+}
+
+function formatBytes(value?: number): string {
+  if (typeof value !== 'number') {
+    return '--'
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(0)} KiB`
+  }
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+function formatDuplicateCapture(sources: string[]): string {
+  return sources.length ? sources.join(', ') : 'None'
 }
 
 function formatPreviewTransport(transport?: string): string {
