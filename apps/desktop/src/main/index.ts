@@ -184,6 +184,43 @@ function buildPreviewSurfaceScene(params: PreviewSurfaceSceneUpdateParams): Prev
   }
 }
 
+function buildPreviewSurfaceSceneFromCompositorStatus(status: CompositorStatus): PreviewSurfaceSceneState | null {
+  if (typeof status.sceneRevision !== 'number' || !status.sceneLayout) {
+    return null
+  }
+  const layers: PreviewSurfaceSceneLayer[] = (status.sceneSources ?? []).map((source) => ({
+    id: source.id,
+    name: source.name,
+    kind: source.kind,
+    transform: source.transform,
+    visible: source.visible,
+    frameUrl: compositorLayerFrameUrl(source.kind),
+    imageUrl: source.kind === 'screen-image' && source.imagePath ? fileUrlFromPath(source.imagePath) : undefined,
+    fit: source.fit,
+    mirror: source.mirror,
+    shape: source.shape
+  }))
+
+  return {
+    revision: status.sceneRevision,
+    sceneId: status.sceneId,
+    layout: status.sceneLayout,
+    sources: layers,
+    activeScreenId: status.activeScreenId,
+    updatedAt: status.updatedAt
+  }
+}
+
+function compositorLayerFrameUrl(kind: PreviewSurfaceSceneLayer['kind']): string | undefined {
+  if (kind === 'camera') {
+    return backendPreviewFrameUrl('/preview/camera/live.png')
+  }
+  if (kind === 'screen' || kind === 'window') {
+    return backendPreviewFrameUrl('/preview/screen/live.png')
+  }
+  return undefined
+}
+
 function jsonForInlineScript(value: unknown): string {
   return JSON.stringify(value).replace(/</g, '\\u003c')
 }
@@ -498,6 +535,10 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
               frames,
               measuredFps: frames / elapsed * 1000,
               sceneRevision: scene?.revision ?? null,
+              compositorSceneRevision: compositorStatus?.sceneRevision ?? null,
+              sceneMatchesCompositor: compositorStatus?.sceneRevision == null
+                ? null
+                : scene?.revision === compositorStatus.sceneRevision,
               compositorState: compositorStatus?.state ?? null,
               compositorFrames,
               compositorSources: compositorStatus?.sources ?? [],
@@ -639,16 +680,26 @@ async function updateNativePreviewSurfaceScene(params: PreviewSurfaceSceneUpdate
 }
 
 async function updateNativePreviewSurfaceCompositor(status: CompositorStatus): Promise<PreviewSurfaceStatus> {
+  const compositorScene = buildPreviewSurfaceSceneFromCompositorStatus(status)
+  if (compositorScene) {
+    nativePreviewSurfaceScene = compositorScene
+  }
   if (nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed()) {
     await waitForNativePreviewSurfaceScript()
+    const sceneScript = compositorScene
+      ? `window.__videorcSetPreviewScene?.(${jsonForInlineScript(compositorScene)});`
+      : ''
     const statusJson = jsonForInlineScript(status)
     await nativePreviewSurfaceWindow.webContents.executeJavaScript(
-      `window.__videorcSetCompositorStatus?.(${statusJson})`,
+      `${sceneScript}window.__videorcSetCompositorStatus?.(${statusJson})`,
       true
     )
   }
+  const hasScreen = nativePreviewSurfaceScene?.sources.some((source) => source.kind === 'screen' || source.kind === 'window')
+  const hasCamera = nativePreviewSurfaceScene?.sources.some((source) => source.kind === 'camera')
   nativePreviewSurfaceStatus = {
     ...nativePreviewSurfaceStatus,
+    source: hasScreen ? 'screen' : hasCamera ? 'camera' : nativePreviewSurfaceStatus.source,
     framesRendered: Math.max(nativePreviewSurfaceStatus.framesRendered, status.framesRendered),
     updatedAt: new Date().toISOString(),
     message: status.state === 'live' ? 'Native preview surface is displaying compositor output.' : status.message
@@ -973,18 +1024,21 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
     if (!nativePreviewSurfaceWindow || nativePreviewSurfaceWindow.webContents.isDestroyed()) {
       throw new Error('Native preview surface is not ready for scene exercise.')
     }
-    await updateNativePreviewSurfaceScene(smokePreviewSceneParams(1, 0.1))
+    await updateNativePreviewSurfaceCompositor(smokeCompositorStatusFromSceneParams(smokePreviewSceneParams(1, 0.1)))
     const startedAt = performance.now()
-    await updateNativePreviewSurfaceScene(smokePreviewSceneParams(2, 0.62))
+    await updateNativePreviewSurfaceCompositor(smokeCompositorStatusFromSceneParams(smokePreviewSceneParams(2, 0.62)))
     const result = await nativePreviewSurfaceWindow.webContents.executeJavaScript(
       `(() => {
         const layer = document.querySelector('[data-layer-id="source:camera"]');
+        const metrics = window.__videorcNativePreviewMetrics?.() ?? {};
         return {
           cameraLeft: layer?.style.left ?? null,
           cameraTop: layer?.style.top ?? null,
           cameraWidth: layer?.style.width ?? null,
           cameraHeight: layer?.style.height ?? null,
           sceneRevision: window.__videorcNativePreviewSceneRevision ?? null,
+          compositorSceneRevision: metrics.compositorSceneRevision ?? null,
+          sceneMatchesCompositor: metrics.sceneMatchesCompositor ?? null,
           layerCount: document.querySelectorAll('.scene-layer').length
         };
       })()`,
@@ -1086,6 +1140,55 @@ function smokePreviewSceneParams(revision: number, cameraX: number): PreviewSurf
         }
       ]
     }
+  }
+}
+
+function smokeCompositorStatusFromSceneParams(params: PreviewSurfaceSceneUpdateParams): CompositorStatus {
+  return {
+    state: 'live',
+    targetFps: 60,
+    width: 1280,
+    height: 720,
+    sceneRevision: params.revision,
+    sceneId: params.scene?.id,
+    sceneLayout: params.layout,
+    activeScreenId: params.activeScreen?.id,
+    sceneSources: [
+      ...(params.scene?.sources ?? []).map((source) => ({
+        id: source.id,
+        name: source.name,
+        kind: source.kind,
+        deviceId: source.deviceId,
+        visible: source.visible,
+        transform: source.transform,
+        fit: previewLayerFit(source, params.layout),
+        mirror: source.kind === 'camera' ? params.layout.cameraMirror : false,
+        shape: source.kind === 'camera' ? (params.layout.cameraShape as CameraShape) : undefined
+      })),
+      ...(params.activeScreen
+        ? [
+            {
+              id: `screen-image:${params.activeScreen.id}`,
+              name: params.activeScreen.name,
+              kind: 'screen-image' as const,
+              visible: true,
+              transform: fullFrameTransform(),
+              fit: 'cover' as const,
+              mirror: false,
+              imagePath: params.activeScreen.imagePath
+            }
+          ]
+        : [])
+    ],
+    sources: [],
+    renderFps: 60,
+    framesRendered: Date.now(),
+    repeatedFrames: 0,
+    droppedFrames: 0,
+    frameAgeMs: 0,
+    frameTimeP95Ms: 16,
+    updatedAt: new Date().toISOString(),
+    message: 'Smoke compositor scene update.'
   }
 }
 

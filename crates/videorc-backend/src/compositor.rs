@@ -11,10 +11,10 @@ use crate::diagnostics::{apply_compositor_stats, apply_runtime_diagnostics_snaps
 use crate::preview_camera::{preview_camera_latest_frame_info, preview_camera_status};
 use crate::preview_screen::{preview_screen_latest_frame_info, preview_screen_status};
 use crate::protocol::{
-    CompositorSceneSourceKind, CompositorSceneSourceStatus, CompositorSceneUpdateParams,
-    CompositorSourceKind, CompositorSourceStatus, CompositorState, CompositorStatus,
-    LayoutSettings, PreviewCameraState, PreviewScreenSourceKind, PreviewScreenState,
-    PreviewSurfaceState, Scene, SceneSourceKind, SceneTransform, StreamScreen,
+    CameraFit, CompositorSceneSourceFit, CompositorSceneSourceKind, CompositorSceneSourceStatus,
+    CompositorSceneUpdateParams, CompositorSourceKind, CompositorSourceStatus, CompositorState,
+    CompositorStatus, LayoutPreset, LayoutSettings, PreviewCameraState, PreviewScreenSourceKind,
+    PreviewScreenState, PreviewSurfaceState, Scene, SceneSourceKind, SceneTransform, StreamScreen,
 };
 use crate::state::AppState;
 
@@ -79,6 +79,9 @@ pub async fn start_synthetic_compositor(
         width: params.width.max(1),
         height: params.height.max(1),
         scene_revision: None,
+        scene_id: None,
+        scene_layout: None,
+        active_screen_id: None,
         scene_sources: Vec::new(),
         sources: Vec::new(),
         render_fps: None,
@@ -162,6 +165,12 @@ pub async fn update_compositor_scene(
             active_screen: params.active_screen,
         };
         compositor.status.scene_revision = Some(snapshot.revision);
+        compositor.status.scene_id = snapshot.scene.as_ref().map(|scene| scene.id.clone());
+        compositor.status.scene_layout = Some(snapshot.layout.clone());
+        compositor.status.active_screen_id = snapshot
+            .active_screen
+            .as_ref()
+            .map(|screen| screen.id.clone());
         compositor.status.scene_sources = compositor_scene_sources(&snapshot);
         compositor.status.updated_at = Utc::now().to_rfc3339();
         compositor.scene = Some(snapshot);
@@ -417,6 +426,9 @@ fn stopped_status(message: Option<String>) -> CompositorStatus {
         width: 0,
         height: 0,
         scene_revision: None,
+        scene_id: None,
+        scene_layout: None,
+        active_screen_id: None,
         scene_sources: Vec::new(),
         sources: Vec::new(),
         render_fps: None,
@@ -452,17 +464,30 @@ fn compositor_scene_sources(
                     device_id: source.device_id.clone(),
                     visible: source.visible,
                     transform: source.transform.clone(),
+                    fit: compositor_scene_source_fit(&source.kind, &snapshot.layout),
+                    mirror: matches!(source.kind, SceneSourceKind::Camera)
+                        && snapshot.layout.camera_mirror,
+                    shape: if matches!(source.kind, SceneSourceKind::Camera) {
+                        Some(snapshot.layout.camera_shape.clone())
+                    } else {
+                        None
+                    },
+                    image_path: None,
                 }),
         );
     }
     if let Some(active_screen) = &snapshot.active_screen {
         sources.push(CompositorSceneSourceStatus {
-            id: active_screen.id.clone(),
+            id: format!("screen-image:{}", active_screen.id),
             name: active_screen.name.clone(),
             kind: CompositorSceneSourceKind::ScreenImage,
             device_id: None,
             visible: true,
             transform: full_frame_transform(),
+            fit: CompositorSceneSourceFit::Cover,
+            mirror: false,
+            shape: None,
+            image_path: Some(active_screen.image_path.clone()),
         });
     }
     sources
@@ -474,6 +499,23 @@ fn compositor_scene_source_kind(kind: &SceneSourceKind) -> CompositorSceneSource
         SceneSourceKind::Window => CompositorSceneSourceKind::Window,
         SceneSourceKind::Camera => CompositorSceneSourceKind::Camera,
         SceneSourceKind::TestPattern => CompositorSceneSourceKind::TestPattern,
+    }
+}
+
+fn compositor_scene_source_fit(
+    kind: &SceneSourceKind,
+    layout: &LayoutSettings,
+) -> CompositorSceneSourceFit {
+    if matches!(kind, SceneSourceKind::Camera) {
+        return match layout.camera_fit {
+            CameraFit::Fit => CompositorSceneSourceFit::Contain,
+            CameraFit::Fill => CompositorSceneSourceFit::Cover,
+        };
+    }
+    if layout.layout_preset == LayoutPreset::SideBySide {
+        CompositorSceneSourceFit::Cover
+    } else {
+        CompositorSceneSourceFit::Contain
     }
 }
 
@@ -597,7 +639,7 @@ mod tests {
 
         assert_eq!(newest.scene_revision, Some(11));
         assert_eq!(newest.scene_sources.len(), 1);
-        assert_eq!(newest.scene_sources[0].id, "new-screen");
+        assert_eq!(newest.scene_sources[0].id, "screen-image:new-screen");
         assert_eq!(
             newest.scene_sources[0].kind,
             CompositorSceneSourceKind::ScreenImage

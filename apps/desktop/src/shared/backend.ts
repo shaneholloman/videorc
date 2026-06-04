@@ -781,6 +781,7 @@ export type PreviewSurfaceSource = 'synthetic' | 'camera' | 'screen' | 'window'
 export type CompositorState = 'stopped' | 'starting' | 'live' | 'failed'
 export type CompositorSourceKind = 'camera' | 'screen' | 'window'
 export type CompositorSceneSourceKind = SceneSourceKind | 'screen-image'
+export type CompositorSceneSourceFit = 'contain' | 'cover'
 
 export interface CompositorSourceStatus {
   kind: CompositorSourceKind
@@ -801,6 +802,10 @@ export interface CompositorSceneSourceStatus {
   deviceId?: string
   visible: boolean
   transform: SceneTransform
+  fit: CompositorSceneSourceFit
+  mirror: boolean
+  shape?: CameraShape
+  imagePath?: string
 }
 
 export interface CompositorSceneUpdateParams {
@@ -816,6 +821,9 @@ export interface CompositorStatus {
   width: number
   height: number
   sceneRevision?: number
+  sceneId?: string
+  sceneLayout?: LayoutSettings
+  activeScreenId?: string
   sceneSources: CompositorSceneSourceStatus[]
   sources: CompositorSourceStatus[]
   renderFps?: number

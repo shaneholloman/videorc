@@ -1469,7 +1469,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
     if (client && wsStatus === 'connected') {
       const compositorParams: CompositorSceneUpdateParams = params
-      await client.request<CompositorStatus>('compositor.scene.update', compositorParams)
+      const compositorStatus = await client.request<CompositorStatus>('compositor.scene.update', compositorParams)
+      if (window.videorc.updateNativePreviewSurfaceCompositor) {
+        const status = await window.videorc.updateNativePreviewSurfaceCompositor(compositorStatus)
+        applyPreviewSurfaceStatus({
+          ...status,
+          framesRendered: Math.max(status.framesRendered, previewSurfaceStatusRef.current.framesRendered)
+        })
+        return
+      }
     }
     const status = await window.videorc.updateNativePreviewSurfaceScene(params)
     applyPreviewSurfaceStatus({

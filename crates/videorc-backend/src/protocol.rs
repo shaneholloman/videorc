@@ -871,6 +871,12 @@ pub struct CompositorStatus {
     pub height: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scene_revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scene_layout: Option<LayoutSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_screen_id: Option<String>,
     #[serde(default)]
     pub scene_sources: Vec<CompositorSceneSourceStatus>,
     #[serde(default)]
@@ -935,6 +941,12 @@ pub struct CompositorSceneSourceStatus {
     pub device_id: Option<String>,
     pub visible: bool,
     pub transform: SceneTransform,
+    pub fit: CompositorSceneSourceFit,
+    pub mirror: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape: Option<CameraShape>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -945,6 +957,13 @@ pub enum CompositorSceneSourceKind {
     Camera,
     TestPattern,
     ScreenImage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompositorSceneSourceFit {
+    Contain,
+    Cover,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

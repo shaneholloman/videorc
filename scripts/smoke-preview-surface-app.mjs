@@ -170,6 +170,12 @@ function assertSceneExercise(result) {
   if (result.sceneRevision !== 2) {
     throw new Error(`Native preview scene revision ${result.sceneRevision} did not reach the surface.`)
   }
+  if (result.compositorSceneRevision !== 2) {
+    throw new Error(`Compositor scene revision ${result.compositorSceneRevision} did not reach the surface.`)
+  }
+  if (result.sceneMatchesCompositor !== true) {
+    throw new Error(`Native preview scene did not match compositor revision: ${JSON.stringify(result)}`)
+  }
   if ((result.layerCount ?? 0) < 2) {
     throw new Error(`Native preview scene rendered ${result.layerCount ?? 0} layer(s), expected at least 2.`)
   }
