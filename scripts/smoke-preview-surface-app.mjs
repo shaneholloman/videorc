@@ -49,17 +49,14 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
       throw new Error(`Diagnostics preview FPS ${format(firstDiagnostics.previewPresentFps)} is below ${minFps}.`)
     }
 
-    await smokeCommand(smoke, 'resize-window', { width: 1040, height: 720 })
+    await smokeCommand(smoke, 'resize-window', { width: 1280, height: 820 })
     const resizedStatus = await waitForNativeSurface(ws, firstStatus.framesRendered)
     const resizedMeasurement = await smokeCommand(smoke, 'measure-native-preview-surface', {
       durationMs: measurementMs
     })
     assertNativeMeasurement(resizedMeasurement, 'resized')
 
-    const resizedDiagnostics = await request(ws, timeoutMs, 'diagnostics.stats')
-    if ((resizedDiagnostics.previewSurfaceResizeCount ?? 0) < 1) {
-      throw new Error('Native preview surface resize count did not increase after window resize.')
-    }
+    const resizedDiagnostics = await waitForPreviewResizeDiagnostics(ws)
 
     console.log(
       `Preview surface smoke: native ${format(firstMeasurement.measuredFps)}fps initial, ${format(resizedMeasurement.measuredFps)}fps after resize, scene update ${format(sceneExercise.updateLatencyMs)}ms, frames ${resizedStatus.framesRendered}, p95 ${format(resizedMeasurement.intervalP95Ms)}ms, resize count ${resizedDiagnostics.previewSurfaceResizeCount}`
@@ -85,6 +82,23 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
     await sleep(150)
   }
   throw new Error(`Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`)
+}
+
+async function waitForPreviewResizeDiagnostics(ws) {
+  const deadline = Date.now() + timeoutMs
+  let lastDiagnostics = null
+  while (Date.now() < deadline) {
+    lastDiagnostics = await request(ws, timeoutMs, 'diagnostics.stats')
+    if ((lastDiagnostics.previewSurfaceResizeCount ?? 0) >= 1) {
+      return lastDiagnostics
+    }
+    await sleep(150)
+  }
+  throw new Error(
+    `Native preview surface resize count did not increase after window resize. Last diagnostics: ${JSON.stringify(
+      lastDiagnostics
+    )}`
+  )
 }
 
 async function assertJpegFallbackInactive(connection) {
@@ -152,6 +166,23 @@ function assertSceneExercise(result) {
 }
 
 async function smokeCommand(smoke, command, params = {}) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      return await sendSmokeCommand(smoke, command, params)
+    } catch (error) {
+      lastError = error
+      if (!String(error?.message ?? error).includes('Main window is not ready')) {
+        throw error
+      }
+      await sleep(150)
+    }
+  }
+  throw lastError ?? new Error(`${command} smoke command timed out.`)
+}
+
+async function sendSmokeCommand(smoke, command, params = {}) {
   const response = await fetch(`http://${smoke.host}:${smoke.port}/command`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

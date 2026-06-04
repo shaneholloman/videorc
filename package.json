@@ -21,6 +21,7 @@
     "smoke:preview-surface": "node scripts/smoke-preview-surface-app.mjs",
     "smoke:preview-performance": "node scripts/smoke-preview-performance-app.mjs",
     "smoke:recording-performance": "node scripts/smoke-recording-performance-app.mjs",
+    "smoke:recording-native-preview": "node scripts/smoke-recording-native-preview-app.mjs",
     "smoke:streaming-secrets": "node scripts/smoke-streaming-secrets.mjs",
     "smoke:platform-lifecycle": "node scripts/smoke-platform-lifecycle.mjs",
     "smoke:provider-readiness": "node scripts/smoke-provider-readiness.mjs",
