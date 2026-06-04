@@ -30,6 +30,8 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
     const bootstrap = await smokeCommand(smoke, 'inspect-native-preview-bootstrap')
     assertNativeBootstrap(bootstrap)
     const firstStatus = await waitForNativeSurface(ws)
+    const badges = await smokeCommand(smoke, 'inspect-preview-stage-badges')
+    assertNativePreviewBadge(badges)
     await assertJpegFallbackInactive(connection)
     const sceneExercise = await smokeCommand(smoke, 'exercise-native-preview-scene')
     assertSceneExercise(sceneExercise)
@@ -124,6 +126,13 @@ function assertNativeBootstrap(result) {
   }
   if ((result.surfaceWidth ?? 0) <= 0 || (result.surfaceHeight ?? 0) <= 0) {
     throw new Error(`Native preview surface has invalid bounds: ${JSON.stringify(result)}`)
+  }
+}
+
+function assertNativePreviewBadge(result) {
+  const badges = result.badges ?? []
+  if (!badges.includes('Native preview')) {
+    throw new Error(`Preview stage badges did not include "Native preview": ${JSON.stringify(badges)}`)
   }
 }
 

@@ -65,6 +65,8 @@ export function StudioTab(): ReactElement {
     previewUrl,
     previewLoading,
     previewLiveStatus,
+    previewCameraStatus,
+    previewScreenStatus,
     previewSurfaceStatus,
     nativePreviewSurfaceEnabled,
     refreshPreview,
@@ -142,7 +144,9 @@ export function StudioTab(): ReactElement {
           onRetry={refreshPreview}
           onPreviewSurfaceResize={registerPreviewSurfaceResize}
           onNativePreviewSurfaceBounds={syncNativePreviewSurfaceBounds}
+          previewCameraStatus={previewCameraStatus}
           previewLiveStatus={previewLiveStatus}
+          previewScreenStatus={previewScreenStatus}
           previewSurfaceStatus={previewSurfaceStatus}
           nativePreviewSurfaceEnabled={nativePreviewSurfaceEnabled}
           previewLoading={previewLoading}

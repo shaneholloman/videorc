@@ -16,9 +16,14 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useStudio } from '@/hooks/use-studio'
 import type {
   DiagnosticBottleneck,
+  DiagnosticStats,
   HealthEvent,
   HealthLevel,
+  PreviewCameraStatus,
   SessionLogEntry,
+  PreviewLiveStatus,
+  PreviewScreenStatus,
+  PreviewSurfaceStatus,
   SystemPermissionPane
 } from '@/lib/backend'
 import { compactTime, formatDroppedFrames, formatMetric } from '@/lib/format'
@@ -32,7 +37,12 @@ export function DiagnosticsTab(): ReactElement {
     recording,
     sessions,
     streamHealth,
-    previewLiveStatus
+    previewLiveStatus,
+    previewCameraStatus,
+    previewScreenStatus,
+    previewSurfaceStatus,
+    nativePreviewSurfaceEnabled,
+    captureConfig
   } = useStudio()
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
   const activeSession =
@@ -44,13 +54,37 @@ export function DiagnosticsTab(): ReactElement {
     () => bottleneckCopy(diagnosticStats.bottleneck),
     [diagnosticStats.bottleneck]
   )
+  const previewDiagnosis = useMemo(
+    () =>
+      previewDiagnosisCopy({
+        diagnosticStats,
+        expectsCamera: Boolean(captureConfig.sources.cameraId),
+        expectsScreen: Boolean(captureConfig.sources.screenId || captureConfig.sources.windowId),
+        nativePreviewSurfaceEnabled,
+        previewCameraStatus,
+        previewLiveStatus,
+        previewScreenStatus,
+        previewSurfaceStatus
+      }),
+    [
+      diagnosticStats,
+      captureConfig.sources.cameraId,
+      captureConfig.sources.screenId,
+      captureConfig.sources.windowId,
+      nativePreviewSurfaceEnabled,
+      previewCameraStatus,
+      previewLiveStatus,
+      previewScreenStatus,
+      previewSurfaceStatus
+    ]
+  )
   const qualityWarning = useMemo(() => recordingQualityWarning(diagnosticStats.bottleneck), [diagnosticStats.bottleneck])
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
       <div className="flex flex-col gap-4">
         <PanelSection
-          description="OBS-style counters for the active capture path. Studio stays focused on recording controls."
+          description="Current capture and preview health."
           icon={Gauge}
           title="Live stats"
         >
@@ -71,13 +105,19 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Preview drops" value={diagnosticStats.previewDroppedFrames.toString()} />
             <DiagnosticMetric label="Repeated frames" value={diagnosticStats.previewRepeatedFrames.toString()} />
             <DiagnosticMetric label="Surface resizes" value={diagnosticStats.previewSurfaceResizeCount.toString()} />
+            <DiagnosticMetric label="Camera source" value={formatPreviewSourceStatus(previewCameraStatus.state, previewCameraStatus.sourceFps, previewCameraStatus.droppedFrames)} />
+            <DiagnosticMetric label="Screen source" value={formatPreviewSourceStatus(previewScreenStatus.state, previewScreenStatus.sourceFps, previewScreenStatus.droppedFrames)} />
+            <DiagnosticMetric label="Surface state" value={`${previewSurfaceStatus.state} (${previewSurfaceStatus.framesRendered} frames)`} />
             <DiagnosticMetric label="Mic drops" value={diagnosticStats.micDroppedFrames.toString()} />
             <DiagnosticMetric label="Device state" value={diagnosticStats.deviceDisconnected ? 'Disconnected' : 'Connected'} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge label="Likely bottleneck" tone={bottleneck.tone} value={bottleneck.label} />
-            <StatusBadge label="Preview" tone={previewLiveStatus.state === 'live' ? 'good' : 'warn'} value={previewLiveStatus.state} />
-            <StatusBadge label="Preview path" tone={previewLiveStatus.transport === 'native-surface' ? 'good' : 'neutral'} value={formatPreviewTransport(previewLiveStatus.transport)} />
+            <StatusBadge label="Preview bottleneck" tone={previewDiagnosis.tone} value={previewDiagnosis.label} />
+            <StatusBadge label="Preview" tone={previewStatusTone(previewLiveStatus, previewCameraStatus, previewScreenStatus)} value={previewLiveStatus.state} />
+            <StatusBadge label="Preview path" tone={diagnosticStats.previewTransport === 'native-surface' ? 'good' : 'warn'} value={formatPreviewTransport(diagnosticStats.previewTransport)} />
+            <StatusBadge label="Camera" tone={previewSourceTone(previewCameraStatus.state)} value={previewCameraStatus.state} />
+            <StatusBadge label="Screen" tone={previewSourceTone(previewScreenStatus.state)} value={previewScreenStatus.state} />
             {diagnosticStats.targetFps ? (
               <Badge variant="outline">Target {diagnosticStats.targetFps} FPS</Badge>
             ) : null}
@@ -314,6 +354,129 @@ function recordingQualityWarning(bottleneck: DiagnosticBottleneck): string | nul
     default:
       return null
   }
+}
+
+type PreviewDiagnosis = {
+  label: string
+  tone: StatusTone
+}
+
+function previewDiagnosisCopy({
+  diagnosticStats,
+  expectsCamera,
+  expectsScreen,
+  nativePreviewSurfaceEnabled,
+  previewCameraStatus,
+  previewLiveStatus,
+  previewScreenStatus,
+  previewSurfaceStatus
+}: {
+  diagnosticStats: DiagnosticStats
+  expectsCamera: boolean
+  expectsScreen: boolean
+  nativePreviewSurfaceEnabled: boolean
+  previewCameraStatus: PreviewCameraStatus
+  previewLiveStatus: PreviewLiveStatus
+  previewScreenStatus: PreviewScreenStatus
+  previewSurfaceStatus: PreviewSurfaceStatus
+}): PreviewDiagnosis {
+  const syntheticNativeSurface = nativePreviewSurfaceEnabled && previewSurfaceStatus.source === 'synthetic'
+  const shouldCheckCamera = expectsCamera && !syntheticNativeSurface
+  const shouldCheckScreen = expectsScreen && !syntheticNativeSurface
+  if (
+    (shouldCheckCamera && previewCameraStatus.state === 'permission-needed') ||
+    (shouldCheckScreen && previewScreenStatus.state === 'permission-needed')
+  ) {
+    return { label: 'Permission', tone: 'error' }
+  }
+  if (
+    shouldCheckCamera &&
+    (previewCameraStatus.state === 'failed' || previewCameraStatus.state === 'device-missing')
+  ) {
+    return { label: 'Camera capture', tone: 'error' }
+  }
+  if (
+    shouldCheckScreen &&
+    (previewScreenStatus.state === 'failed' || previewScreenStatus.state === 'source-missing')
+  ) {
+    return { label: 'Screen capture', tone: previewScreenStatus.state === 'failed' ? 'error' : 'warn' }
+  }
+  if (!nativePreviewSurfaceEnabled || diagnosticStats.previewTransport !== 'native-surface') {
+    return { label: 'Fallback', tone: diagnosticStats.previewTransport === 'unavailable' ? 'neutral' : 'warn' }
+  }
+
+  const targetFps = diagnosticStats.previewTargetFps ?? previewSurfaceStatus.targetFps
+  const minimumSourceFps = targetFps * 0.9
+  if (
+    shouldCheckCamera &&
+    previewCameraStatus.state === 'live' &&
+    typeof previewCameraStatus.sourceFps === 'number' &&
+    previewCameraStatus.sourceFps < minimumSourceFps
+  ) {
+    return { label: 'Camera capture', tone: 'warn' }
+  }
+  if (
+    shouldCheckScreen &&
+    previewScreenStatus.state === 'live' &&
+    typeof previewScreenStatus.sourceFps === 'number' &&
+    previewScreenStatus.sourceFps < minimumSourceFps
+  ) {
+    return { label: 'Screen capture', tone: 'warn' }
+  }
+  if (
+    typeof diagnosticStats.previewRenderFrameTimeP95Ms === 'number' &&
+    diagnosticStats.previewRenderFrameTimeP95Ms > 1000 / Math.max(1, targetFps) * 1.5
+  ) {
+    return { label: 'Render', tone: 'warn' }
+  }
+  if (
+    typeof diagnosticStats.previewPresentFps === 'number' &&
+    diagnosticStats.previewPresentFps < minimumSourceFps
+  ) {
+    return { label: 'Present', tone: 'warn' }
+  }
+  if (
+    diagnosticStats.previewDroppedFrames > 0 ||
+    diagnosticStats.previewRepeatedFrames > targetFps ||
+    (typeof diagnosticStats.previewInputToPresentLatencyMs === 'number' &&
+      diagnosticStats.previewInputToPresentLatencyMs > 150)
+  ) {
+    return { label: 'Renderer UI', tone: 'warn' }
+  }
+  if (previewLiveStatus.state !== 'live') {
+    return { label: 'Collecting', tone: 'neutral' }
+  }
+  return { label: 'None', tone: 'good' }
+}
+
+function previewStatusTone(
+  previewLiveStatus: PreviewLiveStatus,
+  previewCameraStatus: PreviewCameraStatus,
+  previewScreenStatus: PreviewScreenStatus
+): StatusTone {
+  if (previewCameraStatus.state === 'permission-needed' || previewScreenStatus.state === 'permission-needed') {
+    return 'error'
+  }
+  return previewLiveStatus.state === 'live' ? 'good' : 'warn'
+}
+
+function previewSourceTone(state: PreviewCameraStatus['state'] | PreviewScreenStatus['state']): StatusTone {
+  if (state === 'live') {
+    return 'good'
+  }
+  if (state === 'permission-needed' || state === 'failed') {
+    return 'error'
+  }
+  return 'neutral'
+}
+
+function formatPreviewSourceStatus(
+  state: PreviewCameraStatus['state'] | PreviewScreenStatus['state'],
+  sourceFps?: number,
+  droppedFrames?: number
+): string {
+  const fps = typeof sourceFps === 'number' ? `${sourceFps.toFixed(1)} fps` : '-- fps'
+  return `${state}, ${fps}, ${droppedFrames ?? 0} drop`
 }
 
 function formatMs(value?: number): string {

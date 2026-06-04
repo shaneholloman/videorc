@@ -1088,6 +1088,14 @@ function smokeRendererScript(command: string, params: Record<string, unknown>): 
         };
       }
 
+      if (${JSON.stringify(command)} === 'inspect-preview-stage-badges') {
+        const stage = await waitFor('[data-videorc-preview-stage]');
+        const badges = Array.from(stage.querySelectorAll('[data-slot="badge"]'))
+          .map((badge) => badge.textContent?.trim())
+          .filter(Boolean);
+        return { badges };
+      }
+
       if (${JSON.stringify(command)} === 'measure-preview-motion') {
         const durationMs = Number(params.durationMs ?? 5000);
         const image = await waitFor('[data-videorc-preview-image]');

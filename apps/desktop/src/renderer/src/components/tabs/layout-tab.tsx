@@ -47,6 +47,8 @@ export function LayoutTab(): ReactElement {
     previewUrl,
     previewLoading,
     previewLiveStatus,
+    previewCameraStatus,
+    previewScreenStatus,
     previewSurfaceStatus,
     nativePreviewSurfaceEnabled,
     refreshPreview,
@@ -124,7 +126,9 @@ export function LayoutTab(): ReactElement {
             onRetry={refreshPreview}
             onPreviewSurfaceResize={registerPreviewSurfaceResize}
             onNativePreviewSurfaceBounds={syncNativePreviewSurfaceBounds}
+            previewCameraStatus={previewCameraStatus}
             previewLiveStatus={previewLiveStatus}
+            previewScreenStatus={previewScreenStatus}
             previewSurfaceStatus={previewSurfaceStatus}
             nativePreviewSurfaceEnabled={nativePreviewSurfaceEnabled}
             previewLoading={previewLoading}

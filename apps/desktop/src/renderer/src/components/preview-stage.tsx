@@ -13,7 +13,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type {
   LayoutSettings,
+  PreviewCameraStatus,
   PreviewLiveStatus,
+  PreviewScreenStatus,
   PreviewSurfaceBounds,
   PreviewSurfaceStatus,
   RuntimeInfo,
@@ -88,6 +90,8 @@ export function PreviewStage({
   previewUrl,
   previewLoading,
   previewLiveStatus,
+  previewCameraStatus,
+  previewScreenStatus,
   previewSurfaceStatus,
   nativePreviewSurfaceEnabled = false,
   activeScreen,
@@ -109,6 +113,8 @@ export function PreviewStage({
   previewUrl: string | null
   previewLoading: boolean
   previewLiveStatus: PreviewLiveStatus
+  previewCameraStatus?: PreviewCameraStatus
+  previewScreenStatus?: PreviewScreenStatus
   previewSurfaceStatus?: PreviewSurfaceStatus
   nativePreviewSurfaceEnabled?: boolean
   activeScreen?: StreamScreen | null
@@ -137,21 +143,27 @@ export function PreviewStage({
   const previewPollMs = useMemo(() => previewPollingIntervalMs(previewLiveStatus), [previewLiveStatus])
   const activeTransport = usingNativeSurface ? previewSurfaceStatus?.transport : previewLiveStatus.transport
   const transportLabel = previewTransportLabel(activeTransport ?? 'unavailable')
+  const syntheticNativeSurface = usingNativeSurface && previewSurfaceStatus?.source === 'synthetic'
+  const expectsCamera =
+    !syntheticNativeSurface && (scene?.sources.some((source) => source.visible && source.kind === 'camera') ?? false)
+  const expectsScreen =
+    !syntheticNativeSurface &&
+    (scene?.sources.some((source) => source.visible && (source.kind === 'screen' || source.kind === 'window')) ?? false)
   const showActiveScreen =
     !nativePreviewSurfaceEnabled && Boolean(activeScreen && activeScreen.status === 'ready' && !screenImageFailed)
   const showUnavailable =
     !nativePreviewSurfaceEnabled && !showActiveScreen && (previewLiveStatus.state === 'unavailable' || imageFailed)
-  const badgeLabel = usingNativeSurface
-    ? 'Native live'
-    : previewLiveStatus.state === 'connecting'
-      ? 'Connecting'
-      : previewLiveStatus.state === 'reconnecting'
-        ? 'Reconnecting'
-        : isLive
-          ? previewLiveStatus.source === 'recording-session'
-            ? 'Recording live'
-            : 'Live'
-          : 'Unavailable'
+  const previewBadge = previewBadgeState({
+    expectsCamera,
+    expectsScreen,
+    imageFailed,
+    previewCameraStatus,
+    previewLiveStatus,
+    previewLoading,
+    previewScreenStatus,
+    previewSurfaceStatus,
+    usingNativeSurface
+  })
 
   useEffect(() => {
     setImageFailed(false)
@@ -375,10 +387,10 @@ export function PreviewStage({
             ) : null}
           </div>
         )}
-        <Badge className="absolute top-2 left-2" variant={isLive ? 'success' : 'secondary'}>
-          {previewLoading ? 'Connecting' : badgeLabel}
+        <Badge className="absolute top-2 left-2" variant={previewBadge.variant}>
+          {previewBadge.label}
         </Badge>
-        {transportLabel ? (
+        {transportLabel && transportLabel !== previewBadge.label ? (
           <Badge className="absolute top-9 left-2" variant={activeTransport === 'native-surface' ? 'success' : 'secondary'}>
             {transportLabel}
           </Badge>
@@ -489,6 +501,79 @@ function previewPollingIntervalMs(status: PreviewLiveStatus): number {
 
   const targetFps = status.targetFps && Number.isFinite(status.targetFps) ? status.targetFps : 4
   return clampRange(Math.round(1000 / Math.max(1, targetFps)), 80, 250)
+}
+
+type PreviewBadgeState = {
+  label: string
+  variant: 'secondary' | 'destructive' | 'success' | 'warning'
+}
+
+function previewBadgeState({
+  expectsCamera,
+  expectsScreen,
+  imageFailed,
+  previewCameraStatus,
+  previewLiveStatus,
+  previewLoading,
+  previewScreenStatus,
+  previewSurfaceStatus,
+  usingNativeSurface
+}: {
+  expectsCamera: boolean
+  expectsScreen: boolean
+  imageFailed: boolean
+  previewCameraStatus?: PreviewCameraStatus
+  previewLiveStatus: PreviewLiveStatus
+  previewLoading: boolean
+  previewScreenStatus?: PreviewScreenStatus
+  previewSurfaceStatus?: PreviewSurfaceStatus
+  usingNativeSurface: boolean
+}): PreviewBadgeState {
+  if (previewLoading || previewLiveStatus.state === 'connecting') {
+    return { label: 'Connecting', variant: 'secondary' }
+  }
+
+  const message = previewLiveStatus.message?.toLowerCase() ?? ''
+  const cameraState = previewCameraStatus?.state
+  const screenState = previewScreenStatus?.state
+
+  if (
+    cameraState === 'permission-needed' ||
+    screenState === 'permission-needed' ||
+    message.includes('permission')
+  ) {
+    return { label: 'Permission needed', variant: 'warning' }
+  }
+
+  if (usingNativeSurface) {
+    if (expectsScreen && screenState && screenState !== 'live') {
+      return { label: 'Waiting for screen', variant: screenState === 'failed' ? 'destructive' : 'secondary' }
+    }
+    if (expectsCamera && cameraState && cameraState !== 'live') {
+      return {
+        label: 'Waiting for camera',
+        variant: cameraState === 'failed' || cameraState === 'device-missing' ? 'destructive' : 'secondary'
+      }
+    }
+    if (previewSurfaceStatus?.state === 'failed') {
+      return { label: 'Preview failed', variant: 'destructive' }
+    }
+    if (previewSurfaceStatus?.state === 'live') {
+      return { label: 'Native preview', variant: 'success' }
+    }
+    return { label: 'Connecting', variant: 'secondary' }
+  }
+
+  if (previewLiveStatus.state === 'reconnecting') {
+    return { label: 'Reconnecting', variant: 'secondary' }
+  }
+  if (previewLiveStatus.state === 'live') {
+    return { label: 'Fallback preview', variant: 'warning' }
+  }
+  if (imageFailed) {
+    return { label: 'Preview failed', variant: 'destructive' }
+  }
+  return { label: 'Unavailable', variant: 'secondary' }
 }
 
 function previewTransportLabel(transport: PreviewLiveStatus['transport']): string | null {
