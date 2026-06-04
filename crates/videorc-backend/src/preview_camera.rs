@@ -15,6 +15,8 @@ use crate::protocol::{
     LayoutSettings, PreviewCameraStartParams, PreviewCameraState, PreviewCameraStatus,
     VideoSettings,
 };
+use crate::source_registry::{SourceConsumerReason, SourceKey};
+use crate::source_status::SourceLifecycleStatus;
 use crate::state::AppState;
 
 const PREVIEW_CAMERA_MAX_PNG_WIDTH: u32 = 640;
@@ -25,6 +27,7 @@ pub type PreviewCameraSlot = Arc<tokio::sync::Mutex<PreviewCameraRuntime>>;
 pub struct PreviewCameraRuntime {
     pub status: PreviewCameraStatus,
     run_id: Option<String>,
+    source_key: Option<SourceKey>,
     active: Option<NativeCameraPreviewThread>,
     poll_task: Option<JoinHandle<()>>,
 }
@@ -35,6 +38,7 @@ struct NativeCameraPreviewThread {
     join_handle: Option<thread::JoinHandle<()>>,
     shared: Arc<StdMutex<PreviewCameraShared>>,
     layout: LayoutSettings,
+    video: VideoSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +70,7 @@ pub fn initial_preview_camera_state() -> PreviewCameraRuntime {
     PreviewCameraRuntime {
         status: idle_status(Some("Native camera preview is not running.".to_string())),
         run_id: None,
+        source_key: None,
         active: None,
         poll_task: None,
     }
@@ -75,14 +80,14 @@ pub async fn start_preview_camera(
     state: AppState,
     params: PreviewCameraStartParams,
 ) -> PreviewCameraStatus {
-    stop_current_camera(&state).await;
-
     let Some(camera_id) = params.sources.camera_id.clone() else {
+        stop_preview_camera(&state).await;
         let status = status_for_missing_camera(None, "No camera is selected.");
         set_camera_status(&state, status.clone()).await;
         return status;
     };
     let Some(unique_id) = parse_native_camera_id(&camera_id) else {
+        stop_preview_camera(&state).await;
         let status = status_for_missing_camera(
             Some(camera_id),
             "Selected camera is not a native AVFoundation camera.",
@@ -91,8 +96,34 @@ pub async fn start_preview_camera(
         return status;
     };
 
-    let run_id = Uuid::new_v4().to_string();
     let target_fps = params.video.fps.clamp(1, 120);
+    let source_key = SourceKey::camera(camera_id.clone());
+    let existing_source_key = current_camera_source_key(&state).await;
+    if existing_source_key.as_ref() != Some(&source_key) {
+        let keep_alive = release_current_preview_camera_source(&state).await;
+        if !keep_alive {
+            stop_current_camera(&state).await;
+        }
+    }
+    acquire_preview_camera_source(&state, source_key.clone(), SourceLifecycleStatus::Starting)
+        .await;
+    if let Some(status) = reuse_current_camera_source(
+        &state,
+        &source_key,
+        &params.layout,
+        &params.video,
+        target_fps,
+    )
+    .await
+    {
+        acquire_preview_camera_source(&state, source_key, SourceLifecycleStatus::Live).await;
+        state.emit_event("preview.camera.status", status.clone());
+        return status;
+    }
+
+    stop_current_camera(&state).await;
+
+    let run_id = Uuid::new_v4().to_string();
     let shared = Arc::new(StdMutex::new(PreviewCameraShared::default()));
     let (stop_tx, stop_rx) = std_mpsc::channel();
     let (startup_tx, startup_rx) = std_mpsc::channel();
@@ -187,14 +218,17 @@ pub async fn start_preview_camera(
                 let mut slot = state.preview_camera.lock().await;
                 slot.status = status.clone();
                 slot.run_id = Some(run_id);
+                slot.source_key = Some(source_key.clone());
                 slot.active = Some(NativeCameraPreviewThread {
                     stop_tx,
                     join_handle: Some(join_handle),
                     shared,
                     layout: params.layout,
+                    video: params.video,
                 });
                 slot.poll_task = Some(poll_task);
             }
+            acquire_preview_camera_source(&state, source_key, SourceLifecycleStatus::Live).await;
             state.emit_event("preview.camera.status", status.clone());
             status
         }
@@ -216,6 +250,12 @@ pub async fn start_preview_camera(
                 updated_at: Utc::now().to_rfc3339(),
                 message: Some(message),
             };
+            acquire_preview_camera_source(
+                &state,
+                source_key,
+                SourceLifecycleStatus::PermissionNeeded,
+            )
+            .await;
             set_camera_status(&state, status.clone()).await;
             status
         }
@@ -237,6 +277,8 @@ pub async fn start_preview_camera(
                 updated_at: Utc::now().to_rfc3339(),
                 message: Some(message),
             };
+            acquire_preview_camera_source(&state, source_key, SourceLifecycleStatus::SourceMissing)
+                .await;
             set_camera_status(&state, status.clone()).await;
             status
         }
@@ -244,6 +286,7 @@ pub async fn start_preview_camera(
             let _ = stop_tx.send(());
             let _ = tokio::task::spawn_blocking(move || join_handle.join()).await;
             let status = failed_status(Some(camera_id), Some(unique_id), target_fps, message);
+            acquire_preview_camera_source(&state, source_key, SourceLifecycleStatus::Failed).await;
             set_camera_status(&state, status.clone()).await;
             status
         }
@@ -251,6 +294,21 @@ pub async fn start_preview_camera(
 }
 
 pub async fn stop_preview_camera(state: &AppState) -> PreviewCameraStatus {
+    let keep_alive = release_current_preview_camera_source(state).await;
+    if keep_alive {
+        let status = {
+            let mut slot = state.preview_camera.lock().await;
+            let mut status = slot.status.clone();
+            status.updated_at = Utc::now().to_rfc3339();
+            status.message =
+                Some("Preview consumer released; camera source is still in use.".to_string());
+            slot.status = status.clone();
+            status
+        };
+        state.emit_event("preview.camera.status", status.clone());
+        return status;
+    }
+
     stop_current_camera(state).await;
     let status = idle_status(Some("Native camera preview stopped.".to_string()));
     set_camera_status(state, status.clone()).await;
@@ -299,6 +357,7 @@ async fn set_camera_status(state: &AppState, status: PreviewCameraStatus) {
         let mut slot = state.preview_camera.lock().await;
         slot.status = status.clone();
         slot.run_id = None;
+        slot.source_key = status.camera_id.clone().map(SourceKey::camera);
     }
     {
         let mut diagnostics = state.diagnostics.lock().await;
@@ -311,6 +370,7 @@ async fn stop_current_camera(state: &AppState) {
     let (previous, poll_task) = {
         let mut slot = state.preview_camera.lock().await;
         slot.run_id = None;
+        slot.source_key = None;
         (slot.active.take(), slot.poll_task.take())
     };
 
@@ -324,6 +384,65 @@ async fn stop_current_camera(state: &AppState) {
             let _ = tokio::task::spawn_blocking(move || join_handle.join()).await;
         }
     }
+}
+
+async fn current_camera_source_key(state: &AppState) -> Option<SourceKey> {
+    state.preview_camera.lock().await.source_key.clone()
+}
+
+async fn acquire_preview_camera_source(
+    state: &AppState,
+    source_key: SourceKey,
+    status: SourceLifecycleStatus,
+) {
+    let mut registry = state.source_registry.lock().await;
+    registry.acquire(source_key.clone(), SourceConsumerReason::Preview);
+    registry.set_status(source_key, status);
+}
+
+async fn release_current_preview_camera_source(state: &AppState) -> bool {
+    let Some(source_key) = current_camera_source_key(state).await else {
+        return false;
+    };
+    let snapshot = state
+        .source_registry
+        .lock()
+        .await
+        .release(&source_key, &SourceConsumerReason::Preview);
+    snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.key == source_key)
+        .is_some_and(|entry| !entry.consumers.is_empty())
+}
+
+async fn reuse_current_camera_source(
+    state: &AppState,
+    source_key: &SourceKey,
+    layout: &LayoutSettings,
+    video: &VideoSettings,
+    target_fps: u32,
+) -> Option<PreviewCameraStatus> {
+    let mut slot = state.preview_camera.lock().await;
+    if slot.source_key.as_ref() != Some(source_key) {
+        return None;
+    }
+    let can_reuse = slot
+        .active
+        .as_ref()
+        .is_some_and(|active| active.video == *video && slot.status.target_fps == target_fps);
+    if !can_reuse {
+        return None;
+    }
+
+    if let Some(active) = slot.active.as_mut() {
+        active.layout = layout.clone();
+    }
+    let mut status = slot.status.clone();
+    status.updated_at = Utc::now().to_rfc3339();
+    status.message = Some("Native camera preview source reused.".to_string());
+    slot.status = status.clone();
+    Some(status)
 }
 
 async fn poll_camera_metrics(
@@ -952,6 +1071,47 @@ mod tests {
         CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransformMode, LayoutPreset,
         SideBySideCameraSide, SideBySideSplit, VideoPreset,
     };
+    use crate::storage::Database;
+    use tokio::sync::broadcast;
+
+    fn test_state() -> AppState {
+        let (events, _) = broadcast::channel(16);
+        AppState::new(
+            "test-token".to_string(),
+            1234,
+            events,
+            Database::open_in_memory_for_tests(),
+        )
+    }
+
+    fn test_layout(camera_mirror: bool) -> LayoutSettings {
+        LayoutSettings {
+            layout_preset: LayoutPreset::CameraOnly,
+            camera_transform_mode: CameraTransformMode::Preset,
+            camera_transform: None,
+            camera_corner: CameraCorner::TopRight,
+            camera_size: CameraSize::Medium,
+            camera_shape: CameraShape::Rectangle,
+            camera_margin: 24,
+            camera_fit: CameraFit::Fill,
+            camera_mirror,
+            camera_zoom: 100,
+            camera_offset_x: 0,
+            camera_offset_y: 0,
+            side_by_side_split: SideBySideSplit::Even,
+            side_by_side_camera_side: SideBySideCameraSide::Right,
+        }
+    }
+
+    fn test_video() -> VideoSettings {
+        VideoSettings {
+            preset: VideoPreset::Stream1080p60,
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_kbps: 9000,
+        }
+    }
 
     #[test]
     fn missing_camera_status_is_device_missing() {
@@ -1004,32 +1164,90 @@ mod tests {
                 microphone_id: None,
                 test_pattern: false,
             },
-            layout: LayoutSettings {
-                layout_preset: LayoutPreset::CameraOnly,
-                camera_transform_mode: CameraTransformMode::Preset,
-                camera_transform: None,
-                camera_corner: CameraCorner::TopRight,
-                camera_size: CameraSize::Medium,
-                camera_shape: CameraShape::Rectangle,
-                camera_margin: 24,
-                camera_fit: CameraFit::Fill,
-                camera_mirror: true,
-                camera_zoom: 100,
-                camera_offset_x: 0,
-                camera_offset_y: 0,
-                side_by_side_split: SideBySideSplit::Even,
-                side_by_side_camera_side: SideBySideCameraSide::Right,
-            },
-            video: VideoSettings {
-                preset: VideoPreset::Stream1080p60,
-                width: 1920,
-                height: 1080,
-                fps: 60,
-                bitrate_kbps: 9000,
-            },
+            layout: test_layout(true),
+            video: test_video(),
         };
 
         assert_eq!(params.video.fps, 60);
         assert!(params.layout.camera_mirror);
+    }
+
+    #[tokio::test]
+    async fn camera_registry_preview_consumer_releases_on_stop() {
+        let state = test_state();
+        let source_key = SourceKey::camera("camera:avfoundation-native:test");
+        {
+            let mut slot = state.preview_camera.lock().await;
+            slot.source_key = Some(source_key.clone());
+        }
+
+        acquire_preview_camera_source(&state, source_key.clone(), SourceLifecycleStatus::Live)
+            .await;
+        let keep_alive = release_current_preview_camera_source(&state).await;
+        let snapshot = state.source_registry.lock().await.snapshot();
+        let entry = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.key == source_key)
+            .expect("camera source entry");
+
+        assert!(!keep_alive);
+        assert!(entry.consumers.is_empty());
+        assert_eq!(entry.status, SourceLifecycleStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn layout_only_reuse_updates_camera_layout_without_new_run() {
+        let state = test_state();
+        let source_key = SourceKey::camera("camera:avfoundation-native:test");
+        let (stop_tx, _stop_rx) = std_mpsc::channel();
+        let video = test_video();
+        {
+            let mut slot = state.preview_camera.lock().await;
+            slot.source_key = Some(source_key.clone());
+            slot.run_id = Some("run-1".to_string());
+            slot.status = PreviewCameraStatus {
+                state: PreviewCameraState::Live,
+                camera_id: Some(source_key.id.clone()),
+                device_unique_id: Some("test".to_string()),
+                target_fps: video.fps,
+                width: Some(video.width),
+                height: Some(video.height),
+                source_fps: Some(f64::from(video.fps)),
+                frame_age_ms: Some(5),
+                frames_captured: 42,
+                dropped_frames: 0,
+                sequence: Some(42),
+                updated_at: Utc::now().to_rfc3339(),
+                message: Some("Live".to_string()),
+            };
+            slot.active = Some(NativeCameraPreviewThread {
+                stop_tx,
+                join_handle: None,
+                shared: Arc::new(StdMutex::new(PreviewCameraShared::default())),
+                layout: test_layout(false),
+                video: video.clone(),
+            });
+        }
+
+        let status =
+            reuse_current_camera_source(&state, &source_key, &test_layout(true), &video, video.fps)
+                .await
+                .expect("camera source should be reused");
+        let slot = state.preview_camera.lock().await;
+
+        assert_eq!(status.sequence, Some(42));
+        assert_eq!(slot.run_id.as_deref(), Some("run-1"));
+        assert!(
+            slot.active
+                .as_ref()
+                .expect("active camera")
+                .layout
+                .camera_mirror
+        );
+        assert_eq!(
+            status.message.as_deref(),
+            Some("Native camera preview source reused.")
+        );
     }
 }
