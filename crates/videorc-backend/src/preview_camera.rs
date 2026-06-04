@@ -10,7 +10,10 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use crate::camera_capture::parse_native_camera_id;
-use crate::diagnostics::apply_preview_camera_source_stats;
+use crate::diagnostics::{
+    apply_preview_camera_source_stats, apply_preview_source_frame_store_stats,
+};
+use crate::frame_store::{FrameHandle, FrameStore, FrameStoreStats};
 use crate::protocol::{
     LayoutSettings, PreviewCameraStartParams, PreviewCameraState, PreviewCameraStatus,
     VideoSettings,
@@ -41,16 +44,6 @@ struct NativeCameraPreviewThread {
     video: VideoSettings,
 }
 
-#[derive(Debug, Clone)]
-pub struct PreviewCameraFrame {
-    pub sequence: u64,
-    pub width: u32,
-    pub height: u32,
-    pub pixel_format: PreviewCameraPixelFormat,
-    pub bytes: Vec<u8>,
-    pub captured_at: Instant,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewCameraPixelFormat {
     Bgra8,
@@ -58,7 +51,7 @@ pub enum PreviewCameraPixelFormat {
 
 #[derive(Debug, Default)]
 pub struct PreviewCameraShared {
-    latest_frame: Option<PreviewCameraFrame>,
+    frame_store: FrameStore<PreviewCameraPixelFormat>,
     frames_captured: u64,
     dropped_frames: u64,
     frames_in_window: u64,
@@ -319,6 +312,19 @@ pub async fn preview_camera_status(state: &AppState) -> PreviewCameraStatus {
     state.preview_camera.lock().await.status.clone()
 }
 
+pub async fn preview_camera_frame_store_stats(state: &AppState) -> FrameStoreStats {
+    let slot = state.preview_camera.lock().await;
+    let Some(active) = slot.active.as_ref() else {
+        return FrameStoreStats::default();
+    };
+    active
+        .shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .frame_store
+        .stats()
+}
+
 pub async fn latest_preview_camera_png(state: &AppState) -> Option<Vec<u8>> {
     let (frame, layout) = {
         let slot = state.preview_camera.lock().await;
@@ -327,7 +333,7 @@ pub async fn latest_preview_camera_png(state: &AppState) -> Option<Vec<u8>> {
             .shared
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (guard.latest_frame.clone()?, active.layout.clone())
+        (guard.frame_store.latest()?, active.layout.clone())
     };
 
     let mut rgba = Vec::with_capacity(frame.bytes.len());
@@ -464,7 +470,8 @@ async fn poll_camera_metrics(
                 frames_captured: guard.frames_captured,
                 dropped_frames: guard.dropped_frames,
                 source_fps: guard.source_fps,
-                latest_frame: guard.latest_frame.clone(),
+                latest_frame: guard.frame_store.latest(),
+                frame_store_stats: guard.frame_store.stats(),
             }
         };
 
@@ -491,8 +498,15 @@ async fn poll_camera_metrics(
             slot.status.clone()
         };
         {
+            let screen_frame_store_stats =
+                crate::preview_screen::preview_screen_frame_store_stats(&state).await;
             let mut diagnostics = state.diagnostics.lock().await;
-            *diagnostics = apply_preview_camera_source_stats(diagnostics.clone(), &status);
+            let stats = apply_preview_camera_source_stats(diagnostics.clone(), &status);
+            *diagnostics = apply_preview_source_frame_store_stats(
+                stats,
+                snapshot.frame_store_stats,
+                screen_frame_store_stats,
+            );
         }
         state.emit_event("preview.camera.status", status);
     }
@@ -503,7 +517,8 @@ struct CameraSharedSnapshot {
     frames_captured: u64,
     dropped_frames: u64,
     source_fps: Option<f64>,
-    latest_frame: Option<PreviewCameraFrame>,
+    latest_frame: Option<FrameHandle<PreviewCameraPixelFormat>>,
+    frame_store_stats: FrameStoreStats,
 }
 
 fn idle_status(message: Option<String>) -> PreviewCameraStatus {
@@ -990,7 +1005,12 @@ mod macos {
         let width_usize = width as usize;
         let height_usize = height as usize;
         let row_bytes = width_usize * 4;
-        let mut bytes = vec![0; row_bytes * height_usize];
+        let mut bytes = {
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.frame_store.checkout_buffer(row_bytes * height_usize)
+        };
         unsafe {
             let source = base_address.cast::<u8>();
             for row in 0..height_usize {
@@ -1015,14 +1035,15 @@ mod macos {
             guard.frames_in_window = 0;
             guard.window_started_at = Some(now);
         }
-        guard.latest_frame = Some(PreviewCameraFrame {
-            sequence: guard.frames_captured,
+        let sequence = guard.frames_captured;
+        guard.frame_store.publish(
+            sequence,
             width,
             height,
-            pixel_format: PreviewCameraPixelFormat::Bgra8,
+            PreviewCameraPixelFormat::Bgra8,
+            now,
             bytes,
-            captured_at: now,
-        });
+        );
     }
 
     fn native_camera_permission() -> NativeCameraPermission {

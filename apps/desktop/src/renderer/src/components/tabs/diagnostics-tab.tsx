@@ -131,6 +131,10 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="FFprobe procs" value={diagnosticStats.activeFfprobeProcesses.toString()} />
             <DiagnosticMetric label="Backend RSS" value={formatBytes(diagnosticStats.backendRssBytes)} />
             <DiagnosticMetric label="Duplicate capture" value={formatDuplicateCapture(diagnosticStats.duplicateCaptureSources)} />
+            <DiagnosticMetric
+              label="Source frame store"
+              value={`${diagnosticStats.previewSourceFrameBufferCount} buffers, ${formatBytes(diagnosticStats.previewSourceFrameBytes)}, ${diagnosticStats.previewSourceFrameDroppedFrames} replaced`}
+            />
             <DiagnosticMetric label="Source registry" value={formatSourceRegistry(diagnosticStats.sourceRegistry)} />
           </div>
           <div className="flex flex-wrap items-center gap-2">

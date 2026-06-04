@@ -9,7 +9,10 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-use crate::diagnostics::apply_preview_screen_source_stats;
+use crate::diagnostics::{
+    apply_preview_screen_source_stats, apply_preview_source_frame_store_stats,
+};
+use crate::frame_store::{FrameHandle, FrameStore, FrameStoreStats};
 use crate::protocol::{
     PreviewScreenSourceKind, PreviewScreenStartParams, PreviewScreenState, PreviewScreenStatus,
     VideoSettings,
@@ -42,16 +45,6 @@ struct NativeScreenPreviewThread {
     video: VideoSettings,
 }
 
-#[derive(Debug, Clone)]
-pub struct PreviewScreenFrame {
-    pub sequence: u64,
-    pub width: u32,
-    pub height: u32,
-    pub pixel_format: PreviewScreenPixelFormat,
-    pub bytes: Vec<u8>,
-    pub captured_at: Instant,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewScreenPixelFormat {
     Bgra8,
@@ -59,7 +52,7 @@ pub enum PreviewScreenPixelFormat {
 
 #[derive(Debug, Default)]
 pub struct PreviewScreenShared {
-    latest_frame: Option<PreviewScreenFrame>,
+    frame_store: FrameStore<PreviewScreenPixelFormat>,
     frames_captured: u64,
     dropped_frames: u64,
     frames_in_window: u64,
@@ -352,6 +345,19 @@ pub async fn preview_screen_status(state: &AppState) -> PreviewScreenStatus {
     state.preview_screen.lock().await.status.clone()
 }
 
+pub async fn preview_screen_frame_store_stats(state: &AppState) -> FrameStoreStats {
+    let slot = state.preview_screen.lock().await;
+    let Some(active) = slot.active.as_ref() else {
+        return FrameStoreStats::default();
+    };
+    active
+        .shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .frame_store
+        .stats()
+}
+
 pub async fn latest_preview_screen_png(state: &AppState) -> Option<Vec<u8>> {
     let frame = {
         let slot = state.preview_screen.lock().await;
@@ -360,7 +366,7 @@ pub async fn latest_preview_screen_png(state: &AppState) -> Option<Vec<u8>> {
             .shared
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.latest_frame.clone()?
+        guard.frame_store.latest()?
     };
 
     let mut rgba = Vec::with_capacity(frame.bytes.len());
@@ -542,7 +548,8 @@ async fn poll_screen_metrics(
                 frames_captured: guard.frames_captured,
                 dropped_frames: guard.dropped_frames,
                 source_fps: guard.source_fps,
-                latest_frame: guard.latest_frame.clone(),
+                latest_frame: guard.frame_store.latest(),
+                frame_store_stats: guard.frame_store.stats(),
                 last_error: guard.last_error.clone(),
             }
         };
@@ -574,8 +581,15 @@ async fn poll_screen_metrics(
             slot.status.clone()
         };
         {
+            let camera_frame_store_stats =
+                crate::preview_camera::preview_camera_frame_store_stats(&state).await;
             let mut diagnostics = state.diagnostics.lock().await;
-            *diagnostics = apply_preview_screen_source_stats(diagnostics.clone(), &status);
+            let stats = apply_preview_screen_source_stats(diagnostics.clone(), &status);
+            *diagnostics = apply_preview_source_frame_store_stats(
+                stats,
+                camera_frame_store_stats,
+                snapshot.frame_store_stats,
+            );
         }
         state.emit_event("preview.screen.status", status);
     }
@@ -586,7 +600,8 @@ struct ScreenSharedSnapshot {
     frames_captured: u64,
     dropped_frames: u64,
     source_fps: Option<f64>,
-    latest_frame: Option<PreviewScreenFrame>,
+    latest_frame: Option<FrameHandle<PreviewScreenPixelFormat>>,
+    frame_store_stats: FrameStoreStats,
     last_error: Option<String>,
 }
 
@@ -1168,7 +1183,12 @@ mod macos {
         let width_usize = width as usize;
         let height_usize = height as usize;
         let row_bytes = width_usize * 4;
-        let mut bytes = vec![0; row_bytes * height_usize];
+        let mut bytes = {
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.frame_store.checkout_buffer(row_bytes * height_usize)
+        };
         unsafe {
             let source = base_address.cast::<u8>();
             for row in 0..height_usize {
@@ -1193,14 +1213,15 @@ mod macos {
             guard.frames_in_window = 0;
             guard.window_started_at = Some(now);
         }
-        guard.latest_frame = Some(PreviewScreenFrame {
-            sequence: guard.frames_captured,
+        let sequence = guard.frames_captured;
+        guard.frame_store.publish(
+            sequence,
             width,
             height,
-            pixel_format: PreviewScreenPixelFormat::Bgra8,
+            PreviewScreenPixelFormat::Bgra8,
+            now,
             bytes,
-            captured_at: now,
-        });
+        );
     }
 
     fn sample_buffer_is_complete(_sample_buffer: &CMSampleBuffer) -> bool {

@@ -4,6 +4,7 @@ use std::process::Command;
 use chrono::Utc;
 
 use crate::ffmpeg_work::FfmpegWorkSnapshot;
+use crate::frame_store::FrameStoreStats;
 use crate::protocol::{
     DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewCameraStatus,
     PreviewScreenStatus, PreviewTransport, StreamHealth,
@@ -38,6 +39,9 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         preview_screen_frame_age_ms: None,
         preview_screen_source_fps: None,
         preview_screen_dropped_frames: 0,
+        preview_source_frame_buffer_count: 0,
+        preview_source_frame_bytes: 0,
+        preview_source_frame_dropped_frames: 0,
         mic_captured_frames: None,
         mic_dropped_frames: 0,
         device_disconnected: false,
@@ -176,6 +180,20 @@ pub fn apply_preview_screen_source_stats(
     if status.dropped_frames > 0 {
         stats.bottleneck = DiagnosticBottleneck::Capture;
     }
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
+}
+
+pub fn apply_preview_source_frame_store_stats(
+    mut stats: DiagnosticStats,
+    camera: FrameStoreStats,
+    screen: FrameStoreStats,
+) -> DiagnosticStats {
+    stats.preview_source_frame_buffer_count =
+        camera.buffer_count.saturating_add(screen.buffer_count);
+    stats.preview_source_frame_bytes = camera.bytes_retained.saturating_add(screen.bytes_retained);
+    stats.preview_source_frame_dropped_frames =
+        camera.frames_dropped.saturating_add(screen.frames_dropped);
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }
@@ -442,6 +460,9 @@ mod tests {
         assert_eq!(stats.preview_screen_frame_age_ms, None);
         assert_eq!(stats.preview_screen_source_fps, None);
         assert_eq!(stats.preview_screen_dropped_frames, 0);
+        assert_eq!(stats.preview_source_frame_buffer_count, 0);
+        assert_eq!(stats.preview_source_frame_bytes, 0);
+        assert_eq!(stats.preview_source_frame_dropped_frames, 0);
         assert_eq!(stats.backend_rss_bytes, None);
         assert_eq!(stats.active_ffmpeg_processes, 0);
         assert_eq!(stats.active_ffprobe_processes, 0);

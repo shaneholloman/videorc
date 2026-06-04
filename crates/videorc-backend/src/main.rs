@@ -5,6 +5,7 @@ mod devices;
 mod diagnostics;
 mod ffmpeg;
 mod ffmpeg_work;
+mod frame_store;
 mod live_pipeline;
 mod live_render;
 mod live_scene;

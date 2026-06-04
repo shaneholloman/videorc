@@ -972,6 +972,9 @@ export interface DiagnosticStats {
   previewScreenFrameAgeMs?: number
   previewScreenSourceFps?: number
   previewScreenDroppedFrames: number
+  previewSourceFrameBufferCount: number
+  previewSourceFrameBytes: number
+  previewSourceFrameDroppedFrames: number
   micCapturedFrames?: number
   micDroppedFrames: number
   deviceDisconnected: boolean
