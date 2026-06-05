@@ -32,7 +32,8 @@ import { dirname, join, resolve } from 'node:path'
 
 import { launchDevApp, stopProcess } from './lib/app-launcher.mjs'
 import { connectBackend, request } from './smoke-recording-session.mjs'
-import { analyzeRecording, renderMarkdownReport, writeReports } from './lib/recording-analyzer.mjs'
+import { analyzeRecording, writeReports } from './lib/recording-analyzer.mjs'
+import { analyzeStartupResolution, writeStartupReports } from './lib/startup-resolution-analyzer.mjs'
 import { evaluateAcceptance } from './lib/acceptance-gate.mjs'
 
 const config = {
@@ -165,10 +166,28 @@ async function main() {
       intendedFps: config.fps,
       expectAudio: Boolean(sources.microphone),
     })
-    writeReports(report)
-
     const diagnostics = summarizeDiagnostics(diagnosticsEvents, snapshots, scenarioStartedAt, stopRequestedAt)
-    const baselinePath = writeBaselineReport(outputPath, { sources, previewTransport, size, diagnostics, report })
+    writeReports(report)
+    const startupReport = await analyzeStartupResolution(outputPath, {
+      ffmpegPath: config.ffmpegPath,
+      ffprobePath: config.ffprobePath,
+      expectedWidth: config.width,
+      expectedHeight: config.height,
+      intendedFps: config.fps,
+      syntheticEvidence: diagnostics.encoderBridgeSyntheticFrames,
+    })
+    const startupPaths = await writeStartupReports(startupReport, {
+      ffmpegPath: config.ffmpegPath,
+    })
+    const baselinePath = writeBaselineReport(outputPath, {
+      sources,
+      previewTransport,
+      size,
+      diagnostics,
+      report,
+      startupReport,
+      startupPaths,
+    })
 
     // Full real-source acceptance gate: final-file verdict + recording repeats +
     // encoder speed + mic drops/coverage + transport honesty, all enforced together.
@@ -176,11 +195,12 @@ async function main() {
       previewTransport === 'native-surface' || diagnostics.transports.includes('native-surface')
     const acceptance = evaluateAcceptance({
       analyzerVerdict: report.verdict,
+      startupVerdict: startupReport.verdict,
       diagnostics,
       claimsNative,
       expectAudio: Boolean(sources.microphone),
     })
-    printSummary(report, diagnostics, previewTransport, baselinePath, acceptance)
+    printSummary(report, startupReport, diagnostics, previewTransport, baselinePath, acceptance)
     return acceptance
   } finally {
     ws.close()
@@ -338,7 +358,7 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt) {
 
 // --- Report -----------------------------------------------------------------
 
-function writeBaselineReport(outputPath, { sources, previewTransport, size, diagnostics, report }) {
+function writeBaselineReport(outputPath, { sources, previewTransport, size, diagnostics, report, startupReport, startupPaths }) {
   const base = outputPath.split('/').pop().replace(/\.[^.]+$/, '')
   const reportPath = join(dirname(outputPath), `${base}.baseline.md`)
   const m = report.metrics
@@ -382,6 +402,30 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   lines.push(`- Audio gaps: max ${fmt(m.maxAudioGapMs)}ms / ${m.audioGapCount ?? 0} | silence longest ${fmt(m.longestSilenceMs)}ms`)
   lines.push(`- A/V skew: ${m.avSkewMs == null ? 'n/a' : `${fmt(m.avSkewMs)}ms`}`)
   lines.push('')
+  if (startupReport) {
+    const s = startupReport.metrics
+    lines.push('## Startup-resolution verdict (first 2 seconds)')
+    lines.push('')
+    lines.push(`**${startupReport.verdict.pass ? 'PASS' : 'FAIL'}**`)
+    if (startupReport.verdict.failures.length) {
+      lines.push('')
+      for (const f of startupReport.verdict.failures) lines.push(`- FAIL: ${f}`)
+    }
+    if (startupReport.verdict.warnings.length) {
+      lines.push('')
+      for (const w of startupReport.verdict.warnings) lines.push(`- WARN: ${w}`)
+    }
+    lines.push('')
+    lines.push(`- Report: \`${startupPaths?.mdPath ?? 'n/a'}\``)
+    if (startupPaths?.thumbnailPath) lines.push(`- Thumbnail sheet: \`${startupPaths.thumbnailPath}\``)
+    lines.push(`- Metadata resolution: ${s.metadataWidth ?? 'n/a'}x${s.metadataHeight ?? 'n/a'} | expected ${s.expectedWidth ?? 'n/a'}x${s.expectedHeight ?? 'n/a'}`)
+    lines.push(`- Startup frames: decoded ${s.startupFrameCount} | expected ~${s.expectedStartupFrames ?? 'n/a'} | hashes ${s.hashCount}`)
+    lines.push(`- Dimension mismatches: ${s.dimensionMismatchCount} | preview-sized frames: ${s.previewSizedFrameCount}`)
+    lines.push(`- Repeated frames: max run ${s.maxRepeatedFrameRun ?? 'n/a'} / ${s.repeatedBurstCount} burst(s)`)
+    lines.push(`- Near-black frames: ${s.blackFrameCount} | letterbox/pillarbox candidates: ${s.letterboxCandidateCount}`)
+    lines.push(`- Synthetic evidence: ${s.syntheticEvidence == null ? 'not available' : `${s.syntheticEvidence} diagnostic frame(s)`}`)
+    lines.push('')
+  }
   lines.push('## Live diagnostics during recording')
   lines.push('')
   lines.push(`- Preview transport(s) reported: ${diagnostics.transports.join(', ') || 'unknown'} (preview.live.start said: ${previewTransport})`)
@@ -426,7 +470,7 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   return reportPath
 }
 
-function printSummary(report, diagnostics, previewTransport, baselinePath, acceptance) {
+function printSummary(report, startupReport, diagnostics, previewTransport, baselinePath, acceptance) {
   console.log('')
   console.log('════════ REAL-SOURCE BASELINE ════════')
   console.log(`Acceptance gate: ${acceptance.pass ? 'PASS' : 'FAIL'}`)
@@ -434,6 +478,9 @@ function printSummary(report, diagnostics, previewTransport, baselinePath, accep
   console.log(`Final-file verdict: ${report.verdict.pass ? 'PASS' : 'FAIL'}`)
   for (const f of report.verdict.failures) console.log(`  ❌ ${f}`)
   for (const w of report.verdict.warnings) console.log(`  ⚠️  ${w}`)
+  console.log(`Startup verdict: ${startupReport.verdict.pass ? 'PASS' : 'FAIL'}`)
+  for (const f of startupReport.verdict.failures) console.log(`  ✗ ${f}`)
+  for (const w of startupReport.verdict.warnings) console.log(`  ! ${w}`)
   console.log(`Preview transport: ${previewTransport} (diagnostics saw: ${diagnostics.transports.join(', ') || 'unknown'})`)
   console.log(
     `Transport honesty: ${diagnostics.imagePollDuringSession.total === 0 ? 'native (0 image polls)' : `NOT native (${diagnostics.imagePollDuringSession.total} image polls during session)`}`

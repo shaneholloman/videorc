@@ -15,6 +15,7 @@ export const DEFAULT_ACCEPTANCE_GATES = Object.freeze({
 /**
  * @param {object} input
  * @param {{pass:boolean, failures:string[]}} input.analyzerVerdict - from analyzeRecording()
+ * @param {{pass:boolean, failures:string[]}} [input.startupVerdict] - from analyzeStartupResolution()
  * @param {object} input.diagnostics - summarized live diagnostics for the run
  * @param {boolean} input.claimsNative - whether the preview reported a native transport
  * @param {boolean} input.expectAudio - whether a mic was selected
@@ -29,6 +30,13 @@ export function evaluateAcceptance(input, gates = DEFAULT_ACCEPTANCE_GATES) {
   if (input.analyzerVerdict && !input.analyzerVerdict.pass) {
     for (const failure of input.analyzerVerdict.failures ?? []) {
       failures.push(`final-file: ${failure}`)
+    }
+  }
+
+  // 1b. Startup gates: the first seconds must already be target-resolution real output.
+  if (input.startupVerdict && !input.startupVerdict.pass) {
+    for (const failure of input.startupVerdict.failures ?? []) {
+      failures.push(`startup: ${failure}`)
     }
   }
 

@@ -35,6 +35,14 @@ describe('evaluateAcceptance', () => {
     assert.match(v.failures[0], /final-file: freeze segment 250ms/)
   })
 
+  it('fails when the startup-resolution analyzer fails, surfacing its reasons', () => {
+    const input = cleanInput()
+    input.startupVerdict = { pass: false, failures: ['metadata width 640 does not match expected 1920'] }
+    const v = evaluateAcceptance(input)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /startup: metadata width 640/)
+  })
+
   it('fails on duplicate frames re-fed to the encoder', () => {
     const input = cleanInput()
     input.diagnostics.encoderBridgeRepeatedFrames = 12
