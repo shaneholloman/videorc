@@ -184,9 +184,9 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequest
   })
   const steadySamples = activeSamples.filter((sample) => (sample.receivedAt ?? 0) - scenarioStartedAt >= warmupMs)
   const measuredSamples = steadySamples.length ? steadySamples : activeSamples
-  const fpsValues = measuredSamples
-    .flatMap((sample) => [numeric(sample.captureFps), numeric(sample.renderFps)])
-    .filter((value) => value !== null)
+  const captureFpsValues = measuredSamples.map((sample) => numeric(sample.captureFps)).filter((value) => value !== null)
+  const renderFpsValues = measuredSamples.map((sample) => numeric(sample.renderFps)).filter((value) => value !== null)
+  const fpsValues = [...captureFpsValues, ...renderFpsValues]
   const speedValues = measuredSamples.map((sample) => numeric(sample.encoderSpeed)).filter((value) => value !== null)
   const backendRssValues = measuredSamples
     .map((sample) => numeric(sample.backendRssBytes))
@@ -199,6 +199,8 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequest
     .filter((value) => value !== null)
   return {
     minFps: fpsValues.length ? Math.min(...fpsValues) : null,
+    minCaptureFps: captureFpsValues.length ? Math.min(...captureFpsValues) : null,
+    minRenderFps: renderFpsValues.length ? Math.min(...renderFpsValues) : null,
     minSpeed: speedValues.length ? Math.min(...speedValues) : null,
     droppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.droppedFrames ?? 0)),
     micDroppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.micDroppedFrames ?? 0)),
@@ -226,7 +228,9 @@ function assertStatsHealthy(scenario, stats) {
   }
   const minFps = scenario.fps * 0.9
   if (stats.minFps < minFps) {
-    throw new Error(`[${scenario.label}] FPS ${format(stats.minFps)} fell below ${format(minFps)}.`)
+    throw new Error(
+      `[${scenario.label}] FPS ${format(stats.minFps)} fell below ${format(minFps)} (capture ${format(stats.minCaptureFps)}, render ${format(stats.minRenderFps)}).`
+    )
   }
   if (stats.droppedFrames > 0) {
     throw new Error(`[${scenario.label}] FFmpeg reported ${stats.droppedFrames} dropped frame(s).`)

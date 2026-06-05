@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -7,6 +8,9 @@ import { connectBackend, request } from './smoke-recording-session.mjs'
 const repoRoot = resolve(import.meta.dirname, '..')
 const timeoutMs = Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 100000)
 const measurementMs = Number(process.env.VIDEORC_PREVIEW_SURFACE_SAMPLE_MS ?? 3000)
+const resizedMeasurementMs = Number(
+  process.env.VIDEORC_PREVIEW_SURFACE_RESIZE_SAMPLE_MS ?? Math.min(measurementMs, 3000)
+)
 const minFps = Number(process.env.VIDEORC_PREVIEW_SURFACE_MIN_FPS ?? 55)
 const maxIntervalP95Ms = Number(process.env.VIDEORC_PREVIEW_SURFACE_MAX_INTERVAL_P95_MS ?? 24)
 const outputDirectory = resolve(
@@ -66,7 +70,7 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
     await smokeCommand(smoke, 'resize-window', { width: 1280, height: 820 })
     const resizedStatus = await waitForNativeSurface(ws, firstStatus.framesRendered)
     const resizedMeasurement = await smokeCommand(smoke, 'measure-native-preview-surface', {
-      durationMs: measurementMs
+      durationMs: resizedMeasurementMs
     })
     assertNativeMeasurement(resizedMeasurement, 'resized')
 
@@ -217,13 +221,44 @@ async function smokeCommand(smoke, command, params = {}) {
 }
 
 async function sendSmokeCommand(smoke, command, params = {}) {
-  const response = await fetch(`http://${smoke.host}:${smoke.port}/command`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, params })
+  const body = JSON.stringify({ command, params })
+  const { statusCode, payload } = await new Promise((resolveCommand, rejectCommand) => {
+    const request = httpRequest(
+      {
+        hostname: smoke.host,
+        port: smoke.port,
+        path: '/command',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body)
+        }
+      },
+      (response) => {
+        response.setEncoding('utf8')
+        let text = ''
+        response.on('data', (chunk) => {
+          text += chunk
+        })
+        response.on('end', () => {
+          try {
+            resolveCommand({
+              statusCode: response.statusCode ?? 0,
+              payload: JSON.parse(text)
+            })
+          } catch {
+            rejectCommand(new Error(`${command} smoke command returned invalid JSON: ${text.slice(0, 200)}`))
+          }
+        })
+      }
+    )
+    request.on('error', rejectCommand)
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`${command} smoke command timed out after ${timeoutMs}ms.`))
+    })
+    request.end(body)
   })
-  const payload = await response.json()
-  if (!response.ok || !payload.ok) {
+  if (statusCode < 200 || statusCode >= 300 || !payload.ok) {
     throw new Error(payload.error ?? `${command} smoke command failed.`)
   }
   return payload.result

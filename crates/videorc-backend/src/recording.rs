@@ -46,9 +46,10 @@ use crate::protocol::{
     CameraTransformMode, CompositorSceneUpdateParams, CompositorState, HealthLevel, LayoutPreset,
     PreviewCameraState, PreviewLiveParams, PreviewLiveSource, PreviewLiveState, PreviewLiveStatus,
     PreviewScreenSourceKind, PreviewScreenState, PreviewSnapshot, PreviewSnapshotParams,
-    PreviewTransport, RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams,
-    RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind, SideBySideCameraSide,
-    SideBySideSplit, StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
+    PreviewSurfaceState, PreviewTransport, RecordingPipelineStage, RecordingState, RecordingStatus,
+    RemuxSessionParams, RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind,
+    SideBySideCameraSide, SideBySideSplit, StartSessionParams, StreamHealth, VideoPreset,
+    VideoSettings,
 };
 use crate::repair::{
     GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, RepairJob,
@@ -465,10 +466,11 @@ pub async fn start_session(
             fps: SCREEN_OVERLAY_FPS,
         });
     let encoder_bridge_frame_store = if use_encoder_bridge {
+        let target_fps = recording_compositor_target_fps(&state, &params.output.video).await;
         start_synthetic_compositor(
             state.clone(),
             CompositorStartParams {
-                target_fps: params.output.video.fps.max(60),
+                target_fps,
                 width: params.output.video.width,
                 height: params.output.video.height,
             },
@@ -2741,6 +2743,16 @@ async fn should_use_compositor_encoder_bridge(
     )
 }
 
+async fn recording_compositor_target_fps(state: &AppState, video: &VideoSettings) -> u32 {
+    let preview_surface = state.preview_surface.lock().await.status.clone();
+    if preview_surface.state == PreviewSurfaceState::Live
+        && preview_surface.transport == PreviewTransport::NativeSurface
+    {
+        return video.fps.max(preview_surface.target_fps).max(1);
+    }
+    video.fps.max(1)
+}
+
 fn compositor_encoder_bridge_disabled(record_enabled: bool, stream_enabled: bool) -> bool {
     if encoder_bridge_disabled_setting(std::env::var("VIDEORC_ENCODER_BRIDGE").ok().as_deref()) {
         return true;
@@ -4543,10 +4555,12 @@ mod tests {
         LayoutSettings, OutputSettings, PreviewLiveParams, RtmpSettings, Scene, SceneOutput,
         SceneOutputKind, SceneSource, SceneSourceKind, SceneTransform, SourceSelection,
     };
+    use crate::storage::Database;
     use crate::streaming::{
         PlatformAccount, PlatformAccountStatus, StreamAuthMode, StreamMode, StreamPlatform,
         StreamTargetState, default_stream_targets,
     };
+    use tokio::sync::broadcast;
 
     fn base_params(record_enabled: bool, stream_enabled: bool) -> StartSessionParams {
         StartSessionParams {
@@ -4600,6 +4614,16 @@ mod tests {
                 expect_audio: true,
             },
             "t0".to_string(),
+        )
+    }
+
+    fn test_state() -> AppState {
+        let (events, _) = broadcast::channel(16);
+        AppState::new(
+            "test-token".to_string(),
+            1234,
+            events,
+            Database::open_in_memory_for_tests(),
         )
     }
 
@@ -5584,6 +5608,40 @@ mod tests {
         assert!(encoder_bridge_streaming_disabled(Some("off")));
         assert!(encoder_bridge_disabled_setting(Some("0")));
         assert!(!encoder_bridge_recording_disabled(None));
+    }
+
+    #[tokio::test]
+    async fn bridge_compositor_uses_recording_fps_without_native_surface() {
+        let state = test_state();
+        let video = VideoSettings {
+            preset: VideoPreset::Custom,
+            width: 2560,
+            height: 1440,
+            fps: 30,
+            bitrate_kbps: 8000,
+        };
+
+        assert_eq!(recording_compositor_target_fps(&state, &video).await, 30);
+    }
+
+    #[tokio::test]
+    async fn bridge_compositor_uses_native_surface_fps_when_preview_is_live() {
+        let state = test_state();
+        {
+            let mut surface = state.preview_surface.lock().await;
+            surface.status.state = PreviewSurfaceState::Live;
+            surface.status.transport = PreviewTransport::NativeSurface;
+            surface.status.target_fps = 60;
+        }
+        let video = VideoSettings {
+            preset: VideoPreset::Custom,
+            width: 2560,
+            height: 1440,
+            fps: 30,
+            bitrate_kbps: 8000,
+        };
+
+        assert_eq!(recording_compositor_target_fps(&state, &video).await, 60);
     }
 
     #[test]

@@ -31,6 +31,8 @@ use crate::protocol::{
 };
 use crate::state::AppState;
 
+const COMPOSITOR_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
+
 pub type CompositorSlot = std::sync::Arc<tokio::sync::Mutex<CompositorRuntime>>;
 pub type CompositorFrameStore = Arc<StdMutex<FrameStore<CompositorPixelFormat>>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +244,34 @@ pub async fn update_compositor_scene(
     status
 }
 
+pub async fn update_compositor_active_screen(
+    state: &AppState,
+    active_screen: Option<StreamScreen>,
+) -> CompositorStatus {
+    let (revision, scene, layout) = {
+        let compositor = state.compositor.lock().await;
+        let Some(snapshot) = compositor.scene.as_ref() else {
+            return compositor.status.clone();
+        };
+        (
+            snapshot.revision.saturating_add(1),
+            snapshot.scene.clone(),
+            snapshot.layout.clone(),
+        )
+    };
+
+    update_compositor_scene(
+        state,
+        CompositorSceneUpdateParams {
+            revision,
+            scene,
+            layout,
+            active_screen,
+        },
+    )
+    .await
+}
+
 impl CompositorRuntime {
     fn cache_image_source(&mut self, screen: &StreamScreen) -> CompositorImageSource {
         let path = Path::new(&screen.image_path);
@@ -317,6 +347,7 @@ async fn run_synthetic_compositor_loop(
     let frame_interval = Duration::from_secs_f64(1.0 / f64::from(target_fps.max(1)));
     let mut ticker = tokio::time::interval(frame_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let (width, height) = compositor_dimensions(&state).await;
 
     let mut frames_rendered = 0_u64;
     let mut frames_in_window = 0_u64;
@@ -348,22 +379,21 @@ async fn run_synthetic_compositor_loop(
                 let render_started_at = Instant::now();
                 frames_rendered = frames_rendered.saturating_add(1);
                 frames_in_window = frames_in_window.saturating_add(1);
-                let (width, height) = compositor_dimensions(&state).await;
                 let fallback_frame_age_ms =
                     publish_compositor_frame(&state, frames_rendered, width, height).await;
-                let sources = compositor_source_statuses(&state).await;
-                let frame_age_ms = compositor_frame_age_ms(
-                    &sources,
-                    fallback_frame_age_ms,
-                );
                 frame_times_ms.push(render_started_at.elapsed().as_secs_f64() * 1000.0);
 
                 let surface_status = update_preview_surface_frames(&state, frames_rendered).await;
 
-                if window_started_at.elapsed() >= Duration::from_millis(500) {
+                if window_started_at.elapsed() >= COMPOSITOR_DIAGNOSTIC_WINDOW {
                     let elapsed = window_started_at.elapsed().as_secs_f64().max(0.001);
                     let measured_fps = frames_in_window as f64 / elapsed;
                     let (p50, p95, p99) = frame_time_percentiles(&frame_times_ms);
+                    let sources = compositor_source_statuses(&state).await;
+                    let frame_age_ms = compositor_frame_age_ms(
+                        &sources,
+                        fallback_frame_age_ms,
+                    );
                     let status = update_compositor_status(
                         &state,
                         &run_id,
@@ -506,6 +536,39 @@ fn render_compositor_yuv420p_frame(inputs: CompositorRenderInputs<'_>, bytes: &m
         render_synthetic_yuv420p_frame(sequence, width, height, bytes);
         return;
     };
+
+    if let Some(image) = active_image_source.and_then(|source| {
+        source
+            .rgba
+            .as_ref()
+            .zip(source.width.zip(source.height))
+    }) {
+        let (rgba, (image_width, image_height)) = image;
+        if blit_rgba_to_yuv420p(
+            &RgbaSource {
+                bytes: rgba,
+                width: image_width,
+                height: image_height,
+                format: SourcePixelFormat::Rgba,
+            },
+            bytes,
+            width,
+            height,
+            PixelRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            SourceRenderOptions {
+                contain: false,
+                mirror_x: false,
+                circle_mask: false,
+            },
+        ) {
+            return;
+        }
+    }
 
     let mut rendered_sources = 0_u32;
     for source in scene.sources.iter().filter(|source| source.visible) {
@@ -1237,7 +1300,7 @@ fn percentile(sorted: &[f64], p: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::StreamScreenStatus;
+    use crate::protocol::{SceneConfigParams, StreamScreenStatus, VideoPreset, VideoSettings};
     use crate::storage::Database;
     use tokio::sync::broadcast;
 
@@ -1264,7 +1327,7 @@ mod tests {
         )
         .await;
 
-        tokio::time::sleep(Duration::from_millis(650)).await;
+        tokio::time::sleep(COMPOSITOR_DIAGNOSTIC_WINDOW + Duration::from_millis(250)).await;
         let status = compositor_status(&state).await;
         stop_compositor(&state).await;
 
@@ -1385,6 +1448,124 @@ mod tests {
         assert_eq!(missing.scene_sources[0].state, "source-missing");
         assert!(missing.scene_sources[0].message.is_some());
         assert_eq!(state.compositor.lock().await.image_sources.len(), 1);
+    }
+
+    #[test]
+    fn active_screen_image_overrides_test_pattern_frame() {
+        let mut layout = crate::protocol::default_layout_settings();
+        layout.layout_preset = LayoutPreset::ScreenOnly;
+        let scene = crate::scene::scene_from_capture_config(SceneConfigParams {
+            sources: crate::protocol::SourceSelection {
+                screen_id: None,
+                window_id: None,
+                camera_id: None,
+                microphone_id: None,
+                test_pattern: true,
+            },
+            layout: layout.clone(),
+            video: Some(VideoSettings {
+                preset: VideoPreset::Custom,
+                width: 4,
+                height: 4,
+                fps: 30,
+                bitrate_kbps: 2000,
+            }),
+        });
+        let snapshot = CompositorSceneSnapshot {
+            revision: 1,
+            scene: Some(scene),
+            layout,
+            active_screen: Some(test_stream_screen("red")),
+        };
+        let active_image_source = CompositorImageSource {
+            image_path: "red.png".to_string(),
+            file_revision: None,
+            width: Some(2),
+            height: Some(2),
+            rgba: Some(Arc::new(vec![
+                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+            ])),
+            state: "live".to_string(),
+            message: None,
+        };
+        let mut bytes = vec![0; raw_yuv420p_len(4, 4)];
+
+        render_compositor_yuv420p_frame(
+            CompositorRenderInputs {
+                sequence: 1,
+                width: 4,
+                height: 4,
+                snapshot: Some(&snapshot),
+                active_image_source: Some(&active_image_source),
+                camera_frame: None,
+                screen_frame: None,
+            },
+            &mut bytes,
+        );
+
+        let y_len = 4 * 4;
+        let uv_len = 2 * 2;
+        let (red_y, red_u, red_v) = rgb_to_yuv(255, 0, 0);
+        assert_eq!(bytes[0], red_y);
+        assert_eq!(bytes[y_len], red_u);
+        assert_eq!(bytes[y_len + uv_len], red_v);
+    }
+
+    #[tokio::test]
+    async fn active_screen_update_preserves_current_scene() {
+        let state = test_state();
+        let mut layout = crate::protocol::default_layout_settings();
+        layout.layout_preset = LayoutPreset::ScreenOnly;
+        let scene = crate::scene::scene_from_capture_config(SceneConfigParams {
+            sources: crate::protocol::SourceSelection {
+                screen_id: None,
+                window_id: None,
+                camera_id: None,
+                microphone_id: None,
+                test_pattern: true,
+            },
+            layout: layout.clone(),
+            video: None,
+        });
+        let scene_source_count = scene.sources.len();
+
+        update_compositor_scene(
+            &state,
+            CompositorSceneUpdateParams {
+                revision: 20,
+                scene: Some(scene),
+                layout,
+                active_screen: None,
+            },
+        )
+        .await;
+
+        let active = update_compositor_active_screen(&state, Some(test_stream_screen("active")))
+            .await;
+        assert_eq!(active.scene_sources.len(), scene_source_count + 1);
+        assert_eq!(active.active_screen_id.as_deref(), Some("active"));
+        assert!(
+            active
+                .scene_sources
+                .iter()
+                .any(|source| source.id == "source:test-pattern")
+        );
+        assert!(
+            active
+                .scene_sources
+                .iter()
+                .any(|source| source.id == "screen-image:active")
+        );
+
+        let cleared = update_compositor_active_screen(&state, None).await;
+        assert_eq!(cleared.scene_sources.len(), scene_source_count);
+        assert_eq!(cleared.active_screen_id, None);
+        assert!(
+            cleared
+                .scene_sources
+                .iter()
+                .all(|source| source.kind != CompositorSceneSourceKind::ScreenImage)
+        );
     }
 
     #[test]

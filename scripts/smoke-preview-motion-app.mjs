@@ -8,9 +8,6 @@ const repoRoot = resolve(import.meta.dirname, '..')
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
 const timeoutMs = Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 100000)
 const measurementMs = Number(process.env.VIDEORC_PREVIEW_MOTION_SAMPLE_MS ?? 10000)
-const strictObs = process.env.VIDEORC_PREVIEW_MOTION_STRICT_OBS === '1'
-const fallbackMinLoads = Number(process.env.VIDEORC_PREVIEW_MOTION_MIN_LOADS ?? 12)
-const fallbackMaxLongTaskMs = Number(process.env.VIDEORC_PREVIEW_MOTION_MAX_LONG_TASK_MS ?? 500)
 const obsMinFps = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MIN_FPS ?? 55)
 const obsMaxFrameAgeMs = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_AGE_MS ?? 100)
 const obsMaxIntervalP95Ms = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_INTERVAL_P95_MS ?? 24)
@@ -37,23 +34,27 @@ async function runPreviewMotionSmoke(connection, smoke) {
     }
     console.log(`Preview motion smoke using FFmpeg: ${ffmpegPath}`)
 
-    await request(ws, timeoutMs, 'preview.live.start', previewParams())
-    const liveStatus = await waitForLivePreview(ws)
     await smokeCommand(smoke, 'open-layout-tab')
-
-    const measurement = smokeCommand(smoke, 'measure-preview-motion', {
-      durationMs: measurementMs,
-      expectedIntervalMs: 1000 / 60
+    const bootstrap = await smokeCommand(smoke, 'inspect-native-preview-bootstrap')
+    assertNativeBootstrap(bootstrap)
+    const liveStatus = await waitForNativeSurface(ws)
+    const nativeStage = await smokeCommand(smoke, 'inspect-native-preview-bootstrap', {
+      requireNativePlaceholder: true
     })
-    await exerciseLayoutAndMotion(ws, smoke)
+    assertNativeBootstrap(nativeStage, { requireNativePreview: true })
+
+    const measurement = smokeCommand(smoke, 'measure-native-preview-surface', {
+      durationMs: measurementMs
+    })
+    await exerciseLayoutAndMotion(smoke)
     const renderer = await measurement
     const diagnostics = await request(ws, timeoutMs, 'diagnostics.stats')
 
-    assertFallbackHealthy(renderer)
+    assertNativeMotionHealthy(renderer)
     const obsQualified = isObsQualified(liveStatus, renderer, diagnostics)
     const reason = obsQualified
       ? 'Preview meets OBS-quality Phase 0 strict thresholds.'
-      : `Current ${liveStatus.transport} preview is below OBS target: renderer ${format(renderer.measuredFps)}fps, p95 interval ${format(renderer.intervalP95Ms)}ms, frame age ${format(diagnostics.previewFrameAgeMs)}ms.`
+      : `Current native preview is below OBS target: renderer ${format(renderer.measuredFps)}fps, p95 interval ${format(renderer.intervalP95Ms)}ms, frame age ${format(diagnostics.previewFrameAgeMs)}ms.`
 
     await request(ws, timeoutMs, 'diagnostics.preview_baseline.record', {
       transport: liveStatus.transport,
@@ -64,18 +65,18 @@ async function runPreviewMotionSmoke(connection, smoke) {
       cadenceP95Ms: renderer.intervalP95Ms,
       intervalJitterP95Ms: renderer.intervalJitterP95Ms,
       blankFrames: renderer.blankFrames,
-      longTasks: renderer.longTaskCount,
+      longTasks: renderer.longTaskCount ?? 0,
       rendererLongTaskP95Ms: renderer.rendererLongTaskP95Ms,
       obsQualified,
       reason
     })
 
-    if (strictObs && !obsQualified) {
+    if (!obsQualified) {
       throw new Error(reason)
     }
 
     console.log(
-      `Preview motion baseline: ${liveStatus.transport}, renderer ${format(renderer.measuredFps)}fps, loads ${renderer.imageLoadCount}, p95 interval ${format(renderer.intervalP95Ms)}ms, jitter p95 ${format(renderer.intervalJitterP95Ms)}ms, blanks ${renderer.blankFrames}, long tasks ${renderer.longTaskCount}, frame age ${format(diagnostics.previewFrameAgeMs)}ms, OBS qualified ${obsQualified ? 'yes' : 'no'}`
+      `Preview motion baseline: ${liveStatus.transport}, renderer ${format(renderer.measuredFps)}fps, p95 interval ${format(renderer.intervalP95Ms)}ms, blanks ${renderer.blankFrames}, compositor frames ${renderer.compositorFrames}, frame age ${format(diagnostics.previewFrameAgeMs)}ms, OBS qualified ${obsQualified ? 'yes' : 'no'}`
     )
   } finally {
     try {
@@ -87,35 +88,13 @@ async function runPreviewMotionSmoke(connection, smoke) {
   }
 }
 
-async function exerciseLayoutAndMotion(ws, smoke) {
+async function exerciseLayoutAndMotion(smoke) {
   const steps = [
-    async () => request(ws, timeoutMs, 'preview.live.start', previewParams({ layoutPreset: 'screen-only' })),
-    async () => request(ws, timeoutMs, 'preview.live.start', previewParams({ layoutPreset: 'screen-camera' })),
-    async () =>
-      request(
-        ws,
-        timeoutMs,
-        'preview.live.start',
-        previewParams({
-          layoutPreset: 'screen-camera',
-          cameraTransformMode: 'custom',
-          cameraTransform: { x: 0.08, y: 0.1, width: 0.3, height: 0.3 }
-        })
-      ),
+    async () => smokeCommand(smoke, 'exercise-native-preview-scene'),
     async () => smokeCommand(smoke, 'resize-window', { width: 1030, height: 720 }),
-    async () =>
-      request(
-        ws,
-        timeoutMs,
-        'preview.live.start',
-        previewParams({
-          layoutPreset: 'screen-camera',
-          cameraTransformMode: 'custom',
-          cameraTransform: { x: 0.62, y: 0.54, width: 0.28, height: 0.28 }
-        })
-      ),
+    async () => smokeCommand(smoke, 'exercise-native-preview-scene'),
     async () => smokeCommand(smoke, 'resize-window', { width: 1280, height: 820 }),
-    async () => request(ws, timeoutMs, 'preview.live.start', previewParams())
+    async () => smokeCommand(smoke, 'exercise-native-preview-scene')
   ]
 
   for (const step of steps) {
@@ -124,15 +103,32 @@ async function exerciseLayoutAndMotion(ws, smoke) {
   }
 }
 
-function assertFallbackHealthy(renderer) {
-  if (renderer.imageLoadCount < fallbackMinLoads) {
-    throw new Error(`Renderer preview only loaded ${renderer.imageLoadCount} frame(s); expected at least ${fallbackMinLoads}.`)
+function assertNativeMotionHealthy(renderer) {
+  if ((renderer.measuredFps ?? 0) < obsMinFps) {
+    throw new Error(`Native preview measured ${format(renderer.measuredFps)}fps, expected at least ${obsMinFps}.`)
   }
-  if (renderer.blankFrames > 0) {
-    throw new Error(`Renderer preview observed ${renderer.blankFrames} blank frame(s).`)
+  if ((renderer.intervalP95Ms ?? Number.POSITIVE_INFINITY) > obsMaxIntervalP95Ms) {
+    throw new Error(`Native preview p95 interval ${format(renderer.intervalP95Ms)}ms exceeded ${obsMaxIntervalP95Ms}ms.`)
   }
-  if ((renderer.maxLongTaskMs ?? 0) > fallbackMaxLongTaskMs) {
-    throw new Error(`Renderer long task ${format(renderer.maxLongTaskMs)}ms exceeded ${fallbackMaxLongTaskMs}ms.`)
+  if ((renderer.blankFrames ?? 0) > 0) {
+    throw new Error(`Native preview reported ${renderer.blankFrames} blank frame(s).`)
+  }
+}
+
+function assertNativeBootstrap(result, options = {}) {
+  if (!result.hasStage || !result.hasSurface) {
+    throw new Error(`Preview stage did not render: ${JSON.stringify(result)}`)
+  }
+  if (!result.hasVideorcBridge || !result.hasCreateNativePreviewSurface || !result.hasUpdateNativePreviewSurfaceBounds) {
+    throw new Error(`Native preview bridge is incomplete: ${JSON.stringify(result)}`)
+  }
+  if (options.requireNativePreview) {
+    if (!result.hasNativePlaceholder) {
+      throw new Error(`Preview stage did not render the native surface placeholder: ${JSON.stringify(result)}`)
+    }
+    if ((result.previewImageCount ?? 0) !== 0 || result.hasJpegPollingPreviewImage) {
+      throw new Error(`Native preview rendered a JPEG/MJPEG fallback image: ${JSON.stringify(result)}`)
+    }
   }
 }
 
@@ -147,53 +143,42 @@ function isObsQualified(status, renderer, diagnostics) {
   )
 }
 
-async function waitForLivePreview(ws) {
+async function waitForNativeSurface(ws, previousFrames = -1) {
   const deadline = Date.now() + timeoutMs
   let lastStatus = null
   while (Date.now() < deadline) {
-    lastStatus = await request(ws, timeoutMs, 'preview.live.status')
-    if (lastStatus.state === 'live') {
+    lastStatus = await request(ws, timeoutMs, 'preview.surface.status')
+    if (
+      lastStatus.state === 'live' &&
+      lastStatus.transport === 'native-surface' &&
+      (lastStatus.targetFps ?? 0) >= 60 &&
+      lastStatus.framesRendered > previousFrames
+    ) {
       return lastStatus
     }
-    await sleep(250)
+    await sleep(150)
   }
-  throw new Error(`Live preview did not become live. Last status: ${JSON.stringify(lastStatus)}`)
-}
-
-function previewParams(layoutPatch = {}) {
-  const layout = {
-    layoutPreset: 'screen-camera',
-    cameraTransformMode: 'preset',
-    cameraTransform: null,
-    cameraCorner: 'bottom-right',
-    cameraSize: 'medium',
-    cameraShape: 'rectangle',
-    cameraMargin: 32,
-    cameraFit: 'fill',
-    cameraMirror: false,
-    cameraZoom: 100,
-    cameraOffsetX: 0,
-    cameraOffsetY: 0,
-    sideBySideSplit: '70-30',
-    sideBySideCameraSide: 'right',
-    ...layoutPatch
-  }
-
-  return {
-    sources: { testPattern: true },
-    layout,
-    ffmpegPath,
-    video: {
-      preset: 'custom',
-      width: 1280,
-      height: 720,
-      fps: 60,
-      bitrateKbps: 4000
-    }
-  }
+  throw new Error(`Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`)
 }
 
 async function smokeCommand(smoke, command, params = {}) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      return await sendSmokeCommand(smoke, command, params)
+    } catch (error) {
+      lastError = error
+      if (!String(error?.message ?? error).includes('Main window is not ready')) {
+        throw error
+      }
+      await sleep(150)
+    }
+  }
+  throw lastError ?? new Error(`${command} smoke command timed out.`)
+}
+
+async function sendSmokeCommand(smoke, command, params = {}) {
   const response = await fetch(`http://${smoke.host}:${smoke.port}/command`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -218,6 +203,7 @@ function launchAndReadConnections() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_NATIVE_PREVIEW_SURFACE: '1',
         VIDEORC_SMOKE_OUTPUT_DIR: outputDirectory,
         VIDEORC_SMOKE_PREVIEW_MOTION: '1',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'

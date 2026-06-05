@@ -27,6 +27,8 @@ use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::protocol::{EncoderBridgeSyntheticParams, EncoderBridgeSyntheticResult};
 use crate::state::AppState;
 
+const ENCODER_BRIDGE_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EncoderBridgeSettings {
     ffmpeg_path: String,
@@ -156,7 +158,7 @@ pub async fn run_synthetic_encoder_bridge(
         frames_written = frames_written.saturating_add(1);
         frames_in_window = frames_in_window.saturating_add(1);
 
-        if window_started_at.elapsed() >= Duration::from_millis(500) {
+        if window_started_at.elapsed() >= ENCODER_BRIDGE_DIAGNOSTIC_WINDOW {
             let input_fps = Some(
                 frames_in_window as f64 / window_started_at.elapsed().as_secs_f64().max(0.001),
             );
@@ -560,7 +562,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         queue_depth = 0;
         frames_in_window = frames_in_window.saturating_add(1);
 
-        if window_started_at.elapsed() >= Duration::from_millis(500) {
+        if window_started_at.elapsed() >= ENCODER_BRIDGE_DIAGNOSTIC_WINDOW {
             emit_encoder_bridge_diagnostics_from_thread(
                 &diagnostics_tx,
                 session_id.clone(),

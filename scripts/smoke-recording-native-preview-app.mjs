@@ -21,8 +21,15 @@ const minSpeed = Number(process.env.VIDEORC_NATIVE_PREVIEW_MIN_SPEED ?? 0.98)
 const maxSkewMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_AV_SKEW_MS ?? 250)
 const minPreviewFps = Number(process.env.VIDEORC_NATIVE_PREVIEW_MIN_FPS ?? 55)
 const maxPreviewIntervalP95Ms = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_INTERVAL_P95_MS ?? 24)
+const layoutStressUpdates = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES ?? 0)
+const layoutStressIntervalMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_INTERVAL_MS ?? 750)
 
-const scenario = { label: 'native-preview-1080p30', width: 1920, height: 1080, fps: 30, bitrateKbps: 6000 }
+const scenarios = [
+  ...(process.env.VIDEORC_NATIVE_PREVIEW_INCLUDE_1440 === '1'
+    ? [{ label: 'native-preview-1440p30', width: 2560, height: 1440, fps: 30, bitrateKbps: 8000 }]
+    : []),
+  { label: 'native-preview-1080p30', width: 1920, height: 1080, fps: 30, bitrateKbps: 6000 }
+]
 
 let appProcess
 let stopping = false
@@ -67,70 +74,80 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
       requireNativePlaceholder: true
     })
     assertNativeBootstrap(nativeStage, { requireNativePreview: true })
-    await waitForNativePreviewDiagnostics(ws)
+    await waitForNativePreviewDiagnostics(samples)
 
-    samples.length = 0
-    const scenarioStartedAt = Date.now()
-    const started = await request(ws, timeoutMs, 'session.start', sessionParams())
-    if (started.state !== 'recording') {
-      throw new Error(`Expected recording state after start, got ${started.state}.`)
+    let previousSurface = surfaceBefore
+    for (const scenario of scenarios) {
+      previousSurface = await runNativePreviewRecordingScenario(ws, smoke, samples, scenario, previousSurface)
     }
-    const activeSceneRevision = Date.now()
-    const compositorStatus = await request(
-      ws,
-      timeoutMs,
-      'compositor.scene.update',
-      compositorSceneUpdateParams(activeSceneRevision, 0.58)
-    )
-    if (compositorStatus.sceneRevision !== activeSceneRevision) {
-      throw new Error(
-        `Compositor scene update returned revision ${compositorStatus.sceneRevision}, expected ${activeSceneRevision}.`
-      )
-    }
-    await assertSameRunningSession(ws, started.sessionId)
-    await waitForActiveSceneDiagnostics(ws, activeSceneRevision, 'record')
-
-    const measurementPromise = smokeCommand(smoke, 'measure-native-preview-surface', {
-      durationMs: previewMeasurementMs
-    })
-    await sleep(recordingMs)
-    const measurement = await measurementPromise
-    assertNativeMeasurement(measurement)
-
-    const surfaceDuring = await waitForNativeSurface(ws, surfaceBefore.framesRendered)
-    const stopRequestedAt = Date.now()
-    const stopped = await request(ws, timeoutMs, 'session.stop')
-    const outputPath = stopped.outputPath ?? started.outputPath
-    if (!outputPath || !existsSync(outputPath)) {
-      throw new Error(`Recording output was not created: ${outputPath ?? 'missing path'}`)
-    }
-    const size = statSync(outputPath).size
-    if (size <= 0) {
-      throw new Error(`Recording output is empty: ${outputPath}`)
-    }
-
-    const stats = summarizeDiagnostics(samples, scenario.fps, scenarioStartedAt, stopRequestedAt)
-    assertStatsHealthy(stats)
-    if (stats.nativePreviewSamples === 0) {
-      throw new Error('Recording diagnostics never reported native-surface preview transport.')
-    }
-    if (surfaceDuring.framesRendered <= surfaceBefore.framesRendered) {
-      throw new Error(
-        `Native preview surface did not advance during recording: ${surfaceBefore.framesRendered} -> ${surfaceDuring.framesRendered}.`
-      )
-    }
-
-    const skew = await audioVideoSkewMs(outputPath)
-    if (skew > maxSkewMs) {
-      throw new Error(`Audio/video duration skew ${skew.toFixed(1)}ms exceeded ${maxSkewMs}ms.`)
-    }
-
-    console.log(
-      `Native-preview recording smoke OK: ${outputPath} (${size} bytes), preview ${format(measurement.measuredFps)}fps, p95 ${format(measurement.intervalP95Ms)}ms, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, maintenance samples ${stats.maintenanceSamples}, duplicate samples ${stats.duplicateCaptureSamples}, max RSS ${formatBytes(stats.maxBackendRssBytes)}, max FFmpeg procs ${stats.maxActiveFfmpegProcesses}, max FFprobe procs ${stats.maxActiveFfprobeProcesses}`
-    )
   } finally {
     ws.close()
   }
+}
+
+async function runNativePreviewRecordingScenario(ws, smoke, samples, scenario, previousSurface) {
+  samples.length = 0
+  const scenarioStartedAt = Date.now()
+  const started = await request(ws, timeoutMs, 'session.start', sessionParams(scenario))
+  if (started.state !== 'recording') {
+    throw new Error(`[${scenario.label}] Expected recording state after start, got ${started.state}.`)
+  }
+  const activeSceneRevision = Date.now()
+  const compositorStatus = await request(
+    ws,
+    timeoutMs,
+    'compositor.scene.update',
+    compositorSceneUpdateParams(activeSceneRevision, 0.58)
+  )
+  if (compositorStatus.sceneRevision !== activeSceneRevision) {
+    throw new Error(
+      `[${scenario.label}] Compositor scene update returned revision ${compositorStatus.sceneRevision}, expected ${activeSceneRevision}.`
+    )
+  }
+  await assertSameRunningSession(ws, started.sessionId)
+  await waitForActiveSceneDiagnostics(ws, activeSceneRevision, 'record')
+
+  const measurementPromise = smokeCommand(smoke, 'measure-native-preview-surface', {
+    durationMs: previewMeasurementMs
+  })
+  const stressPromise = stressLayoutDuringRecording(ws, started.sessionId, layoutStressUpdates)
+  await sleep(recordingMs)
+  await stressPromise
+  const measurement = await measurementPromise
+  assertNativeMeasurement(measurement)
+
+  const surfaceDuring = await waitForNativeSurface(ws, previousSurface.framesRendered)
+  const stopRequestedAt = Date.now()
+  const stopped = await request(ws, timeoutMs, 'session.stop')
+  const outputPath = stopped.outputPath ?? started.outputPath
+  if (!outputPath || !existsSync(outputPath)) {
+    throw new Error(`[${scenario.label}] Recording output was not created: ${outputPath ?? 'missing path'}`)
+  }
+  const size = statSync(outputPath).size
+  if (size <= 0) {
+    throw new Error(`[${scenario.label}] Recording output is empty: ${outputPath}`)
+  }
+
+  const stats = summarizeDiagnostics(samples, scenario.fps, scenarioStartedAt, stopRequestedAt)
+  assertStatsHealthy(scenario, stats)
+  if (stats.nativePreviewSamples === 0) {
+    throw new Error(`[${scenario.label}] Recording diagnostics never reported native-surface preview transport.`)
+  }
+  if (surfaceDuring.framesRendered <= previousSurface.framesRendered) {
+    throw new Error(
+      `[${scenario.label}] Native preview surface did not advance during recording: ${previousSurface.framesRendered} -> ${surfaceDuring.framesRendered}.`
+    )
+  }
+
+  const skew = await audioVideoSkewMs(outputPath)
+  if (skew > maxSkewMs) {
+    throw new Error(`[${scenario.label}] Audio/video duration skew ${skew.toFixed(1)}ms exceeded ${maxSkewMs}ms.`)
+  }
+
+  console.log(
+    `Native-preview recording [${scenario.label}] OK: ${outputPath} (${size} bytes), preview ${format(measurement.measuredFps)}fps, p95 ${format(measurement.intervalP95Ms)}ms, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, layout stress ${layoutStressUpdates} update(s), maintenance samples ${stats.maintenanceSamples}, duplicate samples ${stats.duplicateCaptureSamples}, max RSS ${formatBytes(stats.maxBackendRssBytes)}, max FFmpeg procs ${stats.maxActiveFfmpegProcesses}, max FFprobe procs ${stats.maxActiveFfprobeProcesses}`
+  )
+  return surfaceDuring
 }
 
 async function assertSameRunningSession(ws, sessionId) {
@@ -160,7 +177,28 @@ async function waitForActiveSceneDiagnostics(ws, sceneRevision, outputMode) {
   )
 }
 
-function sessionParams() {
+async function stressLayoutDuringRecording(ws, sessionId, count) {
+  for (let index = 0; index < count; index += 1) {
+    await sleep(layoutStressIntervalMs)
+    const revision = Date.now() + index
+    const cameraX = index % 2 === 0 ? 0.18 : 0.62
+    const compositorStatus = await request(
+      ws,
+      timeoutMs,
+      'compositor.scene.update',
+      compositorSceneUpdateParams(revision, cameraX)
+    )
+    if (compositorStatus.sceneRevision !== revision) {
+      throw new Error(
+        `Layout stress update ${index + 1}/${count} returned revision ${compositorStatus.sceneRevision}, expected ${revision}.`
+      )
+    }
+    await assertSameRunningSession(ws, sessionId)
+    await waitForActiveSceneDiagnostics(ws, revision, 'record')
+  }
+}
+
+function sessionParams(scenario) {
   return {
     sources: { testPattern: true },
     layout: {
@@ -301,21 +339,27 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
   throw new Error(`Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`)
 }
 
-async function waitForNativePreviewDiagnostics(ws) {
+async function waitForNativePreviewDiagnostics(samples) {
   const deadline = Date.now() + timeoutMs
+  const startedAt = Date.now()
   let lastDiagnostics = null
   while (Date.now() < deadline) {
-    lastDiagnostics = await request(ws, timeoutMs, 'diagnostics.stats')
-    if (
-      lastDiagnostics.previewTransport === 'native-surface' &&
-      (lastDiagnostics.previewPresentFps ?? 0) >= minPreviewFps
-    ) {
-      return lastDiagnostics
+    for (const sample of samples) {
+      if ((sample.receivedAt ?? 0) < startedAt) {
+        continue
+      }
+      lastDiagnostics = sample
+      if (
+        sample.previewTransport === 'native-surface' &&
+        (sample.previewPresentFps ?? 0) >= minPreviewFps
+      ) {
+        return sample
+      }
     }
-    await sleep(150)
+    await sleep(250)
   }
   throw new Error(
-    `Diagnostics did not report native-surface preview before recording. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
+    `Passive diagnostics did not report native-surface preview before recording. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
   )
 }
 
@@ -393,31 +437,31 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequest
   }
 }
 
-function assertStatsHealthy(stats) {
+function assertStatsHealthy(scenario, stats) {
   if (stats.minSpeed === null) {
-    throw new Error(`No encoder speed diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(`[${scenario.label}] No encoder speed diagnostics were captured after ${warmupMs}ms warm-up.`)
   }
   if (stats.minSpeed < minSpeed) {
-    throw new Error(`Encoder speed ${format(stats.minSpeed)}x fell below ${minSpeed}x.`)
+    throw new Error(`[${scenario.label}] Encoder speed ${format(stats.minSpeed)}x fell below ${minSpeed}x.`)
   }
   if (stats.minFps === null) {
-    throw new Error(`No FPS diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(`[${scenario.label}] No FPS diagnostics were captured after ${warmupMs}ms warm-up.`)
   }
   const minFps = scenario.fps * 0.9
   if (stats.minFps < minFps) {
-    throw new Error(`FPS ${format(stats.minFps)} fell below ${format(minFps)}.`)
+    throw new Error(`[${scenario.label}] FPS ${format(stats.minFps)} fell below ${format(minFps)}.`)
   }
   if (stats.droppedFrames > 0) {
-    throw new Error(`FFmpeg reported ${stats.droppedFrames} dropped frame(s).`)
+    throw new Error(`[${scenario.label}] FFmpeg reported ${stats.droppedFrames} dropped frame(s).`)
   }
   if (stats.micDroppedFrames > 0) {
-    throw new Error(`Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`)
+    throw new Error(`[${scenario.label}] Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`)
   }
   if (stats.maintenanceSamples > 0) {
-    throw new Error(`Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`)
+    throw new Error(`[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`)
   }
   if (stats.duplicateCaptureSamples > 0) {
-    throw new Error(`Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`)
+    throw new Error(`[${scenario.label}] Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`)
   }
 }
 

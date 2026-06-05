@@ -24,6 +24,7 @@ import type {
   PreviewLiveStatus,
   PreviewScreenStatus,
   PreviewSurfaceStatus,
+  StreamTargetRuntime,
   SystemPermissionPane
 } from '@/lib/backend'
 import { compactTime, formatDroppedFrames, formatMetric } from '@/lib/format'
@@ -37,6 +38,7 @@ export function DiagnosticsTab(): ReactElement {
     recording,
     sessions,
     streamHealth,
+    streamTargets,
     previewLiveStatus,
     previewCameraStatus,
     previewScreenStatus,
@@ -79,6 +81,15 @@ export function DiagnosticsTab(): ReactElement {
     ]
   )
   const qualityWarning = useMemo(() => recordingQualityWarning(diagnosticStats.bottleneck), [diagnosticStats.bottleneck])
+  const sourceSummary = useMemo(
+    () => sourceSummaryCopy(diagnosticStats, previewCameraStatus, previewScreenStatus),
+    [diagnosticStats, previewCameraStatus, previewScreenStatus]
+  )
+  const compositorSummary = useMemo(() => compositorSummaryCopy(diagnosticStats), [diagnosticStats])
+  const encoderSummary = useMemo(() => encoderSummaryCopy(diagnosticStats, streamHealth), [diagnosticStats, streamHealth])
+  const repairSummary = useMemo(() => repairSummaryCopy(diagnosticStats), [diagnosticStats])
+  const memorySummary = useMemo(() => memorySummaryCopy(diagnosticStats.backendRssBytes), [diagnosticStats.backendRssBytes])
+  const networkSummary = useMemo(() => networkSummaryCopy(streamTargets), [streamTargets])
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
@@ -149,6 +160,12 @@ export function DiagnosticsTab(): ReactElement {
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge label="Likely bottleneck" tone={bottleneck.tone} value={bottleneck.label} />
             <StatusBadge label="Preview bottleneck" tone={previewDiagnosis.tone} value={previewDiagnosis.label} />
+            <StatusBadge label="Source" tone={sourceSummary.tone} value={sourceSummary.label} />
+            <StatusBadge label="Compositor" tone={compositorSummary.tone} value={compositorSummary.label} />
+            <StatusBadge label="Encoder" tone={encoderSummary.tone} value={encoderSummary.label} />
+            <StatusBadge label="Repair" tone={repairSummary.tone} value={repairSummary.label} />
+            <StatusBadge label="Memory" tone={memorySummary.tone} value={memorySummary.label} />
+            <StatusBadge label="Network" tone={networkSummary.tone} value={networkSummary.label} />
             <StatusBadge label="Preview" tone={previewStatusTone(previewLiveStatus, previewCameraStatus, previewScreenStatus)} value={previewLiveStatus.state} />
             <StatusBadge label="Preview path" tone={diagnosticStats.previewTransport === 'native-surface' ? 'good' : 'warn'} value={formatPreviewTransport(diagnosticStats.previewTransport)} />
             <StatusBadge label="Camera" tone={previewSourceTone(previewCameraStatus.state)} value={previewCameraStatus.state} />
@@ -393,6 +410,105 @@ function recordingQualityWarning(bottleneck: DiagnosticBottleneck): string | nul
     default:
       return null
   }
+}
+
+function sourceSummaryCopy(
+  stats: DiagnosticStats,
+  previewCameraStatus: PreviewCameraStatus,
+  previewScreenStatus: PreviewScreenStatus
+): { label: string; tone: StatusTone } {
+  if (stats.deviceDisconnected) {
+    return { label: 'Device disconnected', tone: 'error' }
+  }
+  if (stats.duplicateCaptureSources.length) {
+    return { label: 'Duplicate capture', tone: 'warn' }
+  }
+  if (
+    stats.previewCameraDroppedFrames > 0 ||
+    stats.previewScreenDroppedFrames > 0 ||
+    previewCameraStatus.droppedFrames > 0 ||
+    previewScreenStatus.droppedFrames > 0
+  ) {
+    return { label: 'Source drops', tone: 'warn' }
+  }
+  if (stats.captureFps && stats.targetFps && stats.captureFps < stats.targetFps * 0.9) {
+    return { label: 'Capture slow', tone: 'warn' }
+  }
+  return { label: 'Healthy', tone: 'good' }
+}
+
+function compositorSummaryCopy(stats: DiagnosticStats): { label: string; tone: StatusTone } {
+  if (stats.renderFps && stats.targetFps && stats.renderFps < stats.targetFps * 0.9) {
+    return { label: 'Render slow', tone: 'warn' }
+  }
+  if (stats.previewRenderFrameTimeP95Ms && stats.previewTargetFps) {
+    const frameBudgetMs = 1000 / Math.max(1, stats.previewTargetFps)
+    if (stats.previewRenderFrameTimeP95Ms > frameBudgetMs * 1.5) {
+      return { label: 'Frame time high', tone: 'warn' }
+    }
+  }
+  return { label: stats.renderFps ? `${stats.renderFps.toFixed(1)} fps` : 'Idle', tone: stats.renderFps ? 'good' : 'neutral' }
+}
+
+function encoderSummaryCopy(
+  stats: DiagnosticStats,
+  streamHealth: { speed?: number; droppedFrames?: number } | null
+): { label: string; tone: StatusTone } {
+  const speed = stats.encoderSpeed ?? streamHealth?.speed
+  const drops = stats.droppedFrames || streamHealth?.droppedFrames || 0
+  if (drops > 0) {
+    return { label: `${drops} drop`, tone: 'warn' }
+  }
+  if (typeof speed === 'number' && speed < 0.98) {
+    return { label: `${speed.toFixed(2)}x`, tone: 'warn' }
+  }
+  return { label: typeof speed === 'number' ? `${speed.toFixed(2)}x` : 'Idle', tone: typeof speed === 'number' ? 'good' : 'neutral' }
+}
+
+function repairSummaryCopy(stats: DiagnosticStats): { label: string; tone: StatusTone } {
+  if (stats.ffmpegMaintenanceCancelRequested) {
+    return { label: 'Cancelling', tone: 'warn' }
+  }
+  if (stats.ffmpegMaintenanceRunning) {
+    return { label: 'Running', tone: 'warn' }
+  }
+  if (stats.ffmpegMaintenanceDeferredReason) {
+    return { label: 'Deferred', tone: 'neutral' }
+  }
+  return { label: 'Idle', tone: 'good' }
+}
+
+function memorySummaryCopy(bytes?: number): { label: string; tone: StatusTone } {
+  if (typeof bytes !== 'number') {
+    return { label: 'Unknown', tone: 'neutral' }
+  }
+  const mib = bytes / (1024 * 1024)
+  if (mib >= 2048) {
+    return { label: formatBytes(bytes), tone: 'error' }
+  }
+  if (mib >= 1024) {
+    return { label: formatBytes(bytes), tone: 'warn' }
+  }
+  return { label: formatBytes(bytes), tone: 'good' }
+}
+
+function networkSummaryCopy(targets: StreamTargetRuntime[]): { label: string; tone: StatusTone } {
+  if (!targets.length) {
+    return { label: 'Idle', tone: 'neutral' }
+  }
+  const failed = targets.filter((target) => target.state === 'failed').length
+  if (failed) {
+    return { label: `${failed} failed`, tone: 'warn' }
+  }
+  const live = targets.filter((target) => target.state === 'live').length
+  if (live) {
+    return { label: `${live}/${targets.length} live`, tone: 'good' }
+  }
+  const waiting = targets.filter((target) => target.state === 'connecting' || target.state === 'warning').length
+  if (waiting) {
+    return { label: `${waiting} waiting`, tone: 'warn' }
+  }
+  return { label: 'Ready', tone: 'neutral' }
 }
 
 type PreviewDiagnosis = {
