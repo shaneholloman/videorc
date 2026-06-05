@@ -522,6 +522,8 @@ pub struct LiveChatStartParams {
     pub session_id: String,
     #[serde(default)]
     pub fake: Option<FakeChatConfig>,
+    #[serde(default)]
+    pub youtube: Option<crate::youtube_chat::YouTubeChatConfig>,
 }
 
 /// A deterministic, bounded fake chat source for tests / `smoke:live-chat-fake-providers`.
@@ -565,6 +567,15 @@ pub async fn start_live_chat(state: &AppState, params: LiveChatStartParams) -> L
             state.clone(),
             params.session_id.clone(),
             fake,
+        ));
+        let mut coordinator = state.live_chat.lock().await;
+        coordinator.attach_task(handle);
+    }
+    if let Some(youtube) = params.youtube.clone() {
+        let handle = tokio::spawn(crate::youtube_chat::run_youtube_chat_connector(
+            state.clone(),
+            params.session_id.clone(),
+            youtube,
         ));
         let mut coordinator = state.live_chat.lock().await;
         coordinator.attach_task(handle);
@@ -616,7 +627,7 @@ pub async fn current_status(state: &AppState) -> LiveChatSnapshot {
 }
 
 /// Lock the coordinator, ingest one message, and emit it to the renderer if it was new.
-async fn deliver_message(state: &AppState, message: LiveChatMessage) {
+pub(crate) async fn deliver_message(state: &AppState, message: LiveChatMessage) {
     let outcome = {
         let mut coordinator = state.live_chat.lock().await;
         coordinator.ingest(message.clone())
@@ -627,7 +638,7 @@ async fn deliver_message(state: &AppState, message: LiveChatMessage) {
 }
 
 /// Set a provider's connection state and emit `liveChat.providerStatus`.
-async fn set_provider_and_emit(
+pub(crate) async fn set_provider_and_emit(
     state: &AppState,
     platform: StreamPlatform,
     connection: LiveChatProviderConnectionState,

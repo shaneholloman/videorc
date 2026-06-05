@@ -35,6 +35,7 @@ mod streaming;
 mod twitch;
 mod x_live;
 mod youtube;
+mod youtube_chat;
 
 use std::convert::Infallible;
 use std::io::Write;
