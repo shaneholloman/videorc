@@ -766,6 +766,7 @@ export type PreviewTransport =
  * fall back to software, so this is the requested backend; the final-file codec/encoder tag
  * is the corroborating output-side signal. */
 export type EncodeBackend = 'software-x264' | 'hardware-videotoolbox'
+export type CompositorBackend = 'metal' | 'cpu-fallback'
 
 /** Cumulative request counts for the HTTP image-polling preview transports. A native
  * preview never fetches these, so a session in which they climb is not actually native. */
@@ -1064,6 +1065,12 @@ export interface DiagnosticStats {
   encoderBridgeError?: string
   /** Which encoder the active session requested — proves hardware vs software encode. */
   encodeBackend?: EncodeBackend
+  /** Which compositor backend produced the most recent diagnostic window. */
+  compositorBackend?: CompositorBackend
+  /** Why the compositor had to render on CPU fallback. */
+  compositorFallbackReason?: string
+  /** Cumulative frames rendered by CPU fallback during the active compositor run. */
+  compositorCpuFallbackFrames: number
   /** Cumulative HTTP image-poll request counts; the transport-honesty gate fails when these climb during a "native" preview session. */
   previewImagePollCounts: PreviewImagePollCounts
   /** True when an active recording is being compromised by a measured problem. Drives the "Recording at risk" badge. */

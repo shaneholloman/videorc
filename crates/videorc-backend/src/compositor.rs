@@ -23,7 +23,7 @@ use crate::preview_screen::{
     preview_screen_status,
 };
 use crate::protocol::{
-    CameraFit, CameraShape, CompositorSceneSourceFit, CompositorSceneSourceKind,
+    CameraFit, CameraShape, CompositorBackend, CompositorSceneSourceFit, CompositorSceneSourceKind,
     CompositorSceneSourceStatus, CompositorSceneUpdateParams, CompositorSourceKind,
     CompositorSourceStatus, CompositorState, CompositorStatus, LayoutPreset, LayoutSettings,
     PreviewCameraState, PreviewScreenSourceKind, PreviewScreenState, PreviewSurfaceState,
@@ -472,6 +472,7 @@ async fn run_synthetic_compositor_loop(
     let mut previous_tick_at: Option<Instant> = None;
     let mut previous_fingerprint: Option<SourceFrameFingerprint> = None;
     let mut frame_times_ms = Vec::with_capacity(128);
+    let mut cpu_fallback_frames = 0_u64;
 
     loop {
         tokio::select! {
@@ -499,6 +500,9 @@ async fn run_synthetic_compositor_loop(
                     publish_compositor_frame(&state, frames_rendered, width, height, gpu_compositor.as_ref())
                         .await;
                 let fallback_frame_age_ms = published.fallback_frame_age_ms;
+                if published.compositor_backend == CompositorBackend::CpuFallback {
+                    cpu_fallback_frames = cpu_fallback_frames.saturating_add(1);
+                }
                 if is_repeated_compositor_frame(previous_fingerprint, published.fingerprint) {
                     repeated_frames = repeated_frames.saturating_add(1);
                 }
@@ -543,6 +547,9 @@ async fn run_synthetic_compositor_loop(
                             diagnostics.clone(),
                             target_fps,
                             preview_transport,
+                            published.compositor_backend,
+                            published.compositor_fallback_reason.clone(),
+                            cpu_fallback_frames,
                             measured_fps,
                             frame_age_ms,
                             repeated_frames,
@@ -603,6 +610,8 @@ impl SourceFrameFingerprint {
 struct CompositorPublishResult {
     fallback_frame_age_ms: u64,
     fingerprint: SourceFrameFingerprint,
+    compositor_backend: CompositorBackend,
+    compositor_fallback_reason: Option<String>,
 }
 
 /// Whether the composited frame for this tick repeats the previous one. A repeat means
@@ -670,9 +679,15 @@ fn new_gpu_compositor() -> Option<GpuCompositor> {
 fn try_gpu_compose(
     gpu: Option<&GpuCompositor>,
     inputs: &CompositorRenderInputs<'_>,
-) -> Option<Vec<u8>> {
-    let gpu = gpu?;
-    let snapshot = inputs.snapshot?;
+) -> Result<Vec<u8>, &'static str> {
+    let gpu = gpu.ok_or_else(|| {
+        if metal_compositor_enabled() {
+            "Metal compositor unavailable"
+        } else {
+            "VIDEORC_METAL_COMPOSITOR disabled"
+        }
+    })?;
+    let snapshot = inputs.snapshot.ok_or("compositor scene unavailable")?;
     if let Some(image) = inputs
         .active_image_source
         .and_then(|source| source.rgba.as_ref().zip(source.width.zip(source.height)))
@@ -688,18 +703,27 @@ fn try_gpu_compose(
             mirror: false,
             circle: false,
         }];
-        return gpu.compose_yuv420p(inputs.width as usize, inputs.height as usize, &sources);
+        return gpu
+            .compose_yuv420p(inputs.width as usize, inputs.height as usize, &sources)
+            .ok_or("Metal compositor failed to render cached image");
     }
-    let scene = snapshot.scene.as_ref()?;
+    if inputs.active_image_source.is_some() {
+        return Err("active screen image is not cached");
+    }
+    let scene = snapshot
+        .scene
+        .as_ref()
+        .ok_or("compositor scene unavailable")?;
     let layout = &snapshot.layout;
     let mut sources = Vec::new();
     for source in scene.sources.iter().filter(|source| source.visible) {
         let transform = &source.transform;
-        let rect = scene_source_rect_pixels(transform, inputs.width, inputs.height)?;
+        let rect = scene_source_rect_pixels(transform, inputs.width, inputs.height)
+            .ok_or("source rectangle is outside compositor bounds")?;
         let source_crop = source_crop_from_transform(transform);
         match source.kind {
             SceneSourceKind::Camera => {
-                let frame = inputs.camera_frame?;
+                let frame = inputs.camera_frame.ok_or("camera frame unavailable")?;
                 let (dest, crop) = gpu_source_placement(
                     frame.width,
                     frame.height,
@@ -708,7 +732,8 @@ fn try_gpu_compose(
                     source_crop,
                     inputs.width,
                     inputs.height,
-                )?;
+                )
+                .ok_or("camera source placement failed")?;
                 sources.push(crate::metal_compositor::GpuSource {
                     bgra: &frame.bytes,
                     width: frame.width as usize,
@@ -720,7 +745,7 @@ fn try_gpu_compose(
                 });
             }
             SceneSourceKind::Screen | SceneSourceKind::Window => {
-                let frame = inputs.screen_frame?;
+                let frame = inputs.screen_frame.ok_or("screen frame unavailable")?;
                 let (dest, crop) = gpu_source_placement(
                     frame.width,
                     frame.height,
@@ -729,7 +754,8 @@ fn try_gpu_compose(
                     source_crop,
                     inputs.width,
                     inputs.height,
-                )?;
+                )
+                .ok_or("screen source placement failed")?;
                 sources.push(crate::metal_compositor::GpuSource {
                     bgra: &frame.bytes,
                     width: frame.width as usize,
@@ -740,13 +766,14 @@ fn try_gpu_compose(
                     circle: false,
                 });
             }
-            SceneSourceKind::TestPattern => return None,
+            SceneSourceKind::TestPattern => return Err("test-pattern source unsupported by Metal"),
         }
     }
     if sources.is_empty() {
-        return None;
+        return Err("no visible compositor sources");
     }
     gpu.compose_yuv420p(inputs.width as usize, inputs.height as usize, &sources)
+        .ok_or("Metal compositor failed to render scene")
 }
 
 #[cfg(target_os = "macos")]
@@ -791,8 +818,8 @@ fn rgba_to_bgra_bytes(rgba: &[u8]) -> Vec<u8> {
 fn try_gpu_compose(
     _gpu: Option<&GpuCompositor>,
     _inputs: &CompositorRenderInputs<'_>,
-) -> Option<Vec<u8>> {
-    None
+) -> Result<Vec<u8>, &'static str> {
+    Err("Metal compositor unavailable on this OS")
 }
 
 async fn publish_compositor_frame(
@@ -826,6 +853,8 @@ async fn publish_compositor_frame(
         screen: screen_frame.as_ref().map(|frame| frame.sequence),
     };
     let captured_at = Instant::now();
+    let mut compositor_backend = CompositorBackend::CpuFallback;
+    let mut compositor_fallback_reason = None;
     {
         let mut store = frame_store
             .lock()
@@ -842,11 +871,15 @@ async fn publish_compositor_frame(
         };
         // GPU path for the cases it reproduces exactly; otherwise the CPU compositor.
         match try_gpu_compose(gpu, &inputs) {
-            Some(yuv) => {
+            Ok(yuv) => {
                 let len = bytes.len().min(yuv.len());
                 bytes[..len].copy_from_slice(&yuv[..len]);
+                compositor_backend = CompositorBackend::Metal;
             }
-            None => render_compositor_yuv420p_frame(inputs, &mut bytes),
+            Err(reason) => {
+                compositor_fallback_reason = Some(reason.to_string());
+                render_compositor_yuv420p_frame(inputs, &mut bytes);
+            }
         }
         store.publish(
             sequence,
@@ -871,6 +904,8 @@ async fn publish_compositor_frame(
     CompositorPublishResult {
         fallback_frame_age_ms: captured_at.elapsed().as_millis() as u64,
         fingerprint,
+        compositor_backend,
+        compositor_fallback_reason,
     }
 }
 

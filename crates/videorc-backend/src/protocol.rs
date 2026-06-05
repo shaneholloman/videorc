@@ -746,6 +746,15 @@ pub enum EncodeBackend {
     HardwareVideotoolbox,
 }
 
+/// Which compositor rendered the active shared-compositor frame. OBS-parity acceptance
+/// requires the Metal path; CPU fallback is kept honest with a reason and count.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompositorBackend {
+    Metal,
+    CpuFallback,
+}
+
 /// Cumulative request counts (since backend start) for the HTTP image-polling preview
 /// transports. A native preview never fetches these, so a session in which they climb is
 /// not actually native — the honest signal behind the transport-honesty gate.
@@ -788,6 +797,15 @@ pub struct DiagnosticStats {
     /// encode (previously unrecorded).
     #[serde(default)]
     pub encode_backend: Option<EncodeBackend>,
+    /// Which compositor backend produced the most recent diagnostic window.
+    #[serde(default)]
+    pub compositor_backend: Option<CompositorBackend>,
+    /// Reason the shared compositor had to use CPU fallback.
+    #[serde(default)]
+    pub compositor_fallback_reason: Option<String>,
+    /// Cumulative frames rendered by CPU fallback during the active compositor run.
+    #[serde(default)]
+    pub compositor_cpu_fallback_frames: u64,
     /// Cumulative HTTP image-poll request counts. The transport-honesty gate fails when
     /// these climb during a session the UI claims is rendering a native preview.
     #[serde(default)]

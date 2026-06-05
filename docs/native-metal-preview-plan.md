@@ -27,7 +27,10 @@ fails a "native" claim — by design.
   (CAMetalLayer + blit + present), compile-and-run tested headlessly.
 - Scene/transform math in `scene.rs` (tested) maps 1:1 to each `GpuSource.dest` rect.
 - Honest diagnostics expose `previewTransport`, `previewImagePollCounts`,
-  `recordingProtected`, `encodeBackend`, and the at-risk classification.
+  `recordingProtected`, `encodeBackend`, `compositorBackend`,
+  `compositorFallbackReason`, `compositorCpuFallbackFrames`, and the at-risk
+  classification. The real-source OBS gate now fails while the shared compositor is on
+  CPU fallback.
 
 ## What remains (on-device only)
 

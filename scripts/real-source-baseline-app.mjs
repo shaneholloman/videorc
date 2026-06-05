@@ -201,6 +201,7 @@ async function main() {
       diagnostics,
       claimsNative,
       requireObsNativePreview: true,
+      requireGpuCompositor: true,
       expectAudio: Boolean(sources.microphone),
     })
     printSummary(report, startupReport, diagnostics, previewTransport, baselinePath, acceptance)
@@ -332,6 +333,9 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt) {
     minEncoderSpeed: minOf(speed),
     droppedFrames: maxOf(measured.map((s) => s.droppedFrames ?? 0)) ?? 0,
     encodeBackend: measured.map((s) => s.encodeBackend).filter(Boolean).pop() ?? null,
+    compositorBackend: measured.map((s) => s.compositorBackend).filter(Boolean).pop() ?? null,
+    compositorFallbackReason: measured.map((s) => s.compositorFallbackReason).filter(Boolean).pop() ?? null,
+    compositorCpuFallbackFrames: maxOf(measured.map((s) => s.compositorCpuFallbackFrames ?? 0)) ?? 0,
     encoderBridgeRepeatedFrames: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrames ?? 0)) ?? 0,
     encoderBridgeSyntheticFrames: maxOf(measured.map((s) => s.encoderBridgeSyntheticFrames ?? 0)) ?? 0,
     encoderBridgeSourceAgeMs: maxOf(collect('encoderBridgeSourceAgeMs')),
@@ -452,6 +456,10 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   }
   lines.push(`- Bottlenecks observed: ${diagnostics.bottlenecks.join(', ') || 'none'}`)
   lines.push(`- Encode backend (requested): ${diagnostics.encodeBackend ?? 'unknown'}`)
+  lines.push(
+    `- Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}` +
+      (diagnostics.compositorFallbackReason ? ` | reason: ${diagnostics.compositorFallbackReason}` : '')
+  )
   lines.push(`- Encoder: min speed ${fmt(diagnostics.minEncoderSpeed, 2)}x | dropped ${diagnostics.droppedFrames}`)
   lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age max ${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms`)
   lines.push(
@@ -508,6 +516,10 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
   console.log(`Preview transport: ${previewTransport} (diagnostics saw: ${diagnostics.transports.join(', ') || 'unknown'})`)
   console.log(
     `Transport honesty: ${diagnostics.imagePollDuringSession.total === 0 ? 'native (0 image polls)' : `NOT native (${diagnostics.imagePollDuringSession.total} image polls during session)`}`
+  )
+  console.log(
+    `Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}` +
+      (diagnostics.compositorFallbackReason ? ` | ${diagnostics.compositorFallbackReason}` : '')
   )
   console.log(`Encoder min speed: ${diagnostics.minEncoderSpeed ?? 'n/a'}x | mic dropped: ${diagnostics.micDroppedFrames}`)
   console.log(`Baseline report: ${baselinePath}`)

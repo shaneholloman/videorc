@@ -21,6 +21,7 @@ export const DEFAULT_ACCEPTANCE_GATES = Object.freeze({
  * @param {object} input.diagnostics - summarized live diagnostics for the run
  * @param {boolean} input.claimsNative - whether the preview reported the real native Metal transport
  * @param {boolean} [input.requireObsNativePreview] - whether OBS parity requires that real native transport
+ * @param {boolean} [input.requireGpuCompositor] - whether OBS parity requires the Metal compositor backend
  * @param {boolean} input.expectAudio - whether a mic was selected
  * @param {object} [gates]
  * @returns {{pass:boolean, failures:string[]}}
@@ -53,6 +54,15 @@ export function evaluateAcceptance(input, gates = DEFAULT_ACCEPTANCE_GATES) {
     failures.push(
       `recording: ${d.encoderBridgeSyntheticFrames} synthetic filler frame(s) fed (no real source ready)`
     )
+  }
+
+  // 2b. OBS parity needs the shared live compositor to stay on the GPU path.
+  if (input.requireGpuCompositor && d.compositorBackend !== 'metal') {
+    const suffix = d.compositorFallbackReason ? `: ${d.compositorFallbackReason}` : ''
+    failures.push(`compositor: expected Metal backend, got ${d.compositorBackend ?? 'unknown'}${suffix}`)
+  }
+  if (input.requireGpuCompositor && (d.compositorCpuFallbackFrames ?? 0) > 0) {
+    failures.push(`compositor: ${d.compositorCpuFallbackFrames} CPU fallback frame(s) rendered during session`)
   }
 
   // 3. Encoder must keep real-time.

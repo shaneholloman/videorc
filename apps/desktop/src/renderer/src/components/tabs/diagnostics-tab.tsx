@@ -115,6 +115,7 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Bridge drops" value={diagnosticStats.encoderBridgeDroppedFrames.toString()} />
             <DiagnosticMetric label="Bridge error" value={diagnosticStats.encoderBridgeError ?? 'None'} />
             <DiagnosticMetric label="Preview mode" value={formatPreviewTransport(diagnosticStats.previewTransport)} />
+            <DiagnosticMetric label="Compositor backend" value={formatCompositorBackend(diagnosticStats)} />
             <DiagnosticMetric label="Preview source FPS" value={formatSourceFps(diagnosticStats.previewSourceFps)} />
             <DiagnosticMetric label="Preview present FPS" value={formatMetric(diagnosticStats.previewPresentFps, 'fps')} />
             <DiagnosticMetric label="Preview target" value={formatMetric(diagnosticStats.previewTargetFps, 'fps')} />
@@ -724,6 +725,20 @@ function formatEncodeBackend(backend?: string): string {
       return 'Software (x264)'
     case 'hardware-videotoolbox':
       return 'Hardware (VideoToolbox)'
+    default:
+      return '--'
+  }
+}
+
+function formatCompositorBackend(stats: DiagnosticStats): string {
+  switch (stats.compositorBackend) {
+    case 'metal':
+      return 'Metal'
+    case 'cpu-fallback': {
+      const frames = stats.compositorCpuFallbackFrames ?? 0
+      const reason = stats.compositorFallbackReason ? `: ${stats.compositorFallbackReason}` : ''
+      return `CPU fallback (${frames})${reason}`
+    }
     default:
       return '--'
   }

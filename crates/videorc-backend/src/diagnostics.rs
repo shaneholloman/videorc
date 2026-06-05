@@ -7,7 +7,7 @@ use chrono::Utc;
 use crate::ffmpeg_work::FfmpegWorkSnapshot;
 use crate::frame_store::FrameStoreStats;
 use crate::protocol::{
-    DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewCameraStatus,
+    CompositorBackend, DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewCameraStatus,
     PreviewImagePollCounts, PreviewScreenStatus, PreviewTransport, StreamHealth,
 };
 use crate::source_registry::SourceRegistrySnapshot;
@@ -86,6 +86,9 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         encoder_bridge_source_age_ms: None,
         encoder_bridge_error: None,
         encode_backend: None,
+        compositor_backend: None,
+        compositor_fallback_reason: None,
+        compositor_cpu_fallback_frames: 0,
         preview_image_poll_counts: PreviewImagePollCounts::default(),
         preview_target_fps: None,
         preview_frame_age_ms: None,
@@ -485,6 +488,9 @@ pub fn apply_compositor_stats(
     mut stats: DiagnosticStats,
     target_fps: u32,
     preview_transport: PreviewTransport,
+    compositor_backend: CompositorBackend,
+    compositor_fallback_reason: Option<String>,
+    compositor_cpu_fallback_frames: u64,
     render_fps: f64,
     frame_age_ms: u64,
     repeated_frames: u64,
@@ -496,6 +502,9 @@ pub fn apply_compositor_stats(
     stats.preview_target_fps = Some(f64::from(target_fps));
     stats.preview_frame_age_ms = Some(frame_age_ms);
     stats.preview_transport = preview_transport;
+    stats.compositor_backend = Some(compositor_backend);
+    stats.compositor_fallback_reason = compositor_fallback_reason;
+    stats.compositor_cpu_fallback_frames = compositor_cpu_fallback_frames;
     stats
         .preview_source_fps
         .insert("synthetic-compositor".to_string(), render_fps);
@@ -794,6 +803,9 @@ mod tests {
         assert_eq!(stats.encoder_bridge_input_fps, None);
         assert_eq!(stats.encoder_bridge_dropped_frames, 0);
         assert_eq!(stats.encoder_bridge_error, None);
+        assert_eq!(stats.compositor_backend, None);
+        assert_eq!(stats.compositor_fallback_reason, None);
+        assert_eq!(stats.compositor_cpu_fallback_frames, 0);
         assert_eq!(stats.preview_camera_frame_age_ms, None);
         assert_eq!(stats.preview_camera_source_fps, None);
         assert_eq!(stats.preview_camera_dropped_frames, 0);
@@ -822,6 +834,35 @@ mod tests {
 
         assert_eq!(stats.active_output_mode.as_deref(), Some("record+stream"));
         assert_eq!(stats.active_scene_revision, Some(42));
+    }
+
+    #[test]
+    fn compositor_stats_record_backend_and_fallback_reason() {
+        let stats = apply_compositor_stats(
+            idle_diagnostics(),
+            30,
+            PreviewTransport::ElectronProofSurface,
+            CompositorBackend::CpuFallback,
+            Some("VIDEORC_METAL_COMPOSITOR disabled".to_string()),
+            12,
+            29.9,
+            17,
+            0,
+            0,
+            4.0,
+            8.0,
+            12.0,
+        );
+
+        assert_eq!(
+            stats.compositor_backend,
+            Some(CompositorBackend::CpuFallback)
+        );
+        assert_eq!(
+            stats.compositor_fallback_reason.as_deref(),
+            Some("VIDEORC_METAL_COMPOSITOR disabled")
+        );
+        assert_eq!(stats.compositor_cpu_fallback_frames, 12);
     }
 
     #[test]

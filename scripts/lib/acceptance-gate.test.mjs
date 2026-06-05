@@ -53,6 +53,19 @@ describe('evaluateAcceptance', () => {
     assert.match(v.failures.join(' '), /real native Metal surface/)
   })
 
+  it('fails the strict OBS compositor gate when the live compositor falls back to CPU', () => {
+    const input = cleanInput()
+    input.requireGpuCompositor = true
+    input.diagnostics.compositorBackend = 'cpu-fallback'
+    input.diagnostics.compositorFallbackReason = 'VIDEORC_METAL_COMPOSITOR disabled'
+    input.diagnostics.compositorCpuFallbackFrames = 12
+    const v = evaluateAcceptance(input)
+
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /expected Metal backend/)
+    assert.match(v.failures.join(' '), /12 CPU fallback frame/)
+  })
+
   it('fails on duplicate frames re-fed to the encoder', () => {
     const input = cleanInput()
     input.diagnostics.encoderBridgeRepeatedFrames = 12
