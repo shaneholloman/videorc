@@ -925,6 +925,27 @@ pub struct DiagnosticStats {
     pub preview_screen_frame_age_ms: Option<u64>,
     pub preview_screen_source_fps: Option<f64>,
     pub preview_screen_dropped_frames: u64,
+    /// P95 interval between ScreenCaptureKit screen sample callbacks.
+    #[serde(default)]
+    pub preview_screen_capture_gap_p95_ms: Option<f64>,
+    /// Max interval between ScreenCaptureKit screen sample callbacks.
+    #[serde(default)]
+    pub preview_screen_capture_gap_max_ms: Option<f64>,
+    /// P95 time spent locking the ScreenCaptureKit CVPixelBuffer base address.
+    #[serde(default)]
+    pub preview_screen_pixel_buffer_lock_p95_ms: Option<f64>,
+    /// P95 time spent copying BGRA rows out of the ScreenCaptureKit sample.
+    #[serde(default)]
+    pub preview_screen_row_copy_p95_ms: Option<f64>,
+    /// P95 wall time spent publishing the copied screen frame to the source frame store.
+    #[serde(default)]
+    pub preview_screen_publish_p95_ms: Option<f64>,
+    /// Bytes copied for the latest native screen capture frame.
+    #[serde(default)]
+    pub preview_screen_frame_bytes: u64,
+    /// ScreenCaptureKit stream queue depth requested for the live screen source.
+    #[serde(default)]
+    pub preview_screen_capture_queue_depth: u32,
     pub preview_source_frame_buffer_count: u64,
     pub preview_source_frame_bytes: u64,
     pub preview_source_frame_dropped_frames: u64,

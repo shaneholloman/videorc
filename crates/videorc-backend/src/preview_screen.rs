@@ -11,6 +11,7 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use crate::diagnostics::{
+    PreviewScreenCaptureTimingStats, apply_preview_screen_capture_timing_stats,
     apply_preview_screen_source_stats, apply_preview_source_frame_store_stats,
 };
 use crate::frame_store::{FrameHandle, FrameStore, FrameStoreStats};
@@ -27,6 +28,8 @@ const PREVIEW_SCREEN_DEFAULT_PNG_WIDTH: u32 = 960;
 const PREVIEW_SCREEN_MAX_PNG_WIDTH: u32 = 2560;
 const PREVIEW_SCREEN_MAX_CAPTURE_WIDTH: u32 = 2560;
 const PREVIEW_SCREEN_MAX_CAPTURE_HEIGHT: u32 = 1440;
+const PREVIEW_SCREEN_CAPTURE_QUEUE_DEPTH: u32 = 3;
+const PREVIEW_SCREEN_TIMING_WINDOW: usize = 180;
 
 pub type PreviewScreenSlot = Arc<tokio::sync::Mutex<PreviewScreenRuntime>>;
 
@@ -69,6 +72,78 @@ pub struct PreviewScreenShared {
     window_started_at: Option<Instant>,
     source_fps: Option<f64>,
     last_error: Option<String>,
+    capture_timings: ScreenCaptureTimingWindow,
+}
+
+#[derive(Debug, Default)]
+struct ScreenCaptureTimingWindow {
+    last_callback_at: Option<Instant>,
+    callback_gap_ms: Vec<f64>,
+    pixel_buffer_lock_ms: Vec<f64>,
+    row_copy_ms: Vec<f64>,
+    publish_ms: Vec<f64>,
+    frame_bytes: u64,
+}
+
+impl ScreenCaptureTimingWindow {
+    fn record_callback_at(&mut self, now: Instant) {
+        if let Some(previous) = self.last_callback_at.replace(now) {
+            push_timing_sample(
+                &mut self.callback_gap_ms,
+                now.duration_since(previous).as_secs_f64() * 1000.0,
+            );
+        }
+    }
+
+    fn record_valid_frame(
+        &mut self,
+        pixel_buffer_lock_ms: f64,
+        row_copy_ms: f64,
+        publish_ms: f64,
+        frame_bytes: u64,
+    ) {
+        push_timing_sample(&mut self.pixel_buffer_lock_ms, pixel_buffer_lock_ms);
+        push_timing_sample(&mut self.row_copy_ms, row_copy_ms);
+        push_timing_sample(&mut self.publish_ms, publish_ms);
+        self.frame_bytes = frame_bytes;
+    }
+
+    fn snapshot(&self) -> PreviewScreenCaptureTimingStats {
+        PreviewScreenCaptureTimingStats {
+            capture_gap_p95_ms: percentile(&self.callback_gap_ms, 95),
+            capture_gap_max_ms: max_sample(&self.callback_gap_ms),
+            pixel_buffer_lock_p95_ms: percentile(&self.pixel_buffer_lock_ms, 95),
+            row_copy_p95_ms: percentile(&self.row_copy_ms, 95),
+            publish_p95_ms: percentile(&self.publish_ms, 95),
+            frame_bytes: self.frame_bytes,
+            capture_queue_depth: PREVIEW_SCREEN_CAPTURE_QUEUE_DEPTH,
+        }
+    }
+}
+
+fn push_timing_sample(samples: &mut Vec<f64>, value: f64) {
+    if !value.is_finite() {
+        return;
+    }
+    if samples.len() >= PREVIEW_SCREEN_TIMING_WINDOW {
+        samples.remove(0);
+    }
+    samples.push(value);
+}
+
+fn percentile(samples: &[f64], p: u32) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let clamped = p.min(100) as f64 / 100.0;
+    let index = ((sorted.len() - 1) as f64 * clamped).round() as usize;
+    sorted.get(index).copied()
+}
+
+fn max_sample(samples: &[f64]) -> Option<f64> {
+    samples.iter().copied().reduce(f64::max)
 }
 
 pub fn initial_preview_screen_state() -> PreviewScreenRuntime {
@@ -606,6 +681,7 @@ async fn poll_screen_metrics(
                 latest_frame: guard.frame_store.latest(),
                 frame_store_stats: guard.frame_store.stats(),
                 last_error: guard.last_error.clone(),
+                capture_timings: guard.capture_timings.snapshot(),
             }
         };
 
@@ -640,6 +716,7 @@ async fn poll_screen_metrics(
                 crate::preview_camera::preview_camera_frame_store_stats(&state).await;
             let mut diagnostics = state.diagnostics.lock().await;
             let stats = apply_preview_screen_source_stats(diagnostics.clone(), &status);
+            let stats = apply_preview_screen_capture_timing_stats(stats, snapshot.capture_timings);
             *diagnostics = apply_preview_source_frame_store_stats(
                 stats,
                 camera_frame_store_stats,
@@ -658,6 +735,7 @@ struct ScreenSharedSnapshot {
     latest_frame: Option<FrameHandle<PreviewScreenPixelFormat>>,
     frame_store_stats: FrameStoreStats,
     last_error: Option<String>,
+    capture_timings: PreviewScreenCaptureTimingStats,
 }
 
 fn idle_status(message: Option<String>) -> PreviewScreenStatus {
@@ -1127,7 +1205,7 @@ mod macos {
             stream_config.setPixelFormat(kCVPixelFormatType_32BGRA);
             stream_config
                 .setMinimumFrameInterval(CMTime::new(1, config.video.fps.clamp(1, 120) as i32));
-            stream_config.setQueueDepth(3);
+            stream_config.setQueueDepth(PREVIEW_SCREEN_CAPTURE_QUEUE_DEPTH as isize);
             stream_config.setShowsCursor(config.include_cursor);
             stream_config.setScalesToFit(config.source_kind == PreviewScreenSourceKind::Window);
             stream_config.setPreservesAspectRatio(true);
@@ -1179,6 +1257,16 @@ mod macos {
         sample_buffer: &CMSampleBuffer,
         shared: &Arc<StdMutex<PreviewScreenShared>>,
     ) {
+        let callback_started_at = Instant::now();
+        {
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard
+                .capture_timings
+                .record_callback_at(callback_started_at);
+        }
+
         if !sample_buffer_is_complete(sample_buffer) {
             let mut guard = shared
                 .lock()
@@ -1204,9 +1292,11 @@ mod macos {
             return;
         }
 
+        let lock_started_at = Instant::now();
         let lock_result = unsafe {
             CVPixelBufferLockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
         };
+        let pixel_buffer_lock_ms = lock_started_at.elapsed().as_secs_f64() * 1000.0;
         if lock_result != 0 {
             let mut guard = shared
                 .lock()
@@ -1250,38 +1340,48 @@ mod macos {
             }
         };
         unsafe {
+            let copy_started_at = Instant::now();
             let source = base_address.cast::<u8>();
             for row in 0..height_usize {
                 let source_row = source.add(row * bytes_per_row);
                 let target_row = &mut bytes[row * row_bytes..(row + 1) * row_bytes];
                 target_row.copy_from_slice(slice::from_raw_parts(source_row, row_bytes));
             }
+            let row_copy_ms = copy_started_at.elapsed().as_secs_f64() * 1000.0;
             CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly);
-        }
 
-        let mut guard = shared
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let now = Instant::now();
-        guard.frames_captured = guard.frames_captured.saturating_add(1);
-        guard.frames_in_window = guard.frames_in_window.saturating_add(1);
-        let window_started = *guard.window_started_at.get_or_insert(now);
-        let elapsed = window_started.elapsed();
-        if elapsed >= Duration::from_millis(500) {
-            guard.source_fps =
-                Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
-            guard.frames_in_window = 0;
-            guard.window_started_at = Some(now);
+            let publish_started_at = Instant::now();
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = Instant::now();
+            guard.frames_captured = guard.frames_captured.saturating_add(1);
+            guard.frames_in_window = guard.frames_in_window.saturating_add(1);
+            let window_started = *guard.window_started_at.get_or_insert(now);
+            let elapsed = window_started.elapsed();
+            if elapsed >= Duration::from_millis(500) {
+                guard.source_fps =
+                    Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
+                guard.frames_in_window = 0;
+                guard.window_started_at = Some(now);
+            }
+            let sequence = guard.frames_captured;
+            guard.frame_store.publish(
+                sequence,
+                width,
+                height,
+                PreviewScreenPixelFormat::Bgra8,
+                now,
+                bytes,
+            );
+            let publish_ms = publish_started_at.elapsed().as_secs_f64() * 1000.0;
+            guard.capture_timings.record_valid_frame(
+                pixel_buffer_lock_ms,
+                row_copy_ms,
+                publish_ms,
+                frame_bytes as u64,
+            );
         }
-        let sequence = guard.frames_captured;
-        guard.frame_store.publish(
-            sequence,
-            width,
-            height,
-            PreviewScreenPixelFormat::Bgra8,
-            now,
-            bytes,
-        );
     }
 
     fn sample_buffer_is_complete(_sample_buffer: &CMSampleBuffer) -> bool {

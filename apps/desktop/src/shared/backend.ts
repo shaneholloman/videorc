@@ -1167,6 +1167,20 @@ export interface DiagnosticStats {
   previewScreenFrameAgeMs?: number
   previewScreenSourceFps?: number
   previewScreenDroppedFrames: number
+  /** P95 interval between ScreenCaptureKit screen sample callbacks. */
+  previewScreenCaptureGapP95Ms?: number
+  /** Max interval between ScreenCaptureKit screen sample callbacks. */
+  previewScreenCaptureGapMaxMs?: number
+  /** P95 time spent locking the ScreenCaptureKit CVPixelBuffer base address. */
+  previewScreenPixelBufferLockP95Ms?: number
+  /** P95 time spent copying BGRA rows out of the ScreenCaptureKit sample. */
+  previewScreenRowCopyP95Ms?: number
+  /** P95 wall time spent publishing the copied screen frame to the source frame store. */
+  previewScreenPublishP95Ms?: number
+  /** Bytes copied for the latest native screen capture frame. */
+  previewScreenFrameBytes: number
+  /** ScreenCaptureKit queue depth requested for the live screen source. */
+  previewScreenCaptureQueueDepth: number
   previewSourceFrameBufferCount: number
   previewSourceFrameBytes: number
   previewSourceFrameDroppedFrames: number

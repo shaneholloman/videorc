@@ -135,6 +135,13 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         preview_screen_frame_age_ms: None,
         preview_screen_source_fps: None,
         preview_screen_dropped_frames: 0,
+        preview_screen_capture_gap_p95_ms: None,
+        preview_screen_capture_gap_max_ms: None,
+        preview_screen_pixel_buffer_lock_p95_ms: None,
+        preview_screen_row_copy_p95_ms: None,
+        preview_screen_publish_p95_ms: None,
+        preview_screen_frame_bytes: 0,
+        preview_screen_capture_queue_depth: 0,
         preview_source_frame_buffer_count: 0,
         preview_source_frame_bytes: 0,
         preview_source_frame_dropped_frames: 0,
@@ -463,6 +470,32 @@ pub fn apply_preview_screen_source_stats(
     if status.dropped_frames > 0 {
         stats.bottleneck = DiagnosticBottleneck::Capture;
     }
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PreviewScreenCaptureTimingStats {
+    pub capture_gap_p95_ms: Option<f64>,
+    pub capture_gap_max_ms: Option<f64>,
+    pub pixel_buffer_lock_p95_ms: Option<f64>,
+    pub row_copy_p95_ms: Option<f64>,
+    pub publish_p95_ms: Option<f64>,
+    pub frame_bytes: u64,
+    pub capture_queue_depth: u32,
+}
+
+pub fn apply_preview_screen_capture_timing_stats(
+    mut stats: DiagnosticStats,
+    timings: PreviewScreenCaptureTimingStats,
+) -> DiagnosticStats {
+    stats.preview_screen_capture_gap_p95_ms = timings.capture_gap_p95_ms;
+    stats.preview_screen_capture_gap_max_ms = timings.capture_gap_max_ms;
+    stats.preview_screen_pixel_buffer_lock_p95_ms = timings.pixel_buffer_lock_p95_ms;
+    stats.preview_screen_row_copy_p95_ms = timings.row_copy_p95_ms;
+    stats.preview_screen_publish_p95_ms = timings.publish_p95_ms;
+    stats.preview_screen_frame_bytes = timings.frame_bytes;
+    stats.preview_screen_capture_queue_depth = timings.capture_queue_depth;
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }
@@ -918,6 +951,13 @@ mod tests {
         assert_eq!(stats.preview_screen_frame_age_ms, None);
         assert_eq!(stats.preview_screen_source_fps, None);
         assert_eq!(stats.preview_screen_dropped_frames, 0);
+        assert_eq!(stats.preview_screen_capture_gap_p95_ms, None);
+        assert_eq!(stats.preview_screen_capture_gap_max_ms, None);
+        assert_eq!(stats.preview_screen_pixel_buffer_lock_p95_ms, None);
+        assert_eq!(stats.preview_screen_row_copy_p95_ms, None);
+        assert_eq!(stats.preview_screen_publish_p95_ms, None);
+        assert_eq!(stats.preview_screen_frame_bytes, 0);
+        assert_eq!(stats.preview_screen_capture_queue_depth, 0);
         assert_eq!(stats.preview_source_frame_buffer_count, 0);
         assert_eq!(stats.preview_source_frame_bytes, 0);
         assert_eq!(stats.preview_source_frame_dropped_frames, 0);
@@ -1000,6 +1040,30 @@ mod tests {
         assert_eq!(stats.compositor_gpu_command_wait_p95_ms, Some(4.9));
         assert_eq!(stats.compositor_gpu_total_p95_ms, Some(7.2));
         assert_eq!(stats.compositor_frame_store_publish_p95_ms, Some(0.1));
+    }
+
+    #[test]
+    fn preview_screen_capture_timing_stats_record_source_cadence() {
+        let stats = apply_preview_screen_capture_timing_stats(
+            idle_diagnostics(),
+            PreviewScreenCaptureTimingStats {
+                capture_gap_p95_ms: Some(33.4),
+                capture_gap_max_ms: Some(91.2),
+                pixel_buffer_lock_p95_ms: Some(0.2),
+                row_copy_p95_ms: Some(8.7),
+                publish_p95_ms: Some(1.1),
+                frame_bytes: 8_294_400,
+                capture_queue_depth: 3,
+            },
+        );
+
+        assert_eq!(stats.preview_screen_capture_gap_p95_ms, Some(33.4));
+        assert_eq!(stats.preview_screen_capture_gap_max_ms, Some(91.2));
+        assert_eq!(stats.preview_screen_pixel_buffer_lock_p95_ms, Some(0.2));
+        assert_eq!(stats.preview_screen_row_copy_p95_ms, Some(8.7));
+        assert_eq!(stats.preview_screen_publish_p95_ms, Some(1.1));
+        assert_eq!(stats.preview_screen_frame_bytes, 8_294_400);
+        assert_eq!(stats.preview_screen_capture_queue_depth, 3);
     }
 
     #[test]

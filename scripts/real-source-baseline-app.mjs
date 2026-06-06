@@ -447,6 +447,13 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt) {
     ]),
     previewCameraFrameAgeMs: maxOf(collect('previewCameraFrameAgeMs')),
     previewScreenFrameAgeMs: maxOf(collect('previewScreenFrameAgeMs')),
+    previewScreenCaptureGapP95Ms: maxOf(collect('previewScreenCaptureGapP95Ms')),
+    previewScreenCaptureGapMaxMs: maxOf(collect('previewScreenCaptureGapMaxMs')),
+    previewScreenPixelBufferLockP95Ms: maxOf(collect('previewScreenPixelBufferLockP95Ms')),
+    previewScreenRowCopyP95Ms: maxOf(collect('previewScreenRowCopyP95Ms')),
+    previewScreenPublishP95Ms: maxOf(collect('previewScreenPublishP95Ms')),
+    previewScreenFrameBytes: maxOf(collect('previewScreenFrameBytes')) ?? 0,
+    previewScreenCaptureQueueDepth: maxOf(collect('previewScreenCaptureQueueDepth')) ?? 0,
     compositorRepeatedFrames: maxOf(compositorSamples.map((s) => s.repeatedFrames ?? 0)) ?? 0,
     compositorDroppedFrames: maxOf(compositorSamples.map((s) => s.droppedFrames ?? 0)) ?? 0,
     compositorFrameAgeMs: maxOf(compositorSamples.map((s) => num(s.frameAgeMs)).filter((v) => v !== null)),
@@ -586,6 +593,11 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   lines.push(`- Preview frame lag/dropped frames: ${fmt(diagnostics.previewCompositorFrameLag, 0)} / ${diagnostics.previewDroppedFrames}`)
   lines.push(`- Preview repeated frames: ${diagnostics.previewRepeatedFrames}`)
   lines.push(`- Source frame age (max): camera ${fmt(diagnostics.previewCameraFrameAgeMs, 0)}ms | screen ${fmt(diagnostics.previewScreenFrameAgeMs, 0)}ms`)
+  lines.push(
+    `- Screen capture cadence: callback gap p95 ${fmt(diagnostics.previewScreenCaptureGapP95Ms)}ms / max ${fmt(diagnostics.previewScreenCaptureGapMaxMs)}ms | ` +
+      `lock ${fmt(diagnostics.previewScreenPixelBufferLockP95Ms)}ms | copy ${fmt(diagnostics.previewScreenRowCopyP95Ms)}ms | publish ${fmt(diagnostics.previewScreenPublishP95Ms)}ms | ` +
+      `frame ${diagnostics.previewScreenFrameBytes} bytes | SCK queue depth ${diagnostics.previewScreenCaptureQueueDepth}`
+  )
   lines.push(`- Compositor: repeated ${diagnostics.compositorRepeatedFrames} | dropped ${diagnostics.compositorDroppedFrames} | frame age max ${fmt(diagnostics.compositorFrameAgeMs, 0)}ms | frame time p95 ${fmt(diagnostics.compositorFrameTimeP95Ms)}ms`)
   lines.push(
     `- Compositor breakdown p95: source fetch ${fmt(diagnostics.compositorSourceFetchP95Ms)}ms ` +
@@ -667,6 +679,9 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
     }`
   )
   console.log(`Encoder min speed: ${diagnostics.minEncoderSpeed ?? 'n/a'}x | mic dropped: ${diagnostics.micDroppedFrames}`)
+  console.log(
+    `Screen capture: gap p95 ${diagnostics.previewScreenCaptureGapP95Ms ?? 'n/a'}ms / max ${diagnostics.previewScreenCaptureGapMaxMs ?? 'n/a'}ms | copy p95 ${diagnostics.previewScreenRowCopyP95Ms ?? 'n/a'}ms | publish p95 ${diagnostics.previewScreenPublishP95Ms ?? 'n/a'}ms`
+  )
   console.log(`Baseline report: ${baselinePath}`)
   console.log('══════════════════════════════════════')
 }
