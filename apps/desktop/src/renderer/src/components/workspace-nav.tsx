@@ -25,23 +25,35 @@ export type WorkspaceTab =
   | 'diagnostics'
   | 'settings'
 
+// Sidebar groups. `primary` is the target nav (Studio/Library/AI + Settings in `system`).
+// `setup` is transitional: those tabs fold into the Studio Inspector across later slices and
+// disappear from the sidebar as they do.
+export type WorkspaceTabGroup = 'primary' | 'setup' | 'system'
+
 export type WorkspaceTabMeta = {
   id: WorkspaceTab
   label: string
   icon: Icon
+  group: WorkspaceTabGroup
 }
 
 export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
-  { id: 'studio', label: 'Studio', icon: VideoCamera },
-  { id: 'sources', label: 'Sources', icon: Monitor },
-  { id: 'layout', label: 'Layout', icon: Layout },
-  { id: 'screens', label: 'Screens', icon: ImageSquare },
-  { id: 'recording', label: 'Recording', icon: FileVideo },
-  { id: 'streaming', label: 'Streaming', icon: Broadcast },
-  { id: 'library', label: 'Library', icon: FilmReel },
-  { id: 'ai', label: 'AI', icon: Sparkle },
-  { id: 'diagnostics', label: 'Diagnostics', icon: Gauge },
-  { id: 'settings', label: 'Settings', icon: GearSix }
+  { id: 'studio', label: 'Studio', icon: VideoCamera, group: 'primary' },
+  { id: 'library', label: 'Library', icon: FilmReel, group: 'primary' },
+  { id: 'ai', label: 'AI', icon: Sparkle, group: 'primary' },
+  { id: 'sources', label: 'Sources', icon: Monitor, group: 'setup' },
+  { id: 'screens', label: 'Screens', icon: ImageSquare, group: 'setup' },
+  { id: 'layout', label: 'Layout', icon: Layout, group: 'setup' },
+  { id: 'recording', label: 'Recording', icon: FileVideo, group: 'setup' },
+  { id: 'streaming', label: 'Streaming', icon: Broadcast, group: 'setup' },
+  { id: 'settings', label: 'Settings', icon: GearSix, group: 'system' },
+  { id: 'diagnostics', label: 'Diagnostics', icon: Gauge, group: 'system' }
+]
+
+export const WORKSPACE_GROUPS: { id: WorkspaceTabGroup; label?: string }[] = [
+  { id: 'primary' },
+  { id: 'setup', label: 'Setup' },
+  { id: 'system' }
 ]
 
 type WorkspaceNavValue = {
