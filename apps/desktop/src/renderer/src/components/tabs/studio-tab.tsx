@@ -318,6 +318,14 @@ export function StudioTab(): ReactElement {
                 <StatusBadge label="Stream" tone={streamReady ? 'good' : 'warn'} value={streamReady ? 'ready' : 'setup'} />
               ) : null}
             </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => setActive('recording')}>
+                Recording settings
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setActive('streaming')}>
+                Streaming settings
+              </Button>
+            </div>
           </InspectorSection>
 
           <InspectorSection icon={ChatCircle} title="Live Chat">
