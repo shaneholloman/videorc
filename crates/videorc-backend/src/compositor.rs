@@ -38,7 +38,36 @@ pub type CompositorSlot = std::sync::Arc<tokio::sync::Mutex<CompositorRuntime>>;
 pub type CompositorFrameStore = Arc<StdMutex<FrameStore<CompositorPixelFormat>>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompositorPixelFormat {
-    Yuv420p,
+    Yuv420p { export: CompositorFrameExportKind },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompositorFrameExportKind {
+    CpuYuv420p,
+    MetalIosurfaceTarget { width: u32, height: u32 },
+}
+
+impl CompositorPixelFormat {
+    pub const fn yuv420p_cpu_buffer() -> Self {
+        Self::Yuv420p {
+            export: CompositorFrameExportKind::CpuYuv420p,
+        }
+    }
+
+    pub const fn yuv420p_with_metal_iosurface_target(width: u32, height: u32) -> Self {
+        Self::Yuv420p {
+            export: CompositorFrameExportKind::MetalIosurfaceTarget { width, height },
+        }
+    }
+
+    pub const fn has_metal_iosurface_target(self) -> bool {
+        matches!(
+            self,
+            Self::Yuv420p {
+                export: CompositorFrameExportKind::MetalIosurfaceTarget { .. },
+            }
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -700,6 +729,11 @@ use crate::metal_compositor::MetalSceneCompositor as GpuCompositor;
 #[cfg(not(target_os = "macos"))]
 enum GpuCompositor {}
 
+struct GpuCompositorFrame {
+    yuv: Vec<u8>,
+    pixel_format: CompositorPixelFormat,
+}
+
 #[cfg(target_os = "macos")]
 fn new_gpu_compositor() -> Option<GpuCompositor> {
     if !metal_compositor_enabled() {
@@ -732,7 +766,7 @@ fn new_gpu_compositor() -> Option<GpuCompositor> {
 fn try_gpu_compose(
     gpu: Option<&mut GpuCompositor>,
     inputs: &CompositorRenderInputs<'_>,
-) -> Result<Vec<u8>, &'static str> {
+) -> Result<GpuCompositorFrame, &'static str> {
     let gpu = gpu.ok_or_else(|| {
         if metal_compositor_enabled() {
             "Metal compositor unavailable"
@@ -756,9 +790,10 @@ fn try_gpu_compose(
             mirror: false,
             circle: false,
         }];
-        return gpu
+        let yuv = gpu
             .compose_yuv420p(inputs.width as usize, inputs.height as usize, &sources)
-            .ok_or("Metal compositor failed to render cached image");
+            .ok_or("Metal compositor failed to render cached image")?;
+        return Ok(gpu_compositor_frame(gpu, yuv));
     }
     if inputs.active_image_source.is_some() {
         return Err("active screen image is not cached");
@@ -825,8 +860,25 @@ fn try_gpu_compose(
     if sources.is_empty() {
         return Err("no visible compositor sources");
     }
-    gpu.compose_yuv420p(inputs.width as usize, inputs.height as usize, &sources)
-        .ok_or("Metal compositor failed to render scene")
+    let yuv = gpu
+        .compose_yuv420p(inputs.width as usize, inputs.height as usize, &sources)
+        .ok_or("Metal compositor failed to render scene")?;
+    Ok(gpu_compositor_frame(gpu, yuv))
+}
+
+#[cfg(target_os = "macos")]
+fn gpu_compositor_frame(gpu: &GpuCompositor, yuv: Vec<u8>) -> GpuCompositorFrame {
+    let pixel_format = gpu
+        .latest_target_pixel_buffer()
+        .filter(|target| target.has_iosurface())
+        .map(|target| {
+            CompositorPixelFormat::yuv420p_with_metal_iosurface_target(
+                target.width() as u32,
+                target.height() as u32,
+            )
+        })
+        .unwrap_or_else(CompositorPixelFormat::yuv420p_cpu_buffer);
+    GpuCompositorFrame { yuv, pixel_format }
 }
 
 #[cfg(target_os = "macos")]
@@ -871,7 +923,7 @@ fn rgba_to_bgra_bytes(rgba: &[u8]) -> Vec<u8> {
 fn try_gpu_compose(
     _gpu: Option<&mut GpuCompositor>,
     _inputs: &CompositorRenderInputs<'_>,
-) -> Result<Vec<u8>, &'static str> {
+) -> Result<GpuCompositorFrame, &'static str> {
     Err("Metal compositor unavailable on this OS")
 }
 
@@ -908,6 +960,7 @@ async fn publish_compositor_frame(
     let captured_at = Instant::now();
     let mut compositor_backend = CompositorBackend::CpuFallback;
     let mut compositor_fallback_reason = None;
+    let mut pixel_format = CompositorPixelFormat::yuv420p_cpu_buffer();
     {
         let mut store = frame_store
             .lock()
@@ -924,9 +977,10 @@ async fn publish_compositor_frame(
         };
         // GPU path for the cases it reproduces exactly; otherwise the CPU compositor.
         match try_gpu_compose(gpu, &inputs) {
-            Ok(yuv) => {
-                let len = bytes.len().min(yuv.len());
-                bytes[..len].copy_from_slice(&yuv[..len]);
+            Ok(frame) => {
+                let len = bytes.len().min(frame.yuv.len());
+                bytes[..len].copy_from_slice(&frame.yuv[..len]);
+                pixel_format = frame.pixel_format;
                 compositor_backend = CompositorBackend::Metal;
             }
             Err(reason) => {
@@ -934,14 +988,7 @@ async fn publish_compositor_frame(
                 render_compositor_yuv420p_frame(inputs, &mut bytes);
             }
         }
-        store.publish(
-            sequence,
-            width,
-            height,
-            CompositorPixelFormat::Yuv420p,
-            captured_at,
-            bytes,
-        );
+        store.publish(sequence, width, height, pixel_format, captured_at, bytes);
     }
     let evidence = CompositorFrameEvidence {
         sequence,
@@ -2229,7 +2276,7 @@ mod tests {
                 99,
                 640,
                 360,
-                CompositorPixelFormat::Yuv420p,
+                CompositorPixelFormat::yuv420p_cpu_buffer(),
                 Instant::now(),
                 vec![0; raw_yuv420p_len(640, 360)],
             );

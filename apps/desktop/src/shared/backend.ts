@@ -1082,6 +1082,8 @@ export interface DiagnosticStats {
   encoderBridgeSyntheticFrames: number
   /** Max age (ms) of a compositor frame when it was fed to the encoder. */
   encoderBridgeSourceAgeMs?: number
+  /** FIFO ticks whose copied compositor frame also exposed an IOSurface-backed Metal target. */
+  encoderBridgeMetalTargetFrames: number
   encoderBridgeError?: string
   /** Which encoder the active session requested — proves hardware vs software encode. */
   encodeBackend?: EncodeBackend

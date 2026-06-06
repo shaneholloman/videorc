@@ -805,6 +805,10 @@ pub struct DiagnosticStats {
     /// Max age (ms) of a compositor frame when it was fed to the encoder.
     #[serde(default)]
     pub encoder_bridge_source_age_ms: Option<u64>,
+    /// FIFO ticks where the copied compositor frame also exposed an IOSurface-backed
+    /// Metal target. This is a candidate signal for the future zero-copy encoder path.
+    #[serde(default)]
+    pub encoder_bridge_metal_target_frames: u64,
     pub encoder_bridge_error: Option<String>,
     /// Which encoder the active session actually requested — proves hardware vs software
     /// encode (previously unrecorded).

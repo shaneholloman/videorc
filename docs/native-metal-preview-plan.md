@@ -98,6 +98,10 @@ fails a "native" claim — by design.
   private compositor texture state. The regression
   `metal_scene_compositor_exports_retained_target_pixel_buffer_or_skips` passed on
   2026-06-06.
+- Published compositor frames now carry an honest export tag: CPU YUV420P buffer or
+  IOSurface-backed Metal target available. The recording FIFO bridge still copies YUV
+  bytes into FFmpeg, but its diagnostics now count `encoderBridgeMetalTargetFrames`, so
+  smokes can prove when a future VideoToolbox zero-copy path had a Metal target to adopt.
 - While a preview surface is live, the compositor now emits lightweight per-frame progress
   status for the presenter path instead of making proof/native surface presents wait for
   the two-second diagnostics window.
@@ -157,9 +161,10 @@ fails a "native" claim — by design.
 - Scene/transform math in `scene.rs` (tested) maps 1:1 to each `GpuSource.dest` rect.
 - Honest diagnostics expose `previewTransport`, `previewImagePollCounts`,
   `previewSurfaceBacking`, `recordingProtected`, `encodeBackend`, `compositorBackend`,
-  `compositorFallbackReason`, `compositorCpuFallbackFrames`, and the at-risk
-  classification. The real-source OBS gate now fails while the shared compositor is on
-  CPU fallback or the preview surface backing is still the Electron proof BrowserWindow.
+  `compositorFallbackReason`, `compositorCpuFallbackFrames`,
+  `encoderBridgeMetalTargetFrames`, and the at-risk classification. The real-source OBS
+  gate now fails while the shared compositor is on CPU fallback or the preview surface
+  backing is still the Electron proof BrowserWindow.
 
 ## What remains (on-device only)
 
@@ -190,7 +195,9 @@ fails a "native" claim — by design.
 4. **Export to the encoder with the lowest copy available.** The compositor target now
    prefers IOSurface-backed storage and exposes a retained target `CVPixelBuffer`; feed
    that handle to `h264_videotoolbox` (the bridge already uses VideoToolbox — Phase 4),
-   avoiding the YUV420P CPU readback the FIFO bridge does today.
+   avoiding the YUV420P CPU readback the FIFO bridge does today. Until that adoption
+   lands, `encoderBridgeMetalTargetFrames` separates "Metal target was available" from
+   the current "YUV bytes were still copied into the FIFO" behavior.
 5. **Done gate:** 1080p30 and 1440p30 real screen+camera composition under the
    compositor frame-time budget (p95 < 16ms @ 60fps preview / < 30ms @ 30fps output);
    final recording shows no repeated frames from a late compositor.

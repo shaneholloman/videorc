@@ -269,6 +269,7 @@ const idleDiagnosticStats = (): DiagnosticStats => ({
   encoderBridgeDroppedFrames: 0,
   encoderBridgeRepeatedFrames: 0,
   encoderBridgeSyntheticFrames: 0,
+  encoderBridgeMetalTargetFrames: 0,
   compositorCpuFallbackFrames: 0,
   previewImagePollCounts: { cameraPng: 0, screenPng: 0, liveJpeg: 0, liveMjpeg: 0 },
   recordingAtRisk: false,

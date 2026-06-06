@@ -62,6 +62,9 @@ struct EncoderBridgeRuntimeStats {
     synthetic_fallback_frames: u64,
     /// Max age (ms) of a compositor frame at the moment it was fed to the encoder.
     source_to_encode_age_ms: Option<u64>,
+    /// Ticks where the bridge still copied YUV into FFmpeg, but the compositor frame also
+    /// exposed an IOSurface-backed Metal target that a future VideoToolbox path can adopt.
+    metal_target_frames: u64,
 }
 
 /// A compositor frame fed into the encoder FIFO on one tick.
@@ -69,6 +72,7 @@ struct EncoderBridgeRuntimeStats {
 struct FedCompositorFrame {
     sequence: u64,
     age_ms: u64,
+    has_metal_iosurface_target: bool,
 }
 
 /// How one encoder-bridge tick consumed a compositor frame.
@@ -575,6 +579,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut repeated_fed_frames = 0_u64;
     let mut synthetic_fallback_frames = 0_u64;
     let mut max_source_to_encode_age_ms: Option<u64> = None;
+    let mut metal_target_frames = 0_u64;
     let mut last_fed_sequence: Option<u64> = None;
     let mut consecutive_repeated_frames = 0_u64;
 
@@ -614,6 +619,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         }
         if let Some(frame) = fed {
             last_fed_sequence = Some(frame.sequence);
+            if frame.has_metal_iosurface_target {
+                metal_target_frames = metal_target_frames.saturating_add(1);
+            }
             max_source_to_encode_age_ms =
                 Some(max_source_to_encode_age_ms.map_or(frame.age_ms, |age| age.max(frame.age_ms)));
         }
@@ -632,6 +640,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     repeated_fed_frames,
                     synthetic_fallback_frames,
                     source_to_encode_age_ms: max_source_to_encode_age_ms,
+                    metal_target_frames,
                 },
                 Some(format!(
                     "Could not write compositor frame into recording FFmpeg: {error}"
@@ -655,6 +664,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     repeated_fed_frames,
                     synthetic_fallback_frames,
                     source_to_encode_age_ms: max_source_to_encode_age_ms,
+                    metal_target_frames,
                 },
                 None,
             );
@@ -677,6 +687,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             repeated_fed_frames,
             synthetic_fallback_frames,
             source_to_encode_age_ms: max_source_to_encode_age_ms,
+            metal_target_frames,
         },
         None,
     );
@@ -697,6 +708,7 @@ fn copy_latest_compositor_frame(
     Some(FedCompositorFrame {
         sequence: frame.sequence,
         age_ms: frame.captured_at.elapsed().as_millis() as u64,
+        has_metal_iosurface_target: frame.pixel_format.has_metal_iosurface_target(),
     })
 }
 
@@ -868,6 +880,7 @@ async fn emit_encoder_bridge_diagnostics(
                 repeated_fed_frames: runtime.repeated_fed_frames,
                 synthetic_fallback_frames: runtime.synthetic_fallback_frames,
                 source_to_encode_age_ms: runtime.source_to_encode_age_ms,
+                metal_target_frames: runtime.metal_target_frames,
                 error,
             },
             target_fps,
@@ -898,6 +911,7 @@ fn frame_count(duration_ms: u64, fps: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::CompositorPixelFormat;
 
     #[test]
     fn bridge_frame_with_no_compositor_frame_is_synthetic_fallback() {
@@ -944,7 +958,7 @@ mod tests {
                 11,
                 width,
                 height,
-                crate::compositor::CompositorPixelFormat::Yuv420p,
+                CompositorPixelFormat::yuv420p_cpu_buffer(),
                 Instant::now(),
                 buffer,
             );
@@ -955,10 +969,42 @@ mod tests {
             .expect("ready compositor frame");
 
         assert_eq!(fed.sequence, 11);
+        assert!(!fed.has_metal_iosurface_target);
         assert_eq!(
             classify_bridge_frame(None, Some(fed.sequence)),
             BridgeFrameSource::Fresh
         );
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn copied_compositor_frame_reports_metal_target_candidate() {
+        let width = 64;
+        let height = 36;
+        let frame_store = Arc::new(std::sync::Mutex::new(crate::frame_store::FrameStore::new(
+            2,
+        )));
+        let expected = vec![84; raw_yuv420p_len(width, height).unwrap()];
+        {
+            let mut store = frame_store.lock().unwrap();
+            let mut buffer = store.checkout_buffer(expected.len());
+            buffer.copy_from_slice(&expected);
+            store.publish(
+                12,
+                width,
+                height,
+                CompositorPixelFormat::yuv420p_with_metal_iosurface_target(width, height),
+                Instant::now(),
+                buffer,
+            );
+        }
+
+        let mut bytes = vec![0; expected.len()];
+        let fed = copy_latest_compositor_frame(Some(&frame_store), &mut bytes)
+            .expect("ready compositor frame");
+
+        assert_eq!(fed.sequence, 12);
+        assert!(fed.has_metal_iosurface_target);
         assert_eq!(bytes, expected);
     }
 
@@ -1033,7 +1079,7 @@ mod tests {
             sequence,
             width,
             height,
-            crate::compositor::CompositorPixelFormat::Yuv420p,
+            CompositorPixelFormat::yuv420p_cpu_buffer(),
             Instant::now(),
             buffer,
         );

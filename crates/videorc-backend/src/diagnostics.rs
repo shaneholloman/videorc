@@ -85,6 +85,7 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         encoder_bridge_repeated_frames: 0,
         encoder_bridge_synthetic_frames: 0,
         encoder_bridge_source_age_ms: None,
+        encoder_bridge_metal_target_frames: 0,
         encoder_bridge_error: None,
         encode_backend: None,
         compositor_backend: None,
@@ -335,6 +336,7 @@ pub struct EncoderBridgeDiagnosticSnapshot {
     pub repeated_fed_frames: u64,
     pub synthetic_fallback_frames: u64,
     pub source_to_encode_age_ms: Option<u64>,
+    pub metal_target_frames: u64,
     pub error: Option<String>,
 }
 
@@ -349,6 +351,7 @@ pub fn apply_encoder_bridge_stats(
     stats.encoder_bridge_repeated_frames = bridge.repeated_fed_frames;
     stats.encoder_bridge_synthetic_frames = bridge.synthetic_fallback_frames;
     stats.encoder_bridge_source_age_ms = bridge.source_to_encode_age_ms;
+    stats.encoder_bridge_metal_target_frames = bridge.metal_target_frames;
     stats.encoder_bridge_error = bridge.error;
     stats.capture_fps = stats.encoder_bridge_input_fps;
     stats.dropped_frames = bridge.dropped_frames;
@@ -960,6 +963,7 @@ mod tests {
                 repeated_fed_frames: 0,
                 synthetic_fallback_frames: 0,
                 source_to_encode_age_ms: None,
+                metal_target_frames: 0,
                 error: None,
             },
             30,
@@ -981,6 +985,7 @@ mod tests {
                 repeated_fed_frames: 5,
                 synthetic_fallback_frames: 1,
                 source_to_encode_age_ms: Some(40),
+                metal_target_frames: 24,
                 error: None,
             },
             30,
@@ -990,6 +995,7 @@ mod tests {
         assert_eq!(lagging.encoder_bridge_repeated_frames, 5);
         assert_eq!(lagging.encoder_bridge_synthetic_frames, 1);
         assert_eq!(lagging.encoder_bridge_source_age_ms, Some(40));
+        assert_eq!(lagging.encoder_bridge_metal_target_frames, 24);
         assert_eq!(lagging.bottleneck, DiagnosticBottleneck::Encoder);
     }
 }
