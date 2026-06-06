@@ -159,6 +159,22 @@ test('obs parity evidence assigns timestamp stretch to the H.264 mux boundary', 
   assert.match(hotPath.evidence.join(' '), /timestamp\/duration stretch/)
 })
 
+test('obs parity evidence warns on residual bridge repeats after final-file pass', () => {
+  const input = cleanInput()
+  input.diagnostics.encoderBridgeRepeatedFrames = 32
+  input.diagnostics.targetFps = 30
+  input.diagnostics.compositorTickGapP95Ms = 57.6
+  input.diagnostics.compositorTickGapMaxMs = 131.5
+
+  const hotPath = byArea(classifyObsParityEvidence(input), 'Recording hot path')
+
+  assert.equal(hotPath.status, 'warn')
+  assert.match(hotPath.owner, /cadence risk/)
+  assert.match(hotPath.owner, /compositor wakeup cadence/)
+  assert.match(hotPath.evidence.join(' '), /32 duplicate encoder/)
+  assert.match(hotPath.evidence.join(' '), /tick gap p95 57\.6ms/)
+})
+
 test('obs parity evidence assigns high native latency to presenter currentness', () => {
   const input = cleanInput()
   input.diagnostics.previewInputToPresentLatencyP95Ms = 72

@@ -2,6 +2,7 @@ import { DEFAULT_ACCEPTANCE_GATES } from './acceptance-gate.mjs'
 
 const STATUS = Object.freeze({
   PASS: 'pass',
+  WARN: 'warn',
   FAIL: 'fail',
   NEEDS_MANUAL: 'needs-manual',
 })
@@ -252,6 +253,41 @@ function classifyRecordingHotPath({
   }
 
   if (owners.size === 0) {
+    const residualOwners = new Set()
+    const residualEvidence = []
+    if ((diagnostics.encoderBridgeRepeatedFrames ?? 0) > 0) {
+      residualOwners.add('encoder bridge / compositor cadence risk')
+      residualEvidence.push(
+        `${diagnostics.encoderBridgeRepeatedFrames} duplicate encoder frame(s), but decoded artifact passed`
+      )
+    }
+    const targetFps = diagnostics.targetFps ?? diagnostics.previewTargetFps
+    if (targetFps) {
+      const frameBudgetMs = 1000 / Math.max(1, targetFps)
+      if (
+        diagnostics.compositorTickGapP95Ms != null &&
+        diagnostics.compositorTickGapP95Ms > frameBudgetMs * 1.5
+      ) {
+        residualOwners.add('compositor wakeup cadence')
+        residualEvidence.push(`compositor tick gap p95 ${diagnostics.compositorTickGapP95Ms}ms`)
+      }
+      if (
+        diagnostics.compositorTickGapMaxMs != null &&
+        diagnostics.compositorTickGapMaxMs > frameBudgetMs * 3
+      ) {
+        residualOwners.add('compositor wakeup cadence')
+        residualEvidence.push(`compositor tick gap max ${diagnostics.compositorTickGapMaxMs}ms`)
+      }
+    }
+    if (residualOwners.size > 0) {
+      return item({
+        area: 'Recording hot path',
+        status: STATUS.WARN,
+        owner: [...residualOwners].join(' + '),
+        evidence: residualEvidence,
+        nextStep: 'Treat this as residual OBS-parity risk: keep reducing compositor wake gaps and bridge re-feeds even while decoded-file gates pass.',
+      })
+    }
     return item({
       area: 'Recording hot path',
       status: STATUS.PASS,
