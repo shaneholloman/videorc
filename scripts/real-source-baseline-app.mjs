@@ -58,7 +58,7 @@ const config = {
   warmupMs: Number(process.env.VIDEORC_BASELINE_WARMUP_MS ?? 8000),
   ffmpegPath: process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg',
   ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? siblingFfprobe(process.env.VIDEORC_SMOKE_FFMPEG_PATH) ?? 'ffprobe',
-  bridgeVideoOutput: process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'raw-yuv420p',
+  bridgeVideoOutput: process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'videotoolbox-h264-mpegts',
   fallbackLivePreview: process.env.VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW === '1',
   noPreviewSurface: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE === '1',
   requireMotion: process.env.VIDEORC_BASELINE_REQUIRE_MOTION === '1',
