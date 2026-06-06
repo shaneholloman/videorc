@@ -36,6 +36,7 @@ const maxPreviewCompositorFrameLag = Number(process.env.VIDEORC_NATIVE_PREVIEW_M
 const layoutStressUpdates = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES ?? 0)
 const layoutStressIntervalMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_INTERVAL_MS ?? 750)
 const includeHiddenPreviewScenario = process.env.VIDEORC_NATIVE_PREVIEW_INCLUDE_HIDDEN === '1'
+const sourceCompleteScene = process.env.VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE === '1'
 const expectedSurfaceTransport =
   process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'native-surface' : 'electron-proof-surface'
 const expectedSurfaceBacking =
@@ -102,6 +103,9 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
     await assertFfprobeAvailable()
     console.log(`Native-preview recording smoke using FFmpeg: ${ffmpegPath}`)
     console.log(`Native-preview recording smoke using FFprobe: ${ffprobePath}`)
+    console.log(
+      `Native-preview recording smoke source scene: ${sourceCompleteScene ? 'source-complete synthetic overlay' : 'default missing-camera fallback repro'}`
+    )
 
     await smokeCommand(smoke, 'open-layout-tab')
     const bootstrap = await smokeCommand(smoke, 'inspect-native-preview-bootstrap')
@@ -372,7 +376,7 @@ function sessionParams(scenario) {
 
 function compositorSceneUpdateParams(revision, cameraX) {
   const baseTransform = fullFrameTransform()
-  const cameraTransform = {
+  const overlayTransform = {
     x: cameraX,
     y: 0.18,
     width: 0.24,
@@ -386,10 +390,10 @@ function compositorSceneUpdateParams(revision, cameraX) {
     layoutPreset: 'screen-camera',
     cameraTransformMode: 'custom',
     cameraTransform: {
-      x: cameraTransform.x,
-      y: cameraTransform.y,
-      width: cameraTransform.width,
-      height: cameraTransform.height
+      x: overlayTransform.x,
+      y: overlayTransform.y,
+      width: overlayTransform.width,
+      height: overlayTransform.height
     },
     cameraCorner: 'bottom-right',
     cameraSize: 'medium',
@@ -403,6 +407,25 @@ function compositorSceneUpdateParams(revision, cameraX) {
     sideBySideSplit: '70-30',
     sideBySideCameraSide: 'right'
   }
+  const overlaySource = sourceCompleteScene
+    ? {
+        id: 'source:test-pattern-overlay',
+        name: 'Test pattern overlay',
+        kind: 'test-pattern',
+        transform: overlayTransform,
+        defaultTransform: overlayTransform,
+        visible: true,
+        locked: false
+      }
+    : {
+        id: 'source:camera',
+        name: 'Camera',
+        kind: 'camera',
+        transform: overlayTransform,
+        defaultTransform: overlayTransform,
+        visible: true,
+        locked: false
+      }
   return {
     revision,
     layout,
@@ -421,15 +444,7 @@ function compositorSceneUpdateParams(revision, cameraX) {
           visible: true,
           locked: false
         },
-        {
-          id: 'source:camera',
-          name: 'Camera',
-          kind: 'camera',
-          transform: cameraTransform,
-          defaultTransform: cameraTransform,
-          visible: true,
-          locked: false
-        }
+        overlaySource
       ]
     }
   }

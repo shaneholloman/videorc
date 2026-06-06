@@ -137,6 +137,12 @@ fails a "native" claim — by design.
   run 2, `Metal targets 1`, `CPU fallback frames 279 (camera source "Camera"
   id=source:camera frame unavailable)`, and 18ms A/V skew. FFmpeg speed/live FPS
   telemetry still warned, but decoded startup/final-file gates passed.
+- The native-preview recording smoke now has an opt-in source-complete Metal stress mode:
+  set `VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE=1` to replace the intentionally missing
+  camera overlay with a synthetic test-pattern overlay. On 2026-06-06, the default smoke
+  stayed green, while the source-complete mode reproduced the real readback/export
+  bottleneck at about 8fps and failed startup analysis with only 43 decoded frames, making
+  the zero-copy slice directly measurable without breaking the default smoke.
 - A focused Metal regression now proves a synthetic test-pattern overlay scene can compose
   on Metal without requiring camera frames. Switching the default native-preview smoke to
   that fully Metal overlay path is still premature: the readback/encode path exposed the
