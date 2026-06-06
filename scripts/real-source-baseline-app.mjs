@@ -100,11 +100,15 @@ async function main() {
 
   const ws = await connectBackend(launched.connections['backend-ready'], config.timeoutMs)
   const diagnosticsEvents = []
+  const healthEvents = []
   ws.addEventListener('message', (event) => {
     try {
       const message = JSON.parse(event.data)
       if (message.event === 'diagnostics.stats') {
         diagnosticsEvents.push({ ...message.payload, receivedAt: Date.now() })
+      }
+      if (message.event === 'health.event') {
+        healthEvents.push({ ...message.payload, receivedAt: Date.now() })
       }
     } catch {
       // Ignore non-JSON socket noise.
@@ -178,7 +182,30 @@ async function main() {
     await waitForPreviewSourceReadiness(ws, sources)
 
     const scenarioStartedAt = Date.now()
-    const started = await request(ws, config.timeoutMs, 'session.start', sessionParams(sourceSelection))
+    let started
+    try {
+      started = await request(ws, config.timeoutMs, 'session.start', sessionParams(sourceSelection))
+    } catch (error) {
+      await sleep(100)
+      const blockedAt = Date.now()
+      const snapshots = [await sampleDiagnosticsSnapshot(ws)]
+      const diagnostics = summarizeDiagnostics(diagnosticsEvents, snapshots, scenarioStartedAt, blockedAt, {
+        includePreStart: true,
+      })
+      const baselinePath = writeBlockedStartupReport({
+        sources,
+        previewTransport,
+        diagnostics,
+        healthEvents: healthEvents.filter((event) => (event.receivedAt ?? 0) >= scenarioStartedAt - 250),
+        error,
+      })
+      printBlockedStartupSummary(error, diagnostics, previewTransport, baselinePath)
+      return {
+        pass: false,
+        failures: [`session.start failed before encoding: ${error?.message ?? error}`],
+        warnings: [],
+      }
+    }
     if (started.state !== 'recording') {
       throw new Error(`Expected recording state after start, got ${started.state}.`)
     }
@@ -369,23 +396,33 @@ async function sampleDuringRecording(ws, durationMs) {
   const snapshots = []
   const deadline = Date.now() + durationMs
   while (Date.now() < deadline) {
-    const [diagnostics, compositor, surface] = await Promise.all([
-      requestSafe(ws, 'diagnostics.stats'),
-      requestSafe(ws, 'compositor.status'),
-      requestSafe(ws, 'preview.surface.status'),
-    ])
-    snapshots.push({ at: Date.now(), diagnostics, compositor, surface })
+    snapshots.push(await sampleDiagnosticsSnapshot(ws))
     await sleep(config.sampleIntervalMs)
   }
   return snapshots
 }
 
-function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt) {
+async function sampleDiagnosticsSnapshot(ws) {
+  const [diagnostics, compositor, surface] = await Promise.all([
+    requestSafe(ws, 'diagnostics.stats'),
+    requestSafe(ws, 'compositor.status'),
+    requestSafe(ws, 'preview.surface.status'),
+  ])
+  return { at: Date.now(), diagnostics, compositor, surface }
+}
+
+function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, options = {}) {
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
-  const active = events.filter((s) => {
+  const activeEvents = events.filter((s) => {
     const t = s.receivedAt ?? 0
-    return s.activeOutputMode === 'record' && t >= startedAt && t <= stopRequestedAt
+    return t >= startedAt && t <= stopRequestedAt && (options.includePreStart || s.activeOutputMode === 'record')
   })
+  const activeSnapshots = options.includePreStart
+    ? snapshots
+        .filter((s) => s.diagnostics && s.at >= startedAt && s.at <= stopRequestedAt)
+        .map((s) => ({ ...s.diagnostics, receivedAt: s.at }))
+    : []
+  const active = [...activeEvents, ...activeSnapshots]
   const steady = active.filter((s) => (s.receivedAt ?? 0) - startedAt >= config.warmupMs)
   const measured = steady.length ? steady : active
   const collect = (key) => measured.map((s) => num(s[key])).filter((v) => v !== null)
@@ -746,6 +783,93 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   return reportPath
 }
 
+function writeBlockedStartupReport({ sources, previewTransport, diagnostics, healthEvents, error }) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const reportPath = join(config.outputDirectory, `videorc-session-${stamp}.blocked-start.md`)
+  const fmt = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : 'n/a')
+  const errorMessage = error?.message ?? String(error)
+  const blockedCadence = blockedStartupCameraCadence(errorMessage, healthEvents)
+  const cameraCallbackP95 = fmtOrFallback(diagnostics.previewCameraCaptureGapP95Ms, blockedCadence?.callbackP95)
+  const cameraSamplePtsP95 = fmtOrFallback(diagnostics.previewCameraSamplePtsGapP95Ms, blockedCadence?.samplePtsP95)
+  const cameraFrameAge = fmtOrFallback(diagnostics.previewCameraFrameAgeMs, blockedCadence?.frameAge, 0)
+
+  const lines = []
+  lines.push('# Real-Source Baseline Blocked Before Encoding')
+  lines.push('')
+  lines.push(`- Generated: ${new Date().toISOString()}`)
+  lines.push(`- Platform: ${process.platform}`)
+  lines.push(`- Output request: ${config.width}x${config.height} @ ${config.fps}fps, ${config.bitrateKbps}kbps`)
+  lines.push(`- Encoder bridge video output: \`${config.bridgeVideoOutput}\``)
+  lines.push('- Result: BLOCKED before encoding')
+  lines.push(`- Start error: ${errorMessage}`)
+  lines.push('')
+  lines.push('## Selected real sources')
+  lines.push('')
+  lines.push(`- Screen: ${sources.screen ? `${sources.screen.name} \`${sources.screen.id}\`` : 'none'}`)
+  lines.push(`- Camera: ${sources.camera ? `${sources.camera.name} \`${sources.camera.id}\`` : 'none'}`)
+  lines.push(`- Microphone: ${sources.microphone ? `${sources.microphone.name} \`${sources.microphone.id}\`` : 'none'}`)
+  lines.push('- testPattern: false (real capture)')
+  lines.push('')
+  lines.push('## Health events during start')
+  lines.push('')
+  if (healthEvents.length) {
+    for (const event of healthEvents) {
+      lines.push(`- ${event.level ?? 'unknown'} ${event.code ?? 'unknown'}: ${event.message ?? 'no message'}`)
+    }
+  } else {
+    lines.push('- None observed on the socket before the start request failed.')
+  }
+  lines.push('')
+  lines.push('## Live diagnostics at block')
+  lines.push('')
+  lines.push(`- Preview transport(s): ${diagnostics.transports.join(', ') || 'unknown'} (baseline preview request said: ${previewTransport})`)
+  lines.push(
+    `- Preview surface backing(s): ${diagnostics.surfaceBackings.join(', ') || 'unknown'} ` +
+      `(strict backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'})`
+  )
+  lines.push(
+    `- Startup barrier: ${diagnostics.recordingStartupBarrierState ?? 'unknown'} | wait ${fmt(diagnostics.recordingStartupBarrierWaitMs, 0)}ms | ` +
+      `timeout ${diagnostics.recordingStartupBarrierTimeoutReason ?? 'n/a'}`
+  )
+  if (blockedCadence) {
+    lines.push(
+      `- Startup block cadence: sample PTS p95 ${blockedCadence.samplePtsP95}, threshold ${blockedCadence.threshold}, ` +
+        `callback p95 ${blockedCadence.callbackP95}, frame age ${blockedCadence.frameAge}`
+    )
+  }
+  if (sources.camera) {
+    lines.push(
+      `- Camera capture cadence: callback gap p95 ${cameraCallbackP95} / max ${fmt(diagnostics.previewCameraCaptureGapMaxMs)}ms | ` +
+        `sample PTS gap p95 ${cameraSamplePtsP95} / max ${fmt(diagnostics.previewCameraSamplePtsGapMaxMs)}ms | ` +
+        `frame age ${cameraFrameAge} | frame ${diagnostics.previewCameraFrameBytes} bytes`
+    )
+  }
+  if (sources.screen) {
+    lines.push(
+      `- Screen capture cadence: callback gap p95 ${fmt(diagnostics.previewScreenCaptureGapP95Ms)}ms / max ${fmt(diagnostics.previewScreenCaptureGapMaxMs)}ms | ` +
+        `frame age ${fmt(diagnostics.previewScreenFrameAgeMs, 0)}ms | frame ${diagnostics.previewScreenFrameBytes} bytes`
+    )
+  }
+  lines.push(`- Image polls at block: ${diagnostics.imagePollDuringSession.total ?? 'n/a'}`)
+  lines.push(`- Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}`)
+  lines.push(`- Mic: captured ${diagnostics.micCapturedFrames ?? 'n/a'} | dropped ${diagnostics.micDroppedFrames}`)
+  lines.push('')
+  lines.push('## Problem ownership triage')
+  lines.push('')
+  lines.push('- First 2 seconds: startup guard/camera cadence. No MP4 was written, so the run avoided encoding damaged startup frames.')
+  lines.push('- Preview lag: not measured in this blocked run; rerun after cadence settles or with a source preset that passes startup.')
+  lines.push('- Preview quality: not measured in this blocked run; native CAMetalLayer acceptance is still required before claiming OBS-native quality.')
+  lines.push('')
+  lines.push('## Gate verdict')
+  lines.push('')
+  lines.push('- Non-gated baseline mode records this as a failed OBS-parity verdict, not a harness crash.')
+  lines.push('- `--gate` mode should fail because recording did not start.')
+  lines.push('')
+
+  writeFileSync(reportPath, lines.join('\n'))
+  return reportPath
+}
+
 function printSummary(report, startupReport, diagnostics, previewTransport, baselinePath, acceptance, ownership) {
   console.log('')
   console.log('════════ REAL-SOURCE BASELINE ════════')
@@ -796,6 +920,43 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
   )
   console.log(`Baseline report: ${baselinePath}`)
   console.log('══════════════════════════════════════')
+}
+
+function printBlockedStartupSummary(error, diagnostics, previewTransport, baselinePath) {
+  const cadence = blockedStartupCameraCadence(error?.message ?? String(error), [])
+  console.log('')
+  console.log('════════ REAL-SOURCE BASELINE ════════')
+  console.log('Acceptance gate: FAIL')
+  console.log(`Start blocked before encoding: ${error?.message ?? error}`)
+  console.log(`Preview transport: ${previewTransport} (diagnostics saw: ${diagnostics.transports.join(', ') || 'unknown'})`)
+  console.log(
+    `Camera capture: callback p95 ${fmtOrFallback(diagnostics.previewCameraCaptureGapP95Ms, cadence?.callbackP95)} / ` +
+      `sample PTS p95 ${fmtOrFallback(diagnostics.previewCameraSamplePtsGapP95Ms, cadence?.samplePtsP95)} / ` +
+      `frame age ${fmtOrFallback(diagnostics.previewCameraFrameAgeMs, cadence?.frameAge, 0)}`
+  )
+  console.log(`Blocked-start report: ${baselinePath}`)
+  console.log('══════════════════════════════════════')
+}
+
+function blockedStartupCameraCadence(errorMessage, healthEvents) {
+  const messages = [errorMessage, ...healthEvents.map((event) => event.message).filter(Boolean)]
+  for (const message of messages) {
+    const match = /sample PTS p95 ([^,]+), threshold ([^,]+), callback p95 ([^,]+), frame age ([^)]+)\)/.exec(message)
+    if (match) {
+      return {
+        samplePtsP95: match[1],
+        threshold: match[2],
+        callbackP95: match[3],
+        frameAge: match[4],
+      }
+    }
+  }
+  return null
+}
+
+function fmtOrFallback(value, fallback, decimals = 1) {
+  if (typeof value === 'number' && Number.isFinite(value)) return `${value.toFixed(decimals)}ms`
+  return fallback ?? 'n/a'
 }
 
 // --- Param builders ---------------------------------------------------------
