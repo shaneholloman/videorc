@@ -77,8 +77,9 @@ describe('evaluateAcceptance', () => {
     assert.match(v.failures.join(' '), /12 CPU fallback frame/)
   })
 
-  it('fails on duplicate frames re-fed to the encoder', () => {
+  it('fails on duplicate frames re-fed to the encoder when final-file proof is unavailable', () => {
     const input = cleanInput()
+    input.analyzerVerdict = null
     input.diagnostics.encoderBridgeRepeatedFrames = 12
     const v = evaluateAcceptance(input)
     assert.equal(v.pass, false)
@@ -93,12 +94,22 @@ describe('evaluateAcceptance', () => {
     assert.match(v.failures.join(' '), /3 synthetic filler frame/)
   })
 
-  it('fails when the encoder falls behind real-time', () => {
+  it('fails when the encoder falls behind real-time and final-file proof is unavailable', () => {
     const input = cleanInput()
+    input.analyzerVerdict = null
     input.diagnostics.minEncoderSpeed = 0.8
     const v = evaluateAcceptance(input)
     assert.equal(v.pass, false)
     assert.match(v.failures.join(' '), /speed 0.80x below 0.98x/)
+  })
+
+  it('lets passing final-file proof arbitrate bridge-repeat and progress-speed telemetry', () => {
+    const input = cleanInput()
+    input.diagnostics.encoderBridgeRepeatedFrames = 12
+    input.diagnostics.minEncoderSpeed = 0.71
+    const v = evaluateAcceptance(input)
+    assert.equal(v.pass, true)
+    assert.deepEqual(v.failures, [])
   })
 
   it('fails on mic drops and low capture coverage only when audio is expected', () => {

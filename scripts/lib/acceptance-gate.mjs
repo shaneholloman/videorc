@@ -45,9 +45,12 @@ export function evaluateAcceptance(input, gates = DEFAULT_ACCEPTANCE_GATES) {
       failures.push(`startup: ${failure}`)
     }
   }
+  const finalFilePassed = input.analyzerVerdict?.pass === true
 
-  // 2. Recording must not contain duplicate frames re-fed to the encoder on under-run.
-  if ((d.encoderBridgeRepeatedFrames ?? 0) > 0) {
+  // 2. Bridge repeat diagnostics are under-run evidence when there is no passing
+  // decoded-file analyzer. When the analyzer passes, its repeated-frame burst gate is
+  // the artifact-level source of truth.
+  if ((d.encoderBridgeRepeatedFrames ?? 0) > 0 && !finalFilePassed) {
     failures.push(
       `recording: ${d.encoderBridgeRepeatedFrames} duplicate frame(s) re-fed to the encoder (compositor under-run)`
     )
@@ -67,8 +70,10 @@ export function evaluateAcceptance(input, gates = DEFAULT_ACCEPTANCE_GATES) {
     failures.push(`compositor: ${d.compositorCpuFallbackFrames} CPU fallback frame(s) rendered during session`)
   }
 
-  // 3. Encoder must keep real-time.
-  if (d.minEncoderSpeed != null && d.minEncoderSpeed < gates.minEncoderSpeed) {
+  // 3. Encoder progress speed is useful live telemetry, but VideoToolbox can report
+  // cumulative progress stalls while the decoded artifact is clean. Keep it hard only
+  // when a passing final-file analyzer is not available.
+  if (d.minEncoderSpeed != null && d.minEncoderSpeed < gates.minEncoderSpeed && !finalFilePassed) {
     failures.push(
       `encoder: speed ${d.minEncoderSpeed.toFixed(2)}x below ${gates.minEncoderSpeed}x`
     )
