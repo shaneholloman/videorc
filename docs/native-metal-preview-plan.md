@@ -67,6 +67,9 @@ fails a "native" claim — by design.
 - `make_preview_layer()` / `MetalPreviewPresenter` / `present_texture_to_layer()` — the
   GPU-side preview present (CAMetalLayer + render-scaled texture present), compile-and-run
   tested headlessly.
+- The `CVMetalTextureCache` import test now creates an IOSurface-backed BGRA
+  `CVPixelBuffer` and verifies that the zero-copy source import path can produce a real
+  `MTLTexture` on-device.
 - Scene/transform math in `scene.rs` (tested) maps 1:1 to each `GpuSource.dest` rect.
 - Honest diagnostics expose `previewTransport`, `previewImagePollCounts`,
   `previewSurfaceBacking`, `recordingProtected`, `encodeBackend`, `compositorBackend`,

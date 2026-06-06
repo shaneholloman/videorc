@@ -954,7 +954,10 @@ mod tests {
 
     #[test]
     fn zero_copy_import_path_runs_against_the_texture_cache_or_skips() {
-        use objc2_core_video::{CVPixelBufferCreate, kCVPixelFormatType_32BGRA};
+        use objc2_core_foundation::{CFDictionary, CFType};
+        use objc2_core_video::{
+            CVPixelBufferCreate, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelFormatType_32BGRA,
+        };
         let Some(device) = MTLCreateSystemDefaultDevice() else {
             return;
         };
@@ -964,6 +967,11 @@ mod tests {
             return;
         };
         let (w, h) = (16usize, 16usize);
+        let iosurface_properties = CFDictionary::<CFType, CFType>::empty();
+        let pixel_buffer_attributes = CFDictionary::<CFType, CFType>::from_slices(
+            &[unsafe { kCVPixelBufferIOSurfacePropertiesKey }.as_ref()],
+            &[iosurface_properties.as_ref()],
+        );
         let mut pb: *mut CVPixelBuffer = std::ptr::null_mut();
         let ret = unsafe {
             CVPixelBufferCreate(
@@ -971,7 +979,7 @@ mod tests {
                 w,
                 h,
                 kCVPixelFormatType_32BGRA,
-                None,
+                Some(pixel_buffer_attributes.as_ref()),
                 NonNull::new(&mut pb).unwrap(),
             )
         };
@@ -979,16 +987,15 @@ mod tests {
             return;
         }
         let pb = unsafe { CFRetained::from_raw(NonNull::new(pb).unwrap()) };
-        // Runs the real CVMetalTextureCacheCreateTextureFromImage path. A buffer built
-        // without IOSurface backing yields None (the import is for live, IOSurface-backed
-        // capture buffers); either way the import path executes without crashing.
+        // Runs the real CVMetalTextureCacheCreateTextureFromImage path against an
+        // IOSurface-backed buffer, matching the live capture import path.
         match import_pixel_buffer_texture(&cache, &pb, w, h) {
             Some(texture) => {
                 assert_eq!(texture.width(), w);
                 assert_eq!(texture.height(), h);
             }
             None => {
-                eprintln!("note: synthetic buffer lacks IOSurface backing; import returned None")
+                eprintln!("skipping: IOSurface-backed pixel buffer did not import on this device")
             }
         }
     }
