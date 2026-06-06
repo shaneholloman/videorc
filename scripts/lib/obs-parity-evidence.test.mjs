@@ -80,6 +80,23 @@ test('obs parity evidence assigns preview problems to proof transport and image 
   assert.match(quality.owner, /PNG\/JPEG fallback preview/)
 })
 
+test('obs parity evidence marks preview areas unmeasured for no-preview comparisons', () => {
+  const input = cleanInput()
+  input.previewMeasured = false
+  input.claimsNative = false
+  input.diagnostics.previewSurfaceBacking = 'none'
+
+  const items = classifyObsParityEvidence(input)
+  const lag = byArea(items, 'Preview lag while recording')
+  const quality = byArea(items, 'Preview quality vs OBS')
+
+  assert.equal(lag.status, 'needs-manual')
+  assert.equal(lag.owner, 'no-preview comparison')
+  assert.match(lag.evidence.join(' '), /disabled/)
+  assert.equal(quality.status, 'needs-manual')
+  assert.equal(quality.owner, 'no-preview comparison')
+})
+
 test('obs parity evidence highlights GPU fallback and missing Metal target export', () => {
   const input = cleanInput()
   input.diagnostics.compositorCpuFallbackFrames = 412

@@ -11,6 +11,7 @@ export function classifyObsParityEvidence(input, gates = DEFAULT_ACCEPTANCE_GATE
   const analyzerVerdict = input.analyzerVerdict ?? null
   const startupVerdict = input.startupVerdict ?? null
   const claimsNative = Boolean(input.claimsNative)
+  const previewMeasured = input.previewMeasured !== false
   const finalPassed = analyzerVerdict?.pass === true
   const startupPassed = startupVerdict?.pass === true
   const imagePolls = diagnostics.imagePollDuringSession?.total
@@ -23,8 +24,8 @@ export function classifyObsParityEvidence(input, gates = DEFAULT_ACCEPTANCE_GATE
 
   return [
     classifyStartup({ startupVerdict, diagnostics, startupPassed }),
-    classifyPreviewLag({ diagnostics, claimsNative, imagePolls, cpuFallbackFrames, gates }),
-    classifyPreviewQuality({ diagnostics, claimsNative, imagePolls, cpuFallbackFrames }),
+    classifyPreviewLag({ diagnostics, claimsNative, imagePolls, cpuFallbackFrames, gates, previewMeasured }),
+    classifyPreviewQuality({ diagnostics, claimsNative, imagePolls, cpuFallbackFrames, previewMeasured }),
     classifyRecordingHotPath({
       analyzerVerdict,
       diagnostics,
@@ -74,7 +75,17 @@ function classifyStartup({ startupVerdict, diagnostics, startupPassed }) {
   })
 }
 
-function classifyPreviewLag({ diagnostics, claimsNative, imagePolls, cpuFallbackFrames, gates }) {
+function classifyPreviewLag({ diagnostics, claimsNative, imagePolls, cpuFallbackFrames, gates, previewMeasured }) {
+  if (!previewMeasured) {
+    return item({
+      area: 'Preview lag while recording',
+      status: STATUS.NEEDS_MANUAL,
+      owner: 'no-preview comparison',
+      evidence: ['preview was deliberately disabled for this baseline'],
+      nextStep: 'Run the visible native-preview baseline to measure source-to-present latency and currentness.',
+    })
+  }
+
   const evidence = []
   const owners = new Set()
 
@@ -134,7 +145,17 @@ function classifyPreviewLag({ diagnostics, claimsNative, imagePolls, cpuFallback
   })
 }
 
-function classifyPreviewQuality({ diagnostics, claimsNative, imagePolls, cpuFallbackFrames }) {
+function classifyPreviewQuality({ diagnostics, claimsNative, imagePolls, cpuFallbackFrames, previewMeasured }) {
+  if (!previewMeasured) {
+    return item({
+      area: 'Preview quality vs OBS',
+      status: STATUS.NEEDS_MANUAL,
+      owner: 'no-preview comparison',
+      evidence: ['preview was deliberately disabled for this baseline'],
+      nextStep: 'Run the visible native-preview baseline and compare the CAMetalLayer path against OBS.',
+    })
+  }
+
   const evidence = []
   const owners = new Set()
 

@@ -248,6 +248,7 @@ async function main() {
       startupVerdict: startupReport.verdict,
       diagnostics,
       claimsNative,
+      previewMeasured: !config.noPreviewSurface,
     })
     const baselinePath = writeBaselineReport(outputPath, {
       sources,
@@ -269,7 +270,7 @@ async function main() {
       startupVerdict: startupReport.verdict,
       diagnostics,
       claimsNative,
-      requireObsNativePreview: true,
+      requireObsNativePreview: !config.noPreviewSurface,
       requireGpuCompositor: true,
       expectAudio: Boolean(sources.microphone),
     })
