@@ -1387,6 +1387,10 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
     }
   }
 
+  if (command === 'destroy-native-preview-surface') {
+    return destroyNativePreviewSurface()
+  }
+
   const script = smokeRendererScript(command, params)
   return mainWindow.webContents.executeJavaScript(script, true)
 }
@@ -1532,12 +1536,40 @@ function smokeRendererScript(command: string, params: Record<string, unknown>): 
         }
         throw new Error('Timed out waiting for ' + selector);
       };
+      const openTab = async (tabId, waitSelector = null) => {
+        const tab = Array.from(document.querySelectorAll('[data-videorc-tab-trigger]'))
+          .find((candidate) => candidate.getAttribute('data-videorc-tab-trigger') === tabId);
+        if (!tab) {
+          throw new Error('Could not find tab ' + tabId);
+        }
+        tab.click();
+        if (waitSelector) {
+          await waitFor(waitSelector);
+        } else {
+          await sleep(250);
+        }
+        return { activeTab: tabId };
+      };
 
       if (${JSON.stringify(command)} === 'open-layout-tab') {
-        const tab = await waitFor('[data-videorc-tab-trigger="layout"]');
-        tab.click();
-        await waitFor('[data-videorc-preview-stage]');
-        return { activeTab: 'layout' };
+        return openTab('layout', '[data-videorc-preview-stage]');
+      }
+
+      if (${JSON.stringify(command)} === 'open-tab') {
+        const tabId = String(params.tab ?? 'studio');
+        const waitSelector = typeof params.waitFor === 'string' ? params.waitFor : null;
+        return openTab(tabId, waitSelector);
+      }
+
+      if (${JSON.stringify(command)} === 'suspend-native-preview-surface') {
+        window.__videorcSmokeNativePreviewSuspended = true;
+        const status = await window.videorc?.destroyNativePreviewSurface?.();
+        return { suspended: true, status: status ?? null };
+      }
+
+      if (${JSON.stringify(command)} === 'resume-native-preview-surface') {
+        window.__videorcSmokeNativePreviewSuspended = false;
+        return { suspended: false };
       }
 
       if (${JSON.stringify(command)} === 'inspect-native-preview-bootstrap') {

@@ -35,16 +35,32 @@ const maxPreviewInputToPresentLatencyP99Ms = Number(
 const maxPreviewCompositorFrameLag = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_COMPOSITOR_FRAME_LAG ?? 2)
 const layoutStressUpdates = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES ?? 0)
 const layoutStressIntervalMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_INTERVAL_MS ?? 750)
+const includeHiddenPreviewScenario = process.env.VIDEORC_NATIVE_PREVIEW_INCLUDE_HIDDEN === '1'
 const expectedSurfaceTransport =
   process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'native-surface' : 'electron-proof-surface'
 const expectedSurfaceBacking =
   process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'cametal-layer' : 'electron-browser-window'
 
-const scenarios = [
+const visibleScenarios = [
   ...(process.env.VIDEORC_NATIVE_PREVIEW_INCLUDE_1440 === '1'
     ? [{ label: 'native-preview-1440p30', width: 2560, height: 1440, fps: 30, bitrateKbps: 8000 }]
     : []),
   { label: 'native-preview-1080p30', width: 1920, height: 1080, fps: 30, bitrateKbps: 6000 }
+]
+const scenarios = [
+  ...visibleScenarios.map((scenario) => ({ ...scenario, previewVisible: true })),
+  ...(includeHiddenPreviewScenario
+    ? [
+        {
+          label: 'native-preview-hidden-1080p30',
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          bitrateKbps: 6000,
+          previewVisible: false
+        }
+      ]
+    : [])
 ]
 
 let appProcess
@@ -98,7 +114,15 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
     await waitForNativePreviewDiagnostics(samples)
 
     let previousSurface = surfaceBefore
+    let previewVisible = true
     for (const scenario of scenarios) {
+      if (scenario.previewVisible === false && previewVisible) {
+        previousSurface = await hideNativePreviewSurface(ws, smoke)
+        previewVisible = false
+      } else if (scenario.previewVisible !== false && !previewVisible) {
+        previousSurface = await showNativePreviewSurface(ws, smoke, samples)
+        previewVisible = true
+      }
       previousSurface = await runNativePreviewRecordingScenario(
         ws,
         smoke,
@@ -116,6 +140,7 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
 async function runNativePreviewRecordingScenario(ws, smoke, samples, previewSurfaceSamples, scenario, previousSurface) {
   samples.length = 0
   previewSurfaceSamples.length = 0
+  const expectsPreview = scenario.previewVisible !== false
   const scenarioStartedAt = Date.now()
   const started = await request(ws, timeoutMs, 'session.start', sessionParams(scenario))
   if (started.state !== 'recording') {
@@ -137,16 +162,22 @@ async function runNativePreviewRecordingScenario(ws, smoke, samples, previewSurf
   await assertSameRunningSession(ws, started.sessionId)
   await waitForActiveSceneDiagnostics(ws, activeSceneRevision, 'record')
 
-  const measurementPromise = smokeCommand(smoke, 'measure-native-preview-surface', {
-    durationMs: previewMeasurementMs
-  })
+  const measurementPromise = expectsPreview
+    ? smokeCommand(smoke, 'measure-native-preview-surface', {
+        durationMs: previewMeasurementMs
+      })
+    : Promise.resolve(null)
   const stressPromise = stressLayoutDuringRecording(ws, started.sessionId, layoutStressUpdates)
   await sleep(recordingMs)
   await stressPromise
   const measurement = await measurementPromise
-  assertNativeMeasurement(measurement)
+  if (expectsPreview) {
+    assertNativeMeasurement(measurement)
+  }
 
-  const surfaceDuring = await waitForNativeSurface(ws, previousSurface.framesRendered)
+  const surfaceDuring = expectsPreview
+    ? await waitForNativeSurface(ws, previousSurface.framesRendered)
+    : await waitForHiddenNativeSurface(ws)
   const stopRequestedAt = Date.now()
   const expectedDurationMs = stopRequestedAt - recordingStartedAt
   const stopped = await request(ws, timeoutMs, 'session.stop')
@@ -187,28 +218,55 @@ async function runNativePreviewRecordingScenario(ws, smoke, samples, previewSurf
     expectedSurfaceBacking,
     previewSurfaceSamples
   })
-  assertStatsHealthy(scenario, stats, { startupReport, recordingReport })
-  if (stats.nativePreviewSamples === 0) {
-    throw new Error(
-      `[${scenario.label}] Recording diagnostics never reported ${expectedSurfaceTransport}/${expectedSurfaceBacking} preview transport.`
-    )
-  }
-  if (surfaceDuring.framesRendered <= previousSurface.framesRendered) {
-    throw new Error(
-      `[${scenario.label}] Native preview surface did not advance during recording: ${previousSurface.framesRendered} -> ${surfaceDuring.framesRendered}.`
-    )
+  assertStatsHealthy(scenario, stats, { startupReport, recordingReport }, { previewExpected: expectsPreview })
+  if (expectsPreview) {
+    if (stats.nativePreviewSamples === 0) {
+      throw new Error(
+        `[${scenario.label}] Recording diagnostics never reported ${expectedSurfaceTransport}/${expectedSurfaceBacking} preview transport.`
+      )
+    }
+    if (surfaceDuring.framesRendered <= previousSurface.framesRendered) {
+      throw new Error(
+        `[${scenario.label}] Native preview surface did not advance during recording: ${previousSurface.framesRendered} -> ${surfaceDuring.framesRendered}.`
+      )
+    }
+  } else {
+    assertHiddenNativeSurfaceStatus(scenario, surfaceDuring)
   }
 
   const skew = await audioVideoSkewMs(outputPath)
   if (skew > maxSkewMs) {
     throw new Error(`[${scenario.label}] Audio/video duration skew ${skew.toFixed(1)}ms exceeded ${maxSkewMs}ms.`)
   }
-  const measuredCompositorLag = measurement.compositorFrameLag ?? stats.maxPreviewCompositorFrameLag
+  const measuredCompositorLag = measurement?.compositorFrameLag ?? stats.maxPreviewCompositorFrameLag
+  const previewSummary = expectsPreview
+    ? `preview ${format(measurement.measuredFps)}fps, p95 ${format(measurement.intervalP95Ms)}ms, present ${format(stats.minPreviewPresentFps)}fps, source-to-present p95 ${format(stats.maxPreviewInputToPresentLatencyP95Ms)}ms/p99 ${format(stats.maxPreviewInputToPresentLatencyP99Ms)}ms, compositor lag ${format(measuredCompositorLag)} frame(s)`
+    : `preview hidden, live preview samples ${stats.nativePreviewSamples}`
 
   console.log(
-    `Native-preview recording [${scenario.label}] OK: ${outputPath} (${size} bytes), preview ${format(measurement.measuredFps)}fps, p95 ${format(measurement.intervalP95Ms)}ms, present ${format(stats.minPreviewPresentFps)}fps, source-to-present p95 ${format(stats.maxPreviewInputToPresentLatencyP95Ms)}ms/p99 ${format(stats.maxPreviewInputToPresentLatencyP99Ms)}ms, compositor lag ${format(measuredCompositorLag)} frame(s), startup repeat ${format(startupReport.metrics.maxRepeatedFrameRun, 0)}, final repeat ${format(recordingReport.metrics.maxRepeatedFrameRun, 0)}, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, layout stress ${layoutStressUpdates} update(s), maintenance samples ${stats.maintenanceSamples}, duplicate samples ${stats.duplicateCaptureSamples}, max RSS ${formatBytes(stats.maxBackendRssBytes)}, max FFmpeg procs ${stats.maxActiveFfmpegProcesses}, max FFprobe procs ${stats.maxActiveFfprobeProcesses}`
+    `Native-preview recording [${scenario.label}] OK: ${outputPath} (${size} bytes), ${previewSummary}, startup repeat ${format(startupReport.metrics.maxRepeatedFrameRun, 0)}, final repeat ${format(recordingReport.metrics.maxRepeatedFrameRun, 0)}, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, layout stress ${layoutStressUpdates} update(s), maintenance samples ${stats.maintenanceSamples}, duplicate samples ${stats.duplicateCaptureSamples}, max RSS ${formatBytes(stats.maxBackendRssBytes)}, max FFmpeg procs ${stats.maxActiveFfmpegProcesses}, max FFprobe procs ${stats.maxActiveFfprobeProcesses}`
   )
   return surfaceDuring
+}
+
+async function showNativePreviewSurface(ws, smoke, samples) {
+  await smokeCommand(smoke, 'resume-native-preview-surface')
+  await smokeCommand(smoke, 'open-layout-tab')
+  const nativeStage = await smokeCommand(smoke, 'inspect-native-preview-bootstrap', {
+    requireNativePlaceholder: true
+  })
+  assertNativeBootstrap(nativeStage, { requireNativePreview: true })
+  const surface = await waitForNativeSurface(ws)
+  await waitForNativePreviewDiagnostics(samples)
+  return surface
+}
+
+async function hideNativePreviewSurface(ws, smoke) {
+  await smokeCommand(smoke, 'suspend-native-preview-surface')
+  await request(ws, timeoutMs, 'preview.surface.destroy')
+  const hostStatus = await smokeCommand(smoke, 'destroy-native-preview-surface')
+  assertHiddenNativeSurfaceStatus({ label: 'native-preview-hidden-setup' }, hostStatus)
+  return waitForHiddenNativeSurface(ws)
 }
 
 async function assertSameRunningSession(ws, sessionId) {
@@ -401,6 +459,35 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
   throw new Error(`Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`)
 }
 
+async function waitForHiddenNativeSurface(ws) {
+  const deadline = Date.now() + timeoutMs
+  let lastStatus = null
+  while (Date.now() < deadline) {
+    lastStatus = await request(ws, timeoutMs, 'preview.surface.status')
+    if (
+      lastStatus.state !== 'live' &&
+      lastStatus.transport === 'unavailable' &&
+      lastStatus.backing === 'none' &&
+      (lastStatus.framesRendered ?? 0) === 0
+    ) {
+      return lastStatus
+    }
+    await sleep(150)
+  }
+  throw new Error(`Native preview surface did not stay hidden. Last status: ${JSON.stringify(lastStatus)}`)
+}
+
+function assertHiddenNativeSurfaceStatus(scenario, status) {
+  if (
+    status.state === 'live' ||
+    status.transport !== 'unavailable' ||
+    status.backing !== 'none' ||
+    (status.framesRendered ?? 0) !== 0
+  ) {
+    throw new Error(`[${scenario.label}] Expected hidden native preview surface, got ${JSON.stringify(status)}.`)
+  }
+}
+
 async function waitForNativePreviewDiagnostics(samples) {
   const deadline = Date.now() + timeoutMs
   const startedAt = Date.now()
@@ -500,7 +587,7 @@ function assertRecordingDurationHealthy(scenario, report, expectedDurationMs) {
   }
 }
 
-function assertStatsHealthy(scenario, stats, reports = {}) {
+function assertStatsHealthy(scenario, stats, reports = {}, options = {}) {
   if (stats.minSpeed === null) {
     throw new Error(`[${scenario.label}] No encoder speed diagnostics were captured after ${warmupMs}ms warm-up.`)
   }
@@ -528,6 +615,26 @@ function assertStatsHealthy(scenario, stats, reports = {}) {
       `[${scenario.label}] Live diagnostics FPS dipped to ${format(stats.minFps)} below ${format(minFps)}, but decoded startup and final-file gates passed.`
     )
   }
+  if (options.previewExpected === false) {
+    assertHiddenPreviewStats(scenario, stats)
+  } else {
+    assertVisiblePreviewStats(scenario, stats)
+  }
+  if (stats.droppedFrames > 0) {
+    throw new Error(`[${scenario.label}] FFmpeg reported ${stats.droppedFrames} dropped frame(s).`)
+  }
+  if (stats.micDroppedFrames > 0) {
+    throw new Error(`[${scenario.label}] Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`)
+  }
+  if (stats.maintenanceSamples > 0) {
+    throw new Error(`[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`)
+  }
+  if (stats.duplicateCaptureSamples > 0) {
+    throw new Error(`[${scenario.label}] Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`)
+  }
+}
+
+function assertVisiblePreviewStats(scenario, stats) {
   if (stats.minPreviewPresentFps === null) {
     throw new Error(`[${scenario.label}] No preview-present diagnostics were captured after ${warmupMs}ms warm-up.`)
   }
@@ -563,17 +670,25 @@ function assertStatsHealthy(scenario, stats, reports = {}) {
       `[${scenario.label}] Preview compositor lag ${format(stats.maxPreviewCompositorFrameLag)} frame(s) exceeded ${format(maxPreviewCompositorFrameLag)}.`
     )
   }
-  if (stats.droppedFrames > 0) {
-    throw new Error(`[${scenario.label}] FFmpeg reported ${stats.droppedFrames} dropped frame(s).`)
+}
+
+function assertHiddenPreviewStats(scenario, stats) {
+  if (stats.nativePreviewSamples > 0) {
+    throw new Error(`[${scenario.label}] Hidden-preview recording still reported ${stats.nativePreviewSamples} live preview sample(s).`)
   }
-  if (stats.micDroppedFrames > 0) {
-    throw new Error(`[${scenario.label}] Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`)
-  }
-  if (stats.maintenanceSamples > 0) {
-    throw new Error(`[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`)
-  }
-  if (stats.duplicateCaptureSamples > 0) {
-    throw new Error(`[${scenario.label}] Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`)
+  const staleFields = [
+    ['previewPresentFps', stats.minPreviewPresentFps],
+    ['previewInputToPresentLatencyP95Ms', stats.maxPreviewInputToPresentLatencyP95Ms],
+    ['previewInputToPresentLatencyP99Ms', stats.maxPreviewInputToPresentLatencyP99Ms],
+    ['previewCompositorFrameLag', stats.maxPreviewCompositorFrameLag],
+    ['previewRenderFrameTimeP95Ms', stats.maxPreviewRenderFrameTimeP95Ms]
+  ].filter(([, value]) => value !== null)
+  if (staleFields.length > 0) {
+    throw new Error(
+      `[${scenario.label}] Hidden-preview diagnostics retained stale preview metrics: ${staleFields
+        .map(([name, value]) => `${name}=${format(value)}`)
+        .join(', ')}.`
+    )
   }
 }
 

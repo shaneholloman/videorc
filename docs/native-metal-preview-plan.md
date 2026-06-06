@@ -136,6 +136,14 @@ fails a "native" claim — by design.
   final max repeated-frame run 2, and 11ms A/V skew. FFmpeg progress speed/FPS telemetry
   still warned in both scenarios, but decoded startup/final-file gates and the direct
   proof-host measurement passed.
+- The hidden-preview comparison smoke (`pnpm smoke:recording-native-preview:hidden`) now
+  destroys/suspends the proof/native surface before a second 1080p30 recording and fails
+  if stale preview-present metrics leak back into diagnostics. On 2026-06-06, the visible
+  leg passed with preview 120.05fps, p95 interval 9.4ms, source-to-present p95/p99 13ms,
+  compositor lag 0, startup max repeated-frame run 1, final max repeated-frame run 2, and
+  20ms A/V skew. The hidden leg passed with 0 live preview samples, startup max
+  repeated-frame run 1, final max repeated-frame run 2, and 5ms A/V skew. FFmpeg progress
+  speed/FPS telemetry still warned, but decoded startup/final-file gates passed.
 - The preview-surface smoke now retries launch connection timeouts like the recording
   smoke, and after the proof-host shell hardening `pnpm smoke:preview-surface` passed at
   120.4fps initial, 120.2fps after resize, scene update 13.1ms, 105 compositor frames,

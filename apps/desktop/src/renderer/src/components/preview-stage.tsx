@@ -90,6 +90,14 @@ function clampRange(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+function nativePreviewSuspendedForSmoke(): boolean {
+  return Boolean(
+    typeof window !== 'undefined' &&
+      (window as typeof window & { __videorcSmokeNativePreviewSuspended?: boolean })
+        .__videorcSmokeNativePreviewSuspended
+  )
+}
+
 export function PreviewStage({
   previewUrl,
   previewLoading,
@@ -240,6 +248,9 @@ export function PreviewStage({
         animationFrame = null
         const element = previewSurfaceRef.current
         if (!element) {
+          return
+        }
+        if (nativePreviewSuspendedForSmoke()) {
           return
         }
         const rect = element.getBoundingClientRect()

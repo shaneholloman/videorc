@@ -512,8 +512,9 @@ pub fn apply_compositor_stats(
     render_frame_time_p95_ms: f64,
     render_frame_time_p99_ms: f64,
 ) -> DiagnosticStats {
-    stats.preview_target_fps = Some(f64::from(target_fps));
-    stats.preview_frame_age_ms = Some(frame_age_ms);
+    let preview_presenting = preview_transport.is_surface();
+    stats.preview_target_fps = preview_presenting.then_some(f64::from(target_fps));
+    stats.preview_frame_age_ms = preview_presenting.then_some(frame_age_ms);
     stats.preview_transport = preview_transport;
     stats.preview_surface_backing = preview_surface_backing;
     stats.compositor_backend = Some(compositor_backend);
@@ -523,22 +524,31 @@ pub fn apply_compositor_stats(
         .preview_source_fps
         .insert("synthetic-compositor".to_string(), render_fps);
     stats.render_fps = Some(render_fps);
-    stats.preview_present_fps = Some(render_fps);
-    stats.preview_input_to_present_latency_ms = Some(frame_age_ms);
-    stats.preview_input_to_present_latency_p50_ms = Some(frame_age_ms);
-    stats.preview_input_to_present_latency_p95_ms = Some(frame_age_ms);
-    stats.preview_input_to_present_latency_p99_ms = Some(frame_age_ms);
-    stats.preview_render_frame_time_p50_ms = Some(render_frame_time_p50_ms);
-    stats.preview_render_frame_time_p95_ms = Some(render_frame_time_p95_ms);
-    stats.preview_render_frame_time_p99_ms = Some(render_frame_time_p99_ms);
-    stats.preview_repeated_frames = repeated_frames;
-    stats.preview_latency_ms = Some(frame_age_ms);
-    stats.preview_dropped_frames = dropped_frames;
-    stats.bottleneck = if render_fps < f64::from(target_fps) * 0.9 || dropped_frames > 0 {
-        DiagnosticBottleneck::Preview
+    stats.preview_present_fps = preview_presenting.then_some(render_fps);
+    stats.preview_input_to_present_latency_ms = preview_presenting.then_some(frame_age_ms);
+    stats.preview_input_to_present_latency_p50_ms = preview_presenting.then_some(frame_age_ms);
+    stats.preview_input_to_present_latency_p95_ms = preview_presenting.then_some(frame_age_ms);
+    stats.preview_input_to_present_latency_p99_ms = preview_presenting.then_some(frame_age_ms);
+    stats.preview_render_frame_time_p50_ms = preview_presenting.then_some(render_frame_time_p50_ms);
+    stats.preview_render_frame_time_p95_ms = preview_presenting.then_some(render_frame_time_p95_ms);
+    stats.preview_render_frame_time_p99_ms = preview_presenting.then_some(render_frame_time_p99_ms);
+    stats.preview_repeated_frames = if preview_presenting {
+        repeated_frames
     } else {
-        DiagnosticBottleneck::None
+        0
     };
+    stats.preview_latency_ms = preview_presenting.then_some(frame_age_ms);
+    stats.preview_dropped_frames = if preview_presenting {
+        dropped_frames
+    } else {
+        0
+    };
+    stats.bottleneck =
+        if preview_presenting && (render_fps < f64::from(target_fps) * 0.9 || dropped_frames > 0) {
+            DiagnosticBottleneck::Preview
+        } else {
+            DiagnosticBottleneck::None
+        };
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }
@@ -886,6 +896,56 @@ mod tests {
             stats.preview_surface_backing,
             PreviewSurfaceBacking::ElectronBrowserWindow
         );
+    }
+
+    #[test]
+    fn compositor_stats_clear_preview_present_metrics_without_surface() {
+        let visible = apply_compositor_stats(
+            idle_diagnostics(),
+            30,
+            PreviewTransport::ElectronProofSurface,
+            PreviewSurfaceBacking::ElectronBrowserWindow,
+            CompositorBackend::Metal,
+            None,
+            0,
+            60.0,
+            12,
+            1,
+            2,
+            4.0,
+            8.0,
+            12.0,
+        );
+
+        let hidden = apply_compositor_stats(
+            visible,
+            30,
+            PreviewTransport::Unavailable,
+            PreviewSurfaceBacking::None,
+            CompositorBackend::Metal,
+            None,
+            0,
+            60.0,
+            13,
+            3,
+            4,
+            5.0,
+            9.0,
+            13.0,
+        );
+
+        assert_eq!(hidden.render_fps, Some(60.0));
+        assert_eq!(hidden.preview_transport, PreviewTransport::Unavailable);
+        assert_eq!(hidden.preview_surface_backing, PreviewSurfaceBacking::None);
+        assert_eq!(hidden.preview_target_fps, None);
+        assert_eq!(hidden.preview_frame_age_ms, None);
+        assert_eq!(hidden.preview_present_fps, None);
+        assert_eq!(hidden.preview_input_to_present_latency_p95_ms, None);
+        assert_eq!(hidden.preview_input_to_present_latency_p99_ms, None);
+        assert_eq!(hidden.preview_render_frame_time_p95_ms, None);
+        assert_eq!(hidden.preview_repeated_frames, 0);
+        assert_eq!(hidden.preview_latency_ms, None);
+        assert_eq!(hidden.preview_dropped_frames, 0);
     }
 
     #[test]

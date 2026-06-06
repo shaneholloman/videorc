@@ -161,6 +161,33 @@ pub async fn destroy_preview_surface(state: &AppState) -> PreviewSurfaceStatus {
         slot.status = next.clone();
         next
     };
+    let diagnostic_stats = {
+        let mut diagnostics = state.diagnostics.lock().await;
+        let mut next = diagnostics.clone();
+        next.preview_transport = PreviewTransport::Unavailable;
+        next.preview_target_fps = None;
+        next.preview_frame_age_ms = None;
+        next.preview_surface_backing = PreviewSurfaceBacking::None;
+        next.preview_present_fps = None;
+        next.preview_input_to_present_latency_ms = None;
+        next.preview_input_to_present_latency_p50_ms = None;
+        next.preview_input_to_present_latency_p95_ms = None;
+        next.preview_input_to_present_latency_p99_ms = None;
+        next.preview_compositor_frame_lag = None;
+        next.preview_render_frame_time_p50_ms = None;
+        next.preview_render_frame_time_p95_ms = None;
+        next.preview_render_frame_time_p99_ms = None;
+        next.preview_repeated_frames = 0;
+        next.preview_latency_ms = None;
+        next.preview_dropped_frames = 0;
+        next.updated_at = Utc::now().to_rfc3339();
+        *diagnostics = next.clone();
+        next
+    };
+    state.emit_event(
+        "diagnostics.stats",
+        apply_runtime_diagnostics_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+    );
     state.emit_event("preview.surface.status", status.clone());
     status
 }
@@ -548,6 +575,24 @@ mod tests {
             },
         )
         .await;
+        update_preview_surface_present(
+            &state,
+            PreviewSurfacePresentParams {
+                transport: Some(PreviewTransport::ElectronProofSurface),
+                backing: Some(PreviewSurfaceBacking::ElectronBrowserWindow),
+                presented_frame_id: Some(42),
+                compositor_frame_lag: Some(1),
+                dropped_frames: 3,
+                input_to_present_latency_ms: Some(37),
+                input_to_present_latency_p50_ms: Some(31),
+                input_to_present_latency_p95_ms: Some(48),
+                input_to_present_latency_p99_ms: Some(73),
+                present_fps: Some(58.5),
+                interval_p95_ms: Some(19.0),
+                interval_p99_ms: Some(24.0),
+            },
+        )
+        .await;
 
         let status = destroy_preview_surface(&state).await;
 
@@ -561,5 +606,19 @@ mod tests {
             Some(NativePreviewHostCommandKind::Destroy)
         );
         assert_eq!(surface.native_host.bounds(), None);
+        drop(surface);
+
+        let diagnostics = state.diagnostics.lock().await;
+        assert_eq!(diagnostics.preview_transport, PreviewTransport::Unavailable);
+        assert_eq!(
+            diagnostics.preview_surface_backing,
+            PreviewSurfaceBacking::None
+        );
+        assert_eq!(diagnostics.preview_present_fps, None);
+        assert_eq!(diagnostics.preview_input_to_present_latency_p95_ms, None);
+        assert_eq!(diagnostics.preview_input_to_present_latency_p99_ms, None);
+        assert_eq!(diagnostics.preview_compositor_frame_lag, None);
+        assert_eq!(diagnostics.preview_render_frame_time_p95_ms, None);
+        assert_eq!(diagnostics.preview_dropped_frames, 0);
     }
 }
