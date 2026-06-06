@@ -26,6 +26,8 @@ pub struct VideoToolboxH264ProbeResult {
     pub callback_status: Option<OSStatus>,
     pub callback_info_flags: Option<u32>,
     pub sample_buffer_count: usize,
+    pub sample_total_size_bytes: usize,
+    pub block_buffer_data_bytes: usize,
     pub frame_dropped: bool,
     pub iosurface_backed: bool,
 }
@@ -44,6 +46,8 @@ impl VideoToolboxH264ProbeResult {
             callback_status: None,
             callback_info_flags: None,
             sample_buffer_count: 0,
+            sample_total_size_bytes: 0,
+            block_buffer_data_bytes: 0,
             frame_dropped: false,
             iosurface_backed: false,
         }
@@ -56,6 +60,8 @@ struct EncodeCallbackState {
     status: Option<OSStatus>,
     info_flags: Option<u32>,
     sample_buffer_count: usize,
+    sample_total_size_bytes: usize,
+    block_buffer_data_bytes: usize,
     frame_dropped: bool,
 }
 
@@ -152,6 +158,12 @@ impl VideoToolboxH264Session {
                     state.info_flags = Some(info_flags.0);
                     if !sample_buffer.is_null() {
                         state.sample_buffer_count += 1;
+                        let sample_buffer = unsafe { &*sample_buffer };
+                        state.sample_total_size_bytes +=
+                            unsafe { sample_buffer.total_sample_size() };
+                        if let Some(data_buffer) = unsafe { sample_buffer.data_buffer() } {
+                            state.block_buffer_data_bytes += unsafe { data_buffer.data_length() };
+                        }
                     }
                     state.frame_dropped |= info_flags.contains(VTEncodeInfoFlags::FrameDropped);
                 },
@@ -199,6 +211,8 @@ impl VideoToolboxH264Session {
             callback_status: state.status,
             callback_info_flags: state.info_flags,
             sample_buffer_count: state.sample_buffer_count,
+            sample_total_size_bytes: state.sample_total_size_bytes,
+            block_buffer_data_bytes: state.block_buffer_data_bytes,
             frame_dropped: state.frame_dropped
                 || encode_info_flags.contains(VTEncodeInfoFlags::FrameDropped),
             iosurface_backed,
@@ -301,6 +315,14 @@ mod tests {
                 assert!(
                     result.sample_buffer_count > 0,
                     "VideoToolbox accepted the frame but returned no sample buffer: {result:?}"
+                );
+                assert!(
+                    result.sample_total_size_bytes > 0,
+                    "VideoToolbox sample buffer had no encoded sample bytes: {result:?}"
+                );
+                assert!(
+                    result.block_buffer_data_bytes > 0,
+                    "VideoToolbox sample buffer had no accessible CMBlockBuffer bytes: {result:?}"
                 );
             }
             Err(error) => {

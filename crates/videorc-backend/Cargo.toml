@@ -33,7 +33,7 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSGraphics", "NSResponder", "NSView", "NSWindow", "objc2-quartz-core"] }
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat", "AVVideoSettings", "dispatch2", "objc2-core-media", "objc2-core-video"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
-objc2-core-media = { version = "0.3.2", default-features = false, features = ["CMFormatDescription", "CMSampleBuffer", "CMTime", "objc2", "objc2-core-video"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "objc2", "objc2-core-video"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVMetalTexture", "CVMetalTextureCache", "CVReturn", "objc2-metal", "objc2-io-surface"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSValue"] }
 objc2-io-surface = { version = "0.3.2", default-features = false, features = ["IOSurfaceRef", "objc2-core-foundation"] }
