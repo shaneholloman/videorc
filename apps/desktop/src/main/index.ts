@@ -32,6 +32,7 @@ let nativePreviewSurfaceCompositorRequestSerial = 0
 let backendProcess: ChildProcessWithoutNullStreams | null = null
 let backendConnection: BackendConnection | null = null
 let smokePreviewMotionServer: HttpServer | null = null
+let smokePreviewCompositorFrameId = 0
 let nativePreviewSurfaceScene: PreviewSurfaceSceneState | null = null
 let stdoutBuffer = ''
 let appIcon: NativeImage | null | undefined
@@ -1310,6 +1311,7 @@ function smokePreviewSceneParams(revision: number, cameraX: number): PreviewSurf
 }
 
 function smokeCompositorStatusFromSceneParams(params: PreviewSurfaceSceneUpdateParams): CompositorStatus {
+  smokePreviewCompositorFrameId += 1
   return {
     state: 'live',
     targetFps: 60,
@@ -1353,7 +1355,7 @@ function smokeCompositorStatusFromSceneParams(params: PreviewSurfaceSceneUpdateP
     ],
     sources: [],
     renderFps: 60,
-    framesRendered: Date.now(),
+    framesRendered: smokePreviewCompositorFrameId,
     repeatedFrames: 0,
     droppedFrames: 0,
     frameAgeMs: 0,
