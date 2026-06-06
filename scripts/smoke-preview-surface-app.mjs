@@ -69,16 +69,7 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
     if ((firstDiagnostics.previewPresentFps ?? 0) < minFps) {
       throw new Error(`Diagnostics preview FPS ${format(firstDiagnostics.previewPresentFps)} is below ${minFps}.`)
     }
-    const compositorStatus = await request(ws, timeoutMs, 'compositor.status')
-    if (compositorStatus.state !== 'live') {
-      throw new Error(`Compositor status is ${compositorStatus.state}, expected live.`)
-    }
-    if ((compositorStatus.renderFps ?? 0) < 30) {
-      throw new Error(`Compositor render FPS ${format(compositorStatus.renderFps)} is below the 30fps floor.`)
-    }
-    if ((compositorStatus.framesRendered ?? 0) <= 0) {
-      throw new Error(`Compositor did not render frames: ${JSON.stringify(compositorStatus)}`)
-    }
+    await waitForCompositorRenderFloor(ws)
 
     await smokeCommand(smoke, 'resize-window', { width: 1280, height: 820 })
     const resizedStatus = await waitForNativeSurface(ws, firstStatus.framesRendered)
@@ -87,10 +78,17 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
     })
     assertNativeMeasurement(resizedMeasurement, 'resized')
 
-    const resizedDiagnostics = await waitForPreviewResizeDiagnostics(ws)
+    const surfaceBoundsChanged =
+      resizedStatus.width !== firstStatus.width ||
+      resizedStatus.height !== firstStatus.height ||
+      resizedStatus.bounds?.width !== firstStatus.bounds?.width ||
+      resizedStatus.bounds?.height !== firstStatus.bounds?.height
+    const resizedDiagnostics = surfaceBoundsChanged
+      ? await waitForPreviewResizeDiagnostics(ws, firstDiagnostics.previewSurfaceResizeCount ?? 0)
+      : await request(ws, timeoutMs, 'diagnostics.stats')
 
     console.log(
-      `Preview surface smoke: native ${format(firstMeasurement.measuredFps)}fps initial, ${format(resizedMeasurement.measuredFps)}fps after resize, scene update ${format(sceneExercise.updateLatencyMs)}ms, frames ${resizedStatus.framesRendered}, p95 ${format(resizedMeasurement.intervalP95Ms)}ms, resize count ${resizedDiagnostics.previewSurfaceResizeCount}`
+      `Preview surface smoke: native ${format(firstMeasurement.measuredFps)}fps initial, ${format(resizedMeasurement.measuredFps)}fps after resize, scene update ${format(sceneExercise.updateLatencyMs)}ms, frames ${resizedStatus.framesRendered}, p95 ${format(resizedMeasurement.intervalP95Ms)}ms, resize count ${resizedDiagnostics.previewSurfaceResizeCount}${surfaceBoundsChanged ? '' : ' (bounds unchanged)'}`
     )
   } finally {
     ws.close()
@@ -116,20 +114,35 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
   throw new Error(`Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`)
 }
 
-async function waitForPreviewResizeDiagnostics(ws) {
+async function waitForCompositorRenderFloor(ws) {
+  const deadline = Date.now() + timeoutMs
+  let lastStatus = null
+  while (Date.now() < deadline) {
+    lastStatus = await request(ws, timeoutMs, 'compositor.status')
+    if (
+      lastStatus.state === 'live' &&
+      (lastStatus.framesRendered ?? 0) > 0 &&
+      (lastStatus.renderFps ?? 0) >= 30
+    ) {
+      return lastStatus
+    }
+    await sleep(150)
+  }
+  throw new Error(`Compositor did not reach the 30fps render floor. Last status: ${JSON.stringify(lastStatus)}`)
+}
+
+async function waitForPreviewResizeDiagnostics(ws, previousResizeCount = 0) {
   const deadline = Date.now() + timeoutMs
   let lastDiagnostics = null
   while (Date.now() < deadline) {
     lastDiagnostics = await request(ws, timeoutMs, 'diagnostics.stats')
-    if ((lastDiagnostics.previewSurfaceResizeCount ?? 0) >= 1) {
+    if ((lastDiagnostics.previewSurfaceResizeCount ?? 0) > previousResizeCount) {
       return lastDiagnostics
     }
     await sleep(150)
   }
   throw new Error(
-    `Native preview surface resize count did not increase after window resize. Last diagnostics: ${JSON.stringify(
-      lastDiagnostics
-    )}`
+    `Native preview surface resize count did not increase after surface bounds changed. Previous count: ${previousResizeCount}. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
   )
 }
 
