@@ -115,6 +115,7 @@ async function main() {
     const devices = await request(ws, config.timeoutMs, 'devices.list', { ffmpegPath: config.ffmpegPath })
     const sources = selectSources(devices.devices ?? [])
     reportSelection(sources, devices.warnings ?? [])
+    assertRequiredSourcesAvailable(sources)
     if (!sources.screen && !sources.camera) {
       throw new Error('No real screen or camera available/selected — cannot run a real-source baseline.')
     }
@@ -269,6 +270,42 @@ function pickDevice(devices, kind, { override, disabled, nativePrefix }) {
   const available = ofKind.filter((d) => d.status === 'available')
   const pool = available.length ? available : ofKind
   return pool.find((d) => d.id.startsWith(nativePrefix)) ?? pool[0] ?? null
+}
+
+function assertRequiredSourcesAvailable(sources) {
+  const blockers = [
+    requiredSourceBlocker('screen', sources.screen, {
+      disabled: process.env.VIDEORC_BASELINE_NO_SCREEN === '1',
+      override: process.env.VIDEORC_BASELINE_SCREEN_ID,
+      disableHint: 'VIDEORC_BASELINE_NO_SCREEN=1',
+    }),
+    requiredSourceBlocker('camera', sources.camera, {
+      disabled: process.env.VIDEORC_BASELINE_NO_CAMERA === '1',
+      override: process.env.VIDEORC_BASELINE_CAMERA_ID,
+      disableHint: 'VIDEORC_BASELINE_NO_CAMERA=1',
+    }),
+    requiredSourceBlocker('microphone', sources.microphone, {
+      disabled: process.env.VIDEORC_BASELINE_NO_MIC === '1',
+      override: process.env.VIDEORC_BASELINE_MIC_ID,
+      disableHint: 'VIDEORC_BASELINE_NO_MIC=1',
+    }),
+  ].filter(Boolean)
+
+  if (blockers.length > 0) {
+    throw new Error(
+      `Real-source baseline requires available native sources: ${blockers.join('; ')}. ` +
+        'Grant macOS permissions, force an explicit device id, or disable the source with the listed env var.'
+    )
+  }
+}
+
+function requiredSourceBlocker(label, device, { disabled, override, disableHint }) {
+  if (disabled || override) return null
+  if (!device) return `${label} missing (set ${disableHint} to omit it intentionally)`
+  if (device.status !== 'available') {
+    return `${label} ${device.name} [${device.id}] is ${device.status} (set ${disableHint} to omit it intentionally)`
+  }
+  return null
 }
 
 function reportSelection(sources, warnings) {
