@@ -718,6 +718,7 @@ pub fn h264_avcc_sample_to_annex_b(
     }
 
     let mut annex_b = Vec::new();
+    append_annex_b_access_unit_delimiter(&mut annex_b);
     if include_parameter_sets {
         for parameter_set in parameter_sets {
             if parameter_set.is_empty() {
@@ -750,6 +751,12 @@ pub fn h264_avcc_sample_to_annex_b(
 fn append_annex_b_nal(output: &mut Vec<u8>, nal: &[u8]) {
     output.extend_from_slice(&[0, 0, 0, 1]);
     output.extend_from_slice(nal);
+}
+
+fn append_annex_b_access_unit_delimiter(output: &mut Vec<u8>) {
+    // primary_pic_type 7 is valid for I/P/B/SI/SP slices and lets the raw H.264 demuxer
+    // recover access-unit boundaries when packets arrive through a FIFO.
+    append_annex_b_nal(output, &[0x09, 0xf0]);
 }
 
 fn annex_b_nal_types(bytes: &[u8]) -> Vec<u8> {
@@ -1009,11 +1016,11 @@ mod tests {
         assert_eq!(
             annex_b,
             [
-                0, 0, 0, 1, 0x67, 0x42, 0x00, 0, 0, 0, 1, 0x68, 0xce, 0, 0, 0, 1, 0x65, 0xaa, 0, 0,
-                0, 1, 0x41,
+                0, 0, 0, 1, 0x09, 0xf0, 0, 0, 0, 1, 0x67, 0x42, 0x00, 0, 0, 0, 1, 0x68, 0xce, 0, 0,
+                0, 1, 0x65, 0xaa, 0, 0, 0, 1, 0x41,
             ]
         );
-        assert_eq!(annex_b_nal_types(&annex_b), [7, 8, 5, 1]);
+        assert_eq!(annex_b_nal_types(&annex_b), [9, 7, 8, 5, 1]);
         assert!(
             h264_avcc_sample_to_annex_b(&parameter_sets, &sample[..sample.len() - 1], 4, true)
                 .is_none()

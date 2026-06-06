@@ -5842,6 +5842,11 @@ mod tests {
             ),
             Some("1")
         );
+        assert!(!input_has_arg(
+            &args,
+            &fifo_path.display().to_string(),
+            "-fflags"
+        ));
         assert_eq!(
             input_arg_value(&args, &fifo_path.display().to_string(), "-framerate"),
             Some("30")

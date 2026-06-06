@@ -210,11 +210,16 @@ fails a "native" claim — by design.
   p95/p99 1ms, 17ms A/V skew, and passing decoded startup/final-file gates. Live
   diagnostics still warned on min FPS / compositor-present FPS, but the direct proof-host
   measurement and decoded artifact passed.
-- A later 2026-06-06 strict-gate rerun still produced `CPU fallback frames 0`, startup
-  max repeated-frame run 1, final max repeated-frame run 2, and no preview-sized startup
-  frames, but report-only final-file analysis warned on `freezedetect` segments up to
-  148ms and live diagnostic FPS around 18fps. The next H.264-output slice is therefore
-  encoder/output pacing under VideoToolbox load, not startup sizing or CPU fallback.
+- VideoToolbox Annex B output now prefixes each encoded sample with an H.264 access-unit
+  delimiter while keeping wall-clock FIFO timestamps for duration-stable muxing. A
+  2026-06-06 H.264-output source-complete probe passed decoded startup/final-file
+  analysis with duration 6.08s, observed 183 frames vs expected ~182, avg 30.11fps,
+  max frame gap 60ms, freeze 0ms, repeated-frame max run 1, audio gaps 0ms, A/V skew
+  20ms, preview 120.15fps, diagnostic present 29.43fps, source-to-present p95/p99 2ms,
+  `raw copied 0`, `Metal copied 0`, `zero-copy 120`, `VT output 120 (192694 bytes,
+  85ms max encode)`, and `CPU fallback frames 0`. This retires the source-complete
+  H.264-output pacing warning; the remaining proof is real-source zero-copy and the
+  native preview path.
 - The real-source acceptance gate now fails GPU-required runs when
   `encoderBridgeMetalTargetFrames` stays at 0, preventing a session from passing on a
   generic Metal compositor label while the recording bridge never saw an IOSurface-backed
@@ -368,10 +373,11 @@ fails a "native" claim — by design.
 4. **Export to the encoder with the lowest copy available.** The compositor target now
    prefers IOSurface-backed storage and exposes a retained target `CVPixelBuffer`; the
    opt-in VideoToolbox H.264 output path feeds that handle to VideoToolbox, publishes
-   retained-target-only frames when raw YUV is not needed, and keeps the raw-YUV FIFO as
-   the fallback path. Use `pnpm probe:recording-native-preview:videotoolbox-output` for
-   report-only source-complete evidence while the supported/default path and real-source
-   gates are finished.
+   retained-target-only frames when raw YUV is not needed, emits access-unit-delimited
+   Annex B samples for the H.264 FIFO, and keeps the raw-YUV FIFO as the fallback path.
+   Use `pnpm probe:recording-native-preview:videotoolbox-output` for report-only
+   source-complete evidence while the supported/default path and real-source gates are
+   finished.
 5. **Done gate:** 1080p30 and 1440p30 real screen+camera composition under the
    compositor frame-time budget (p95 < 16ms @ 60fps preview / < 30ms @ 30fps output);
    final recording shows no repeated frames from a late compositor.
