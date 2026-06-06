@@ -88,9 +88,14 @@ fails a "native" claim — by design.
   `MTLTexture` on-device.
 - The native-preview recording smoke now gates the produced MP4 with the startup-resolution
   and final-file analyzers, plus a duration check, so transient VideoToolbox progress
-  telemetry does not mask the decoded artifact. On 2026-06-06,
-  `pnpm smoke:recording-native-preview` passed at 1080p30 with a 15.07s file, startup and
-  final max repeated-frame run 2, preview 120.16fps, p95 interval 9.2ms, and 18ms A/V skew.
+  telemetry does not mask the decoded artifact. On 2026-06-06 after the command-driven
+  proof-host changes, `pnpm smoke:recording-native-preview` passed at 1080p30 with a
+  15.10s file, startup max repeated-frame run 1, final max repeated-frame run 2, preview
+  120.09fps, p95 interval 9.3ms, and 8ms A/V skew.
+- The preview-surface smoke now retries launch connection timeouts like the recording
+  smoke, and `pnpm smoke:preview-surface` passed after the proof-host changes at 120.6fps
+  initial, 120.3fps after resize, scene update 8.6ms, 108 compositor frames, and p95
+  interval 9.3ms.
 - Scene/transform math in `scene.rs` (tested) maps 1:1 to each `GpuSource.dest` rect.
 - Honest diagnostics expose `previewTransport`, `previewImagePollCounts`,
   `previewSurfaceBacking`, `recordingProtected`, `encodeBackend`, `compositorBackend`,
