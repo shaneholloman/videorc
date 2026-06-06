@@ -131,6 +131,12 @@ fails a "native" claim — by design.
   including source kind, name/id, and device id when available. The focused compositor
   regression verifies that a missing visible camera frame reports the specific camera
   source instead of the old generic `camera frame unavailable` reason.
+- 2026-06-06 source-aware fallback smoke: `pnpm smoke:recording-native-preview`
+  passed at 1080p30 with preview 120.24fps, proof-host p95 interval 9.40ms,
+  source-to-present p95/p99 11ms, compositor lag 0, startup/final max repeated-frame
+  run 2, `Metal targets 1`, `CPU fallback frames 279 (camera source "Camera"
+  id=source:camera frame unavailable)`, and 18ms A/V skew. FFmpeg speed/live FPS
+  telemetry still warned, but decoded startup/final-file gates passed.
 - A focused Metal regression now proves a synthetic test-pattern overlay scene can compose
   on Metal without requiring camera frames. Switching the default native-preview smoke to
   that fully Metal overlay path is still premature: the readback/encode path exposed the
