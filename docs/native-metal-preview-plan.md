@@ -56,6 +56,9 @@ fails a "native" claim — by design.
   a dedicated host seam and returns typed host command payloads with AppKit-converted
   bounds. The seam returns no activation yet, so the app still reports the Electron proof
   backing until the main-thread presenter runner presents real pixels.
+- Preview-surface runtime now preserves those native-host commands in a drainable FIFO, so
+  the future main-thread presenter loop can apply create/update/destroy in order instead
+  of losing the command emitted during the backend request.
 - A `NativePreviewPresenterRunner` now owns the AppKit overlay and a same-device Metal
   presenter on the main thread. It can apply host create/update/destroy commands and only
   returns native `CAMetalLayer` activation after `present_latest()` succeeds against the

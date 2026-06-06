@@ -7,7 +7,8 @@ use crate::compositor::{
 };
 use crate::diagnostics::{apply_preview_surface_resize, apply_runtime_diagnostics_snapshot};
 use crate::native_preview_host::{
-    NativePreviewHostActivation, NativePreviewHostLifecycle, NativePreviewHostLifecycleUpdate,
+    NativePreviewHostActivation, NativePreviewHostCommand, NativePreviewHostLifecycle,
+    NativePreviewHostLifecycleUpdate,
 };
 use crate::protocol::{
     PreviewSurfaceBacking, PreviewSurfaceBoundsParams, PreviewSurfaceCreateParams,
@@ -23,6 +24,7 @@ pub struct PreviewSurfaceRuntime {
     pub status: PreviewSurfaceStatus,
     run_id: Option<String>,
     native_host: NativePreviewHostLifecycle,
+    pending_native_host_commands: Vec<NativePreviewHostCommand>,
 }
 
 pub fn initial_preview_surface_state() -> PreviewSurfaceRuntime {
@@ -30,6 +32,7 @@ pub fn initial_preview_surface_state() -> PreviewSurfaceRuntime {
         status: unavailable_status(Some("Native preview surface is not running.".to_string())),
         run_id: None,
         native_host: NativePreviewHostLifecycle::default(),
+        pending_native_host_commands: Vec::new(),
     }
 }
 
@@ -77,7 +80,11 @@ pub async fn create_preview_surface(
     {
         let mut slot = state.preview_surface.lock().await;
         let host_update = slot.native_host.create(&bounds);
-        apply_native_host_activation(&mut status, host_update);
+        apply_native_host_update(
+            &mut status,
+            &mut slot.pending_native_host_commands,
+            host_update,
+        );
         slot.status = status.clone();
         slot.run_id = Some(run_id);
     }
@@ -113,7 +120,11 @@ pub async fn update_preview_surface_bounds(
                 Some("Native preview surface bounds saved; surface is not live.".to_string());
         } else {
             let host_update = slot.native_host.update_bounds(&params.bounds);
-            apply_native_host_activation(&mut next, host_update);
+            apply_native_host_update(
+                &mut next,
+                &mut slot.pending_native_host_commands,
+                host_update,
+            );
         }
         slot.status = next.clone();
         next
@@ -156,6 +167,17 @@ pub async fn destroy_preview_surface(state: &AppState) -> PreviewSurfaceStatus {
 
 pub async fn preview_surface_status(state: &AppState) -> PreviewSurfaceStatus {
     state.preview_surface.lock().await.status.clone()
+}
+
+#[allow(dead_code)]
+pub async fn take_native_preview_host_commands(state: &AppState) -> Vec<NativePreviewHostCommand> {
+    std::mem::take(
+        &mut state
+            .preview_surface
+            .lock()
+            .await
+            .pending_native_host_commands,
+    )
 }
 
 pub async fn update_preview_surface_present(
@@ -237,15 +259,24 @@ async fn stop_current_surface(state: &AppState) {
     stop_compositor(state).await;
     {
         let mut slot = state.preview_surface.lock().await;
-        let _ = slot.native_host.destroy();
+        let had_surface = slot.run_id.is_some() || slot.status.state == PreviewSurfaceState::Live;
+        let host_update = slot.native_host.destroy();
+        if had_surface && let Some(command) = host_update.command {
+            slot.pending_native_host_commands.push(command);
+        }
         slot.run_id = None;
     }
 }
 
-fn apply_native_host_activation(
+fn apply_native_host_update(
     status: &mut PreviewSurfaceStatus,
+    pending_commands: &mut Vec<NativePreviewHostCommand>,
     update: NativePreviewHostLifecycleUpdate,
 ) {
+    if let Some(command) = update.command {
+        pending_commands.push(command);
+    }
+
     let Some(NativePreviewHostActivation {
         transport,
         backing,
@@ -395,6 +426,47 @@ mod tests {
                 .map(|bounds| bounds.drawable_size()),
             Some((1280.0, 720.0))
         );
+    }
+
+    #[tokio::test]
+    async fn native_host_commands_drain_in_lifecycle_order() {
+        let state = test_state();
+        create_preview_surface(
+            state.clone(),
+            PreviewSurfaceCreateParams {
+                bounds: bounds(800.0, 450.0),
+                target_fps: 60,
+                source: PreviewSurfaceSource::Synthetic,
+            },
+        )
+        .await;
+        update_preview_surface_bounds(
+            &state,
+            PreviewSurfaceBoundsParams {
+                bounds: bounds(640.0, 360.0),
+            },
+        )
+        .await;
+        destroy_preview_surface(&state).await;
+
+        let commands = take_native_preview_host_commands(&state).await;
+
+        let kinds = commands
+            .iter()
+            .map(|command| command.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                NativePreviewHostCommandKind::Create,
+                NativePreviewHostCommandKind::UpdateBounds,
+                NativePreviewHostCommandKind::Destroy,
+            ]
+        );
+        assert!(commands[0].bounds.is_some());
+        assert!(commands[1].bounds.is_some());
+        assert_eq!(commands[2].bounds, None);
+        assert!(take_native_preview_host_commands(&state).await.is_empty());
     }
 
     #[tokio::test]
