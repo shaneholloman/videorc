@@ -136,9 +136,7 @@ fails a "native" claim — by design.
   parameter sets plus sample payload into Annex B start-code-prefixed bytes through a
   realtime H.264 session. The retained-target encode path now exposes a reusable
   `VideoToolboxH264AnnexBFrame` with the Annex B bytes, frame timing, NAL types, and IDR
-  evidence for the bridge to consume next; the production recording bridge still needs to
-  replace the raw-YUV FIFO copy before
-  `encoderBridgeZeroCopyFrames` can grow.
+  evidence for the bridge to consume.
 - The production recording bridge now retains the actual Metal target handle on each fed
   compositor frame and has an opt-in sidecar VideoToolbox probe, enabled with
   `VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_PROBE=1`. The sidecar encodes retained targets on
@@ -156,6 +154,18 @@ fails a "native" claim — by design.
   128ms, startup/final max repeated-frame run 2, and 95ms A/V skew. The report-only
   warnings are the expected evidence: VideoToolbox accepted the retained targets on the
   bridge thread, but the raw FIFO path still dominates throughput and duration.
+- The recording bridge now has an opt-in production-shaped VideoToolbox output mode:
+  `VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT=videotoolbox-h264`. In that mode the FIFO carries
+  Annex B H.264 bytes from retained Metal targets, FFmpeg declares the input as `h264`,
+  maps `0:v`, uses `-c:v copy`, and applies wall-clock input timestamps so the copied
+  stream keeps recording-duration timing. On 2026-06-06,
+  `VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT=videotoolbox-h264 pnpm
+  probe:recording-native-preview:videotoolbox` completed in report-only mode with `raw
+  copied 0`, `Metal copied 0`, `zero-copy 35`, `Metal handles 35`, duration 6.06s, min
+  encoder speed 2.23x, and 7ms A/V skew. The remaining failure is now explicit:
+  VideoToolbox output only delivered about 7.85fps / 51 final frames for the 1080p30
+  source-complete scene, so the next slice is encoder cadence/off-thread throughput
+  rather than raw FIFO copying.
 - The real-source acceptance gate now fails GPU-required runs when
   `encoderBridgeMetalTargetFrames` stays at 0, preventing a session from passing on a
   generic Metal compositor label while the recording bridge never saw an IOSurface-backed

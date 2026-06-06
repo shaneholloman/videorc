@@ -40,7 +40,9 @@ use crate::diagnostics::{
     apply_recording_startup_barrier_stats, apply_runtime_diagnostics_snapshot, apply_stream_health,
     starting_diagnostics,
 };
-use crate::encoder_bridge::{EncoderBridgeRecordingSession, start_synthetic_recording_bridge};
+use crate::encoder_bridge::{
+    EncoderBridgeRecordingSession, EncoderBridgeVideoOutput, start_synthetic_recording_bridge,
+};
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
 use crate::ffmpeg_work::{CapturePermit, MaintenanceCancelToken};
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
@@ -100,6 +102,7 @@ const MAX_PENDING_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 const SCREEN_OVERLAY_FPS: u32 = 4;
 const SCREEN_OVERLAY_FIFO_OPEN_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
 const POST_RECORDING_GATE_IDLE_DELAY: Duration = Duration::from_secs(30);
+const ENCODER_BRIDGE_VIDEO_OUTPUT_ENV: &str = "VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT";
 
 #[derive(Debug)]
 pub struct ActiveRecording {
@@ -440,6 +443,11 @@ pub async fn start_session(
     } else {
         None
     };
+    let encoder_bridge_video_output = if use_encoder_bridge {
+        recording_encoder_bridge_video_output()
+    } else {
+        EncoderBridgeVideoOutput::RawYuv420p
+    };
     let screen_overlay_fifo =
         if !use_encoder_bridge && (active_screen.is_some() || params.output.stream_enabled) {
             let fifo_path = screen_overlay_fifo_path(&session_id);
@@ -544,7 +552,13 @@ pub async fn start_session(
             .as_deref()
             .context("Encoder bridge FIFO path was not prepared")?;
         if params.output.record_enabled && !params.output.stream_enabled {
-            bridge_recording_ffmpeg_args(&capture, &params, output_path.as_deref(), fifo_path)?
+            bridge_recording_ffmpeg_args(
+                &capture,
+                &params,
+                output_path.as_deref(),
+                fifo_path,
+                encoder_bridge_video_output,
+            )?
         } else {
             bridge_compositor_ffmpeg_args(
                 &capture,
@@ -552,6 +566,7 @@ pub async fn start_session(
                 output_path.as_deref(),
                 &stream_targets,
                 fifo_path,
+                encoder_bridge_video_output,
             )?
         }
     } else {
@@ -611,6 +626,7 @@ pub async fn start_session(
             params.output.video.height,
             bridge_fifo_path,
             encoder_bridge_frame_store.clone(),
+            encoder_bridge_video_output,
         )?)
     } else {
         None
@@ -3033,6 +3049,26 @@ fn compositor_encoder_bridge_disabled(record_enabled: bool, stream_enabled: bool
         )
 }
 
+fn recording_encoder_bridge_video_output() -> EncoderBridgeVideoOutput {
+    parse_encoder_bridge_video_output(
+        std::env::var(ENCODER_BRIDGE_VIDEO_OUTPUT_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_encoder_bridge_video_output(setting: Option<&str>) -> EncoderBridgeVideoOutput {
+    let Some(setting) = setting else {
+        return EncoderBridgeVideoOutput::RawYuv420p;
+    };
+    match setting.trim().to_ascii_lowercase().as_str() {
+        "videotoolbox-h264" | "h264" | "annex-b" | "annexb" => {
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+        }
+        _ => EncoderBridgeVideoOutput::RawYuv420p,
+    }
+}
+
 fn encoder_bridge_recording_disabled(setting: Option<&str>) -> bool {
     encoder_bridge_disabled_setting(setting)
 }
@@ -3072,10 +3108,18 @@ fn bridge_recording_ffmpeg_args(
     params: &StartSessionParams,
     output_path: Option<&Path>,
     fifo_path: &Path,
+    video_output: EncoderBridgeVideoOutput,
 ) -> Result<Vec<String>> {
     let output_path =
         output_path.context("Encoder bridge recording requires a local output path")?;
-    bridge_compositor_ffmpeg_args(capture, params, Some(output_path), &[], fifo_path)
+    bridge_compositor_ffmpeg_args(
+        capture,
+        params,
+        Some(output_path),
+        &[],
+        fifo_path,
+        video_output,
+    )
 }
 
 fn bridge_compositor_ffmpeg_args(
@@ -3084,6 +3128,7 @@ fn bridge_compositor_ffmpeg_args(
     output_path: Option<&Path>,
     stream_targets: &[StreamTarget],
     fifo_path: &Path,
+    video_output: EncoderBridgeVideoOutput,
 ) -> Result<Vec<String>> {
     let mut args = vec![
         "-y".to_string(),
@@ -3096,44 +3141,59 @@ fn bridge_compositor_ffmpeg_args(
         "-progress".to_string(),
         "pipe:2".to_string(),
     ];
-    let input_layout = append_bridge_recording_input_args(&mut args, capture, params, fifo_path);
-    args.extend([
-        "-filter_complex".to_string(),
-        bridge_recording_video_filter(&params.output.video),
-        "-map".to_string(),
-        "[v_main]".to_string(),
-    ]);
+    let input_layout =
+        append_bridge_recording_input_args(&mut args, capture, params, fifo_path, video_output);
+    match video_output {
+        EncoderBridgeVideoOutput::RawYuv420p => {
+            args.extend([
+                "-filter_complex".to_string(),
+                bridge_recording_video_filter(&params.output.video),
+                "-map".to_string(),
+                "[v_main]".to_string(),
+            ]);
+        }
+        EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => {
+            args.extend(["-map".to_string(), "0:v".to_string()]);
+        }
+    }
     append_audio_output_args(&mut args, &input_layout);
-    args.extend([
-        "-r".to_string(),
-        params.output.video.fps.to_string(),
-        "-pix_fmt".to_string(),
-        "yuv420p".to_string(),
-        // Phase 4: prefer hardware encoding on the shared-compositor path, like OBS and
-        // the legacy path. Software libx264 ultrafast was a CPU-pressure source under
-        // real 1080p/1440p load; h264_videotoolbox offloads the encode to the media
-        // engine. `-allow_sw 1` keeps a software fallback so the encode never fails.
-        "-c:v".to_string(),
-        "h264_videotoolbox".to_string(),
-        "-allow_sw".to_string(),
-        "1".to_string(),
-        "-realtime".to_string(),
-        "1".to_string(),
-        "-prio_speed".to_string(),
-        "1".to_string(),
-        "-b:v".to_string(),
-        format!("{}k", params.output.video.bitrate_kbps),
-        "-maxrate".to_string(),
-        format!("{}k", params.output.video.bitrate_kbps),
-        "-bufsize".to_string(),
-        format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
-        "-g".to_string(),
-        params.output.video.fps.saturating_mul(2).to_string(),
-        "-force_key_frames".to_string(),
-        "expr:gte(t,n_forced*2)".to_string(),
-        "-flags".to_string(),
-        "+global_header".to_string(),
-    ]);
+    match video_output {
+        EncoderBridgeVideoOutput::RawYuv420p => {
+            args.extend([
+                "-r".to_string(),
+                params.output.video.fps.to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+                // Phase 4: prefer hardware encoding on the shared-compositor path, like OBS and
+                // the legacy path. Software libx264 ultrafast was a CPU-pressure source under
+                // real 1080p/1440p load; h264_videotoolbox offloads the encode to the media
+                // engine. `-allow_sw 1` keeps a software fallback so the encode never fails.
+                "-c:v".to_string(),
+                "h264_videotoolbox".to_string(),
+                "-allow_sw".to_string(),
+                "1".to_string(),
+                "-realtime".to_string(),
+                "1".to_string(),
+                "-prio_speed".to_string(),
+                "1".to_string(),
+                "-b:v".to_string(),
+                format!("{}k", params.output.video.bitrate_kbps),
+                "-maxrate".to_string(),
+                format!("{}k", params.output.video.bitrate_kbps),
+                "-bufsize".to_string(),
+                format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
+                "-g".to_string(),
+                params.output.video.fps.saturating_mul(2).to_string(),
+                "-force_key_frames".to_string(),
+                "expr:gte(t,n_forced*2)".to_string(),
+                "-flags".to_string(),
+                "+global_header".to_string(),
+            ]);
+        }
+        EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => {
+            args.extend(["-c:v".to_string(), "copy".to_string()]);
+        }
+    }
     append_audio_encoding_args(
         &mut args,
         &input_layout,
@@ -3185,20 +3245,37 @@ fn append_bridge_recording_input_args(
     capture: &CaptureInputs,
     params: &StartSessionParams,
     fifo_path: &Path,
+    video_output: EncoderBridgeVideoOutput,
 ) -> InputLayout {
     let video = &params.output.video;
-    args.extend([
-        "-f".to_string(),
-        "rawvideo".to_string(),
-        "-pix_fmt".to_string(),
-        "yuv420p".to_string(),
-        "-video_size".to_string(),
-        format!("{}x{}", video.width, video.height),
-        "-framerate".to_string(),
-        video.fps.to_string(),
-        "-i".to_string(),
-        fifo_path.display().to_string(),
-    ]);
+    match video_output {
+        EncoderBridgeVideoOutput::RawYuv420p => {
+            args.extend([
+                "-f".to_string(),
+                "rawvideo".to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+                "-video_size".to_string(),
+                format!("{}x{}", video.width, video.height),
+                "-framerate".to_string(),
+                video.fps.to_string(),
+                "-i".to_string(),
+                fifo_path.display().to_string(),
+            ]);
+        }
+        EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => {
+            args.extend([
+                "-use_wallclock_as_timestamps".to_string(),
+                "1".to_string(),
+                "-f".to_string(),
+                "h264".to_string(),
+                "-framerate".to_string(),
+                video.fps.to_string(),
+                "-i".to_string(),
+                fifo_path.display().to_string(),
+            ]);
+        }
+    }
 
     let mut next_input_index = 1;
     let mut audio_inputs = Vec::new();
@@ -5681,6 +5758,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-bridge-test.mkv")),
             fifo_path,
+            EncoderBridgeVideoOutput::RawYuv420p,
         )
         .unwrap();
 
@@ -5725,6 +5803,70 @@ mod tests {
     }
 
     #[test]
+    fn bridge_recording_args_can_copy_videotoolbox_h264_fifo() {
+        let params = base_params(true, false);
+        let fifo_path = Path::new("/tmp/videorc-bridge-input.h264");
+        let args = bridge_recording_ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: None,
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-bridge-test.mkv")),
+            fifo_path,
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+        )
+        .unwrap();
+
+        assert_eq!(
+            ffmpeg_inputs(&args),
+            vec![
+                fifo_path.display().to_string(),
+                "sine=frequency=880:sample_rate=48000".to_string()
+            ]
+        );
+        assert_eq!(
+            input_arg_value(&args, &fifo_path.display().to_string(), "-f"),
+            Some("h264")
+        );
+        assert_eq!(
+            input_arg_value(
+                &args,
+                &fifo_path.display().to_string(),
+                "-use_wallclock_as_timestamps"
+            ),
+            Some("1")
+        );
+        assert_eq!(
+            input_arg_value(&args, &fifo_path.display().to_string(), "-framerate"),
+            Some("30")
+        );
+        assert!(!input_has_arg(
+            &args,
+            &fifo_path.display().to_string(),
+            "-pix_fmt"
+        ));
+        assert!(!input_has_arg(
+            &args,
+            &fifo_path.display().to_string(),
+            "-video_size"
+        ));
+        assert_eq!(arg_value(&args, "-c:v"), Some("copy"));
+        assert_eq!(arg_value(&args, "-c:a"), Some("pcm_s16le"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-map" && pair[1] == "0:v")
+        );
+        assert!(args.iter().any(|arg| arg == "1:a?"));
+        assert!(args.iter().any(|arg| arg == "-shortest"));
+        assert!(arg_value(&args, "-filter_complex").is_none());
+        assert!(arg_value(&args, "-allow_sw").is_none());
+        assert!(arg_value(&args, "-realtime").is_none());
+        assert!(arg_value(&args, "-prio_speed").is_none());
+    }
+
+    #[test]
     fn bridge_stream_only_args_use_raw_yuv_video_and_flv_output() {
         let params = base_params(false, true);
         let fifo_path = Path::new("/tmp/videorc-bridge-stream.yuv");
@@ -5739,6 +5881,7 @@ mod tests {
             None,
             &targets,
             fifo_path,
+            EncoderBridgeVideoOutput::RawYuv420p,
         )
         .unwrap();
 
@@ -5781,6 +5924,7 @@ mod tests {
             None,
             &targets,
             fifo_path,
+            EncoderBridgeVideoOutput::RawYuv420p,
         )
         .unwrap();
 
@@ -5822,6 +5966,7 @@ mod tests {
             Some(Path::new("/tmp/videorc-bridge-record-stream.mkv")),
             &targets,
             fifo_path,
+            EncoderBridgeVideoOutput::RawYuv420p,
         )
         .unwrap();
 
@@ -5885,6 +6030,22 @@ mod tests {
         assert!(encoder_bridge_streaming_disabled(Some("off")));
         assert!(encoder_bridge_disabled_setting(Some("0")));
         assert!(!encoder_bridge_recording_disabled(None));
+        assert_eq!(
+            parse_encoder_bridge_video_output(None),
+            EncoderBridgeVideoOutput::RawYuv420p
+        );
+        assert_eq!(
+            parse_encoder_bridge_video_output(Some("raw")),
+            EncoderBridgeVideoOutput::RawYuv420p
+        );
+        assert_eq!(
+            parse_encoder_bridge_video_output(Some("videotoolbox-h264")),
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+        );
+        assert_eq!(
+            parse_encoder_bridge_video_output(Some(" annex-b ")),
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+        );
     }
 
     #[test]

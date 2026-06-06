@@ -27,10 +27,24 @@ use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::protocol::{EncoderBridgeSyntheticParams, EncoderBridgeSyntheticResult};
 use crate::state::AppState;
 #[cfg(target_os = "macos")]
-use crate::video_toolbox_encoder::{VideoToolboxFrameTiming, VideoToolboxH264Session};
+use crate::video_toolbox_encoder::{
+    VideoToolboxFrameTiming, VideoToolboxH264AnnexBFrame, VideoToolboxH264Session,
+};
 
 const ENCODER_BRIDGE_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
 const VIDEOTOOLBOX_PROBE_ENV: &str = "VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_PROBE";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderBridgeVideoOutput {
+    RawYuv420p,
+    VideoToolboxH264AnnexB,
+}
+
+impl EncoderBridgeVideoOutput {
+    const fn uses_video_toolbox(self) -> bool {
+        matches!(self, Self::VideoToolboxH264AnnexB)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EncoderBridgeSettings {
@@ -329,6 +343,7 @@ pub fn start_synthetic_recording_bridge(
     height: u32,
     fifo_path: PathBuf,
     frame_store: Option<CompositorFrameStore>,
+    video_output: EncoderBridgeVideoOutput,
 ) -> Result<EncoderBridgeRecordingSession> {
     let byte_len = raw_yuv420p_len(width, height)?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -360,6 +375,7 @@ pub fn start_synthetic_recording_bridge(
                 byte_len,
                 fifo_path: writer_fifo_path,
                 frame_store,
+                video_output,
                 stop: writer_stop,
                 diagnostics_tx,
             };
@@ -547,6 +563,7 @@ struct SyntheticRecordingWriterParams {
     stop: Arc<AtomicBool>,
     fifo_path: PathBuf,
     frame_store: Option<CompositorFrameStore>,
+    video_output: EncoderBridgeVideoOutput,
     diagnostics_tx: mpsc::UnboundedSender<EncoderBridgeWriterEvent>,
 }
 
@@ -568,6 +585,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         stop,
         fifo_path,
         frame_store,
+        video_output,
         diagnostics_tx,
     } = params;
     let mut fifo = match open_recording_fifo_writer(&fifo_path, &stop) {
@@ -607,12 +625,13 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut raw_video_copied_frames = 0_u64;
     let mut metal_target_copied_frames = 0_u64;
     let mut metal_target_handle_frames = 0_u64;
+    let mut zero_copy_frames = 0_u64;
     let mut video_toolbox_probe_frames = 0_u64;
     let mut video_toolbox_probe_bytes = 0_u64;
     let mut video_toolbox_probe_errors = 0_u64;
     #[cfg(target_os = "macos")]
     let mut video_toolbox_probe = EncoderBridgeVideoToolboxProbe::new(
-        encoder_bridge_video_toolbox_probe_enabled(),
+        video_output.uses_video_toolbox() || encoder_bridge_video_toolbox_probe_enabled(),
         width,
         height,
         target_fps,
@@ -627,24 +646,62 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         }
         next_frame_at += frame_interval;
         sequence = sequence.saturating_add(1);
-        let fed = copy_next_compositor_frame(
-            frame_store.as_ref(),
-            &mut bytes,
-            last_fed_sequence,
-            if consecutive_repeated_frames > 0 {
-                frame_interval + frame_interval
-            } else {
-                frame_interval
-            },
-        );
+        let wait_budget = if consecutive_repeated_frames > 0 {
+            frame_interval + frame_interval
+        } else {
+            frame_interval
+        };
+        let fed = match video_output {
+            EncoderBridgeVideoOutput::RawYuv420p => copy_next_compositor_frame(
+                frame_store.as_ref(),
+                &mut bytes,
+                last_fed_sequence,
+                wait_budget,
+            ),
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => {
+                next_compositor_frame(frame_store.as_ref(), last_fed_sequence, wait_budget)
+            }
+        };
         let frame_source =
             classify_bridge_frame(last_fed_sequence, fed.as_ref().map(|frame| frame.sequence));
         match frame_source {
             BridgeFrameSource::SyntheticFallback => {
-                let frame = source.render(sequence, width, height);
-                render_synthetic_yuv420p_frame(&frame, &mut bytes);
                 synthetic_fallback_frames = synthetic_fallback_frames.saturating_add(1);
                 consecutive_repeated_frames = 0;
+                if matches!(
+                    video_output,
+                    EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+                ) {
+                    emit_encoder_bridge_diagnostics_from_thread(
+                        &diagnostics_tx,
+                        session_id.clone(),
+                        target_fps,
+                        EncoderBridgeRuntimeStats {
+                            queue_depth,
+                            input_fps: measured_input_fps(frames_in_window, window_started_at),
+                            dropped_frames: 0,
+                            encoder_speed: None,
+                            repeated_fed_frames,
+                            synthetic_fallback_frames,
+                            source_to_encode_age_ms: max_source_to_encode_age_ms,
+                            metal_target_frames,
+                            raw_video_copied_frames,
+                            metal_target_copied_frames,
+                            metal_target_handle_frames,
+                            zero_copy_frames,
+                            video_toolbox_probe_frames,
+                            video_toolbox_probe_bytes,
+                            video_toolbox_probe_errors,
+                        },
+                        Some(
+                            "VideoToolbox encoder bridge had no compositor frame to encode"
+                                .to_string(),
+                        ),
+                    );
+                    break;
+                }
+                let frame = source.render(sequence, width, height);
+                render_synthetic_yuv420p_frame(&frame, &mut bytes);
             }
             BridgeFrameSource::Repeated => {
                 repeated_fed_frames = repeated_fed_frames.saturating_add(1);
@@ -667,11 +724,14 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             .is_some_and(|frame| frame.has_metal_export_handle);
 
         #[cfg(target_os = "macos")]
-        if let Some(frame) = fed.as_ref() {
+        if matches!(video_output, EncoderBridgeVideoOutput::RawYuv420p)
+            && let Some(frame) = fed.as_ref()
+        {
             match video_toolbox_probe.encode_frame(frame, sequence.saturating_sub(1)) {
-                VideoToolboxProbeOutcome::Encoded { bytes } => {
+                VideoToolboxProbeOutcome::Encoded { frame } => {
                     video_toolbox_probe_frames = video_toolbox_probe_frames.saturating_add(1);
-                    video_toolbox_probe_bytes = video_toolbox_probe_bytes.saturating_add(bytes);
+                    video_toolbox_probe_bytes =
+                        video_toolbox_probe_bytes.saturating_add(frame.bytes.len() as u64);
                 }
                 VideoToolboxProbeOutcome::Failed => {
                     video_toolbox_probe_errors = video_toolbox_probe_errors.saturating_add(1);
@@ -681,7 +741,62 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         }
 
         queue_depth = 1;
-        if let Err(error) = fifo.write_all(&bytes) {
+        let write_result = match video_output {
+            EncoderBridgeVideoOutput::RawYuv420p => fifo.write_all(&bytes).map(|()| {
+                raw_video_copied_frames = raw_video_copied_frames.saturating_add(1);
+                if wrote_metal_target_frame {
+                    metal_target_frames = metal_target_frames.saturating_add(1);
+                    metal_target_copied_frames = metal_target_copied_frames.saturating_add(1);
+                }
+                if wrote_metal_target_handle {
+                    metal_target_handle_frames = metal_target_handle_frames.saturating_add(1);
+                }
+            }),
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => {
+                #[cfg(target_os = "macos")]
+                {
+                    match fed.as_ref() {
+                        Some(frame) => match video_toolbox_probe
+                            .encode_frame(frame, sequence.saturating_sub(1))
+                        {
+                            VideoToolboxProbeOutcome::Encoded { frame } => {
+                                fifo.write_all(&frame.bytes).map(|()| {
+                                    if wrote_metal_target_frame {
+                                        metal_target_frames = metal_target_frames.saturating_add(1);
+                                    }
+                                    if wrote_metal_target_handle {
+                                        metal_target_handle_frames =
+                                            metal_target_handle_frames.saturating_add(1);
+                                    }
+                                    zero_copy_frames = zero_copy_frames.saturating_add(1);
+                                })
+                            }
+                            VideoToolboxProbeOutcome::Failed => {
+                                video_toolbox_probe_errors =
+                                    video_toolbox_probe_errors.saturating_add(1);
+                                Err(io::Error::other(
+                                    "VideoToolbox encoder bridge failed to encode retained target",
+                                ))
+                            }
+                            VideoToolboxProbeOutcome::Disabled
+                            | VideoToolboxProbeOutcome::NoTarget => Err(io::Error::other(
+                                "VideoToolbox encoder bridge had no retained target",
+                            )),
+                        },
+                        None => Err(io::Error::other(
+                            "VideoToolbox encoder bridge had no compositor frame",
+                        )),
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Err(io::Error::other(
+                        "VideoToolbox encoder bridge output is only available on macOS",
+                    ))
+                }
+            }
+        };
+        if let Err(error) = write_result {
             emit_encoder_bridge_diagnostics_from_thread(
                 &diagnostics_tx,
                 session_id.clone(),
@@ -698,7 +813,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     raw_video_copied_frames,
                     metal_target_copied_frames,
                     metal_target_handle_frames,
-                    zero_copy_frames: 0,
+                    zero_copy_frames,
                     video_toolbox_probe_frames,
                     video_toolbox_probe_bytes,
                     video_toolbox_probe_errors,
@@ -710,14 +825,6 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             break;
         }
         queue_depth = 0;
-        raw_video_copied_frames = raw_video_copied_frames.saturating_add(1);
-        if wrote_metal_target_frame {
-            metal_target_frames = metal_target_frames.saturating_add(1);
-            metal_target_copied_frames = metal_target_copied_frames.saturating_add(1);
-        }
-        if wrote_metal_target_handle {
-            metal_target_handle_frames = metal_target_handle_frames.saturating_add(1);
-        }
         frames_in_window = frames_in_window.saturating_add(1);
 
         if window_started_at.elapsed() >= ENCODER_BRIDGE_DIAGNOSTIC_WINDOW {
@@ -737,7 +844,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     raw_video_copied_frames,
                     metal_target_copied_frames,
                     metal_target_handle_frames,
-                    zero_copy_frames: 0,
+                    zero_copy_frames,
                     video_toolbox_probe_frames,
                     video_toolbox_probe_bytes,
                     video_toolbox_probe_errors,
@@ -767,7 +874,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             raw_video_copied_frames,
             metal_target_copied_frames,
             metal_target_handle_frames,
-            zero_copy_frames: 0,
+            zero_copy_frames,
             video_toolbox_probe_frames,
             video_toolbox_probe_bytes,
             video_toolbox_probe_errors,
@@ -788,11 +895,11 @@ struct EncoderBridgeVideoToolboxProbe {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum VideoToolboxProbeOutcome {
     Disabled,
     NoTarget,
-    Encoded { bytes: u64 },
+    Encoded { frame: VideoToolboxH264AnnexBFrame },
     Failed,
 }
 
@@ -844,20 +951,19 @@ impl EncoderBridgeVideoToolboxProbe {
                 return VideoToolboxProbeOutcome::Failed;
             }
         };
-        let result = match session.encode_retained_target_with_timing(target.as_ref(), timing) {
-            Ok(result) => result,
-            Err(_) => {
-                self.disabled_after_error = true;
-                return VideoToolboxProbeOutcome::Failed;
-            }
-        };
-        if result.frame_dropped || result.copied_sample_bytes == 0 {
+        let frame =
+            match session.encode_retained_target_annex_b_with_timing(target.as_ref(), timing) {
+                Ok(frame) => frame,
+                Err(_) => {
+                    self.disabled_after_error = true;
+                    return VideoToolboxProbeOutcome::Failed;
+                }
+            };
+        if frame.bytes.is_empty() {
             self.disabled_after_error = true;
             return VideoToolboxProbeOutcome::Failed;
         }
-        VideoToolboxProbeOutcome::Encoded {
-            bytes: result.copied_sample_bytes as u64,
-        }
+        VideoToolboxProbeOutcome::Encoded { frame }
     }
 
     fn prepare_session(&mut self) -> Result<()> {
@@ -911,6 +1017,25 @@ fn copy_latest_compositor_frame(
     })
 }
 
+fn latest_compositor_frame(
+    frame_store: Option<&CompositorFrameStore>,
+) -> Option<FedCompositorFrame> {
+    let frame = frame_store?
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest()?;
+    #[cfg(target_os = "macos")]
+    let metal_target = frame.metadata.metal_target_pixel_buffer();
+    Some(FedCompositorFrame {
+        sequence: frame.sequence,
+        age_ms: frame.captured_at.elapsed().as_millis() as u64,
+        has_metal_iosurface_target: frame.pixel_format.has_metal_iosurface_target(),
+        has_metal_export_handle: frame.metadata.has_metal_iosurface_target(),
+        #[cfg(target_os = "macos")]
+        metal_target,
+    })
+}
+
 fn copy_next_compositor_frame(
     frame_store: Option<&CompositorFrameStore>,
     bytes: &mut [u8],
@@ -924,6 +1049,30 @@ fn copy_next_compositor_frame(
     let started_at = Instant::now();
     loop {
         let frame = copy_latest_compositor_frame(frame_store, bytes);
+        if frame
+            .as_ref()
+            .is_some_and(|frame| Some(frame.sequence) != previous_sequence)
+            || started_at.elapsed() >= wait_budget
+        {
+            return frame;
+        }
+        let remaining = wait_budget.saturating_sub(started_at.elapsed());
+        thread::sleep(remaining.min(Duration::from_millis(2)));
+    }
+}
+
+fn next_compositor_frame(
+    frame_store: Option<&CompositorFrameStore>,
+    previous_sequence: Option<u64>,
+    wait_budget: Duration,
+) -> Option<FedCompositorFrame> {
+    if previous_sequence.is_none() || wait_budget.is_zero() {
+        return latest_compositor_frame(frame_store);
+    }
+
+    let started_at = Instant::now();
+    loop {
+        let frame = latest_compositor_frame(frame_store);
         if frame
             .as_ref()
             .is_some_and(|frame| Some(frame.sequence) != previous_sequence)
@@ -1231,6 +1380,34 @@ mod tests {
         assert!(fed.has_metal_iosurface_target);
         assert!(!fed.has_metal_export_handle);
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn next_compositor_frame_reports_metadata_without_yuv_copy_buffer() {
+        let width = 64;
+        let height = 36;
+        let frame_store = Arc::new(std::sync::Mutex::new(crate::frame_store::FrameStore::new(
+            2,
+        )));
+        {
+            let mut store = frame_store.lock().unwrap();
+            let buffer = store.checkout_buffer(raw_yuv420p_len(width, height).unwrap());
+            store.publish(
+                14,
+                width,
+                height,
+                CompositorPixelFormat::yuv420p_with_metal_iosurface_target(width, height),
+                Instant::now(),
+                buffer,
+            );
+        }
+
+        let fed = next_compositor_frame(Some(&frame_store), None, Duration::ZERO)
+            .expect("ready compositor frame");
+
+        assert_eq!(fed.sequence, 14);
+        assert!(fed.has_metal_iosurface_target);
+        assert!(!fed.has_metal_export_handle);
     }
 
     #[cfg(target_os = "macos")]
