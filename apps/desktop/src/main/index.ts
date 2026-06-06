@@ -108,6 +108,8 @@ function idleNativePreviewSurfaceStatus(message = 'Native preview surface is not
     height: 0,
     framesRendered: 0,
     droppedFrames: 0,
+    framePollingSuppressed: false,
+    sourcePixelsPresent: false,
     updatedAt: new Date().toISOString(),
     message
   }
@@ -705,6 +707,8 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
               intervalP50Ms: percentile(intervals, 50),
               intervalP95Ms: percentile(intervals, 95),
               intervalP99Ms: percentile(intervals, 99),
+              framePollingSuppressed,
+              sourcePixelsPresent: liveLayerCount > 0,
               blankFrames: 0,
               width: window.innerWidth,
               height: window.innerHeight
@@ -842,6 +846,8 @@ async function createNativePreviewSurface(bounds: PreviewSurfaceBounds): Promise
     presentFps: nativePreviewSurfaceStatus.presentFps,
     intervalP95Ms: nativePreviewSurfaceStatus.intervalP95Ms,
     intervalP99Ms: nativePreviewSurfaceStatus.intervalP99Ms,
+    framePollingSuppressed: nativePreviewSurfaceFramePollingSuppressed,
+    sourcePixelsPresent: nativePreviewSurfaceStatus.sourcePixelsPresent,
     bounds,
     startedAt: nativePreviewSurfaceStatus.startedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -1005,6 +1011,7 @@ async function presentNativePreviewSurfaceCompositor(
   const presentFps = finiteMetric(metrics?.measuredFps)
   const intervalP95Ms = finiteMetric(metrics?.intervalP95Ms)
   const intervalP99Ms = finiteMetric(metrics?.intervalP99Ms)
+  const liveLayerCount = finiteMetric(metrics?.liveLayerCount) ?? 0
   nativePreviewSurfaceStatus = {
     ...nativePreviewSurfaceStatus,
     source: hasScreen ? 'screen' : hasCamera ? 'camera' : nativePreviewSurfaceStatus.source,
@@ -1019,6 +1026,8 @@ async function presentNativePreviewSurfaceCompositor(
     presentFps,
     intervalP95Ms,
     intervalP99Ms,
+    framePollingSuppressed: nativePreviewSurfaceFramePollingSuppressed || status.suppressFramePolling === true,
+    sourcePixelsPresent: liveLayerCount > 0,
     updatedAt: new Date().toISOString(),
     message: status.state === 'live' ? 'Electron proof preview surface is displaying compositor output.' : status.message
   }
@@ -1038,6 +1047,8 @@ async function setNativePreviewSurfaceFramePollingSuppressed(
   }
   nativePreviewSurfaceStatus = {
     ...nativePreviewSurfaceStatus,
+    framePollingSuppressed: suppressed,
+    sourcePixelsPresent: suppressed ? false : nativePreviewSurfaceStatus.sourcePixelsPresent,
     updatedAt: new Date().toISOString(),
     message: suppressed
       ? 'Electron proof preview surface frame polling is suppressed while recording.'
@@ -1434,6 +1445,7 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
       throw new Error('Native preview surface did not expose metrics.')
     }
     const presentedFrameId = finiteMetric(metrics.presentedCompositorFrame)
+    const liveLayerCount = finiteMetric(metrics.liveLayerCount) ?? 0
     nativePreviewSurfaceStatus = {
       ...nativePreviewSurfaceStatus,
       framesRendered: Number(metrics.frames ?? nativePreviewSurfaceStatus.framesRendered),
@@ -1447,6 +1459,8 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
       presentFps: finiteMetric(metrics.measuredFps),
       intervalP95Ms: finiteMetric(metrics.intervalP95Ms),
       intervalP99Ms: finiteMetric(metrics.intervalP99Ms),
+      framePollingSuppressed: Boolean(metrics.framePollingSuppressed),
+      sourcePixelsPresent: liveLayerCount > 0,
       updatedAt: new Date().toISOString()
     }
     return {

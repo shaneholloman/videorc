@@ -301,6 +301,8 @@ const idleDiagnosticStats = (): DiagnosticStats => ({
   previewTransport: 'unavailable',
   previewSourceFps: {},
   previewSurfaceBacking: 'none',
+  previewFramePollingSuppressed: false,
+  previewSourcePixelsPresent: false,
   compositorPreviewSurfaceLockContentions: 0,
   compositorStatusLockContentions: 0,
   compositorCameraSourceTryLockMisses: 0,
@@ -342,6 +344,8 @@ const idlePreviewSurfaceStatus = (): PreviewSurfaceStatus => ({
   height: 0,
   framesRendered: 0,
   droppedFrames: 0,
+  framePollingSuppressed: false,
+  sourcePixelsPresent: false,
   updatedAt: new Date().toISOString(),
   message: 'Native preview surface is not running.'
 })
@@ -602,7 +606,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             inputToPresentLatencyP99Ms: surfaceStatus.inputToPresentLatencyP99Ms,
             presentFps: surfaceStatus.presentFps,
             intervalP95Ms: surfaceStatus.intervalP95Ms,
-            intervalP99Ms: surfaceStatus.intervalP99Ms
+            intervalP99Ms: surfaceStatus.intervalP99Ms,
+            framePollingSuppressed: surfaceStatus.framePollingSuppressed,
+            sourcePixelsPresent: surfaceStatus.sourcePixelsPresent
           }
           await activeClient.request<PreviewSurfaceStatus>('preview.surface.present', presentParams)
         }
@@ -2999,6 +3005,8 @@ function mergePreviewSurfaceHostStatus(
     presentFps: hostStatus.presentFps ?? backendStatus.presentFps,
     intervalP95Ms: hostStatus.intervalP95Ms ?? backendStatus.intervalP95Ms,
     intervalP99Ms: hostStatus.intervalP99Ms ?? backendStatus.intervalP99Ms,
+    framePollingSuppressed: hostStatus.framePollingSuppressed || backendStatus.framePollingSuppressed,
+    sourcePixelsPresent: hostStatus.sourcePixelsPresent || backendStatus.sourcePixelsPresent,
     bounds: hostStatus.bounds ?? backendStatus.bounds,
     startedAt: hostStatus.startedAt ?? backendStatus.startedAt,
     updatedAt: hostStatus.updatedAt,

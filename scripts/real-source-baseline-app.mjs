@@ -496,6 +496,7 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
 
   const minOf = (arr) => (arr.length ? Math.min(...arr) : null)
   const maxOf = (arr) => (arr.length ? Math.max(...arr) : null)
+  const anyTrue = (arr) => arr.some((value) => value === true)
   const lastDefined = (arr, key) => {
     for (let i = arr.length - 1; i >= 0; i -= 1) {
       const v = arr[i]?.[key]
@@ -517,6 +518,14 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     compositorCpuFallbackFrames: maxOf(measured.map((s) => s.compositorCpuFallbackFrames ?? 0)) ?? 0,
     previewTransport: strongestPreviewTransport(transportSamples),
     previewSurfaceBacking: strongestPreviewBacking(backingSamples),
+    previewFramePollingSuppressed: anyTrue([
+      ...measured.map((s) => s.previewFramePollingSuppressed),
+      ...surfaceSamples.map((s) => s.framePollingSuppressed),
+    ]),
+    previewSourcePixelsPresent: anyTrue([
+      ...measured.map((s) => s.previewSourcePixelsPresent),
+      ...surfaceSamples.map((s) => s.sourcePixelsPresent),
+    ]),
     encoderBridgeRepeatedFrames: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrames ?? 0)) ?? 0,
     encoderBridgeRepeatedFrameBursts: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrameBursts ?? 0)) ?? 0,
     encoderBridgeMaxRepeatedFrameRun: maxOf(measured.map((s) => s.encoderBridgeMaxRepeatedFrameRun ?? 0)) ?? 0,
@@ -761,6 +770,9 @@ function writeBaselineReport(
       `(p95 ${fmt(diagnostics.previewInputToPresentLatencyP95Ms, 0)}ms / p99 ${fmt(diagnostics.previewInputToPresentLatencyP99Ms, 0)}ms) | interval p95 max ${fmt(diagnostics.previewIntervalP95Ms)}ms`
   )
   lines.push(`- Preview frame lag/dropped frames: ${fmt(diagnostics.previewCompositorFrameLag, 0)} / ${diagnostics.previewDroppedFrames}`)
+  lines.push(
+    `- Preview source pixels: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed during run: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
+  )
   lines.push(`- Preview repeated frames: ${diagnostics.previewRepeatedFrames}`)
   lines.push(`- Source frame age (max): camera ${fmt(diagnostics.previewCameraFrameAgeMs, 0)}ms | screen ${fmt(diagnostics.previewScreenFrameAgeMs, 0)}ms`)
   lines.push(
@@ -917,6 +929,9 @@ function writeBlockedStartupReport({
     )
   }
   lines.push(`- Image polls at block: ${diagnostics.imagePollDuringSession.total ?? 'n/a'}`)
+  lines.push(
+    `- Preview source pixels at block: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
+  )
   lines.push(`- Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}`)
   lines.push(`- Mic: captured ${diagnostics.micCapturedFrames ?? 'n/a'} | dropped ${diagnostics.micDroppedFrames}`)
   if (previewSurfaceOutputFailures.length) {
@@ -979,6 +994,9 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
   )
   console.log(
     `Transport honesty: ${formatTransportHonesty({ previewTransport, diagnostics })}`
+  )
+  console.log(
+    `Preview source pixels: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
   )
   console.log(
     `Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}` +

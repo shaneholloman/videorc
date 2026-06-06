@@ -72,6 +72,8 @@ pub async fn create_preview_surface(
         present_fps: None,
         interval_p95_ms: None,
         interval_p99_ms: None,
+        frame_polling_suppressed: false,
+        source_pixels_present: false,
         bounds: Some(bounds.clone()),
         started_at: Some(now.clone()),
         updated_at: now,
@@ -156,6 +158,8 @@ pub async fn destroy_preview_surface(state: &AppState) -> PreviewSurfaceStatus {
         next.present_fps = None;
         next.interval_p95_ms = None;
         next.interval_p99_ms = None;
+        next.frame_polling_suppressed = false;
+        next.source_pixels_present = false;
         next.started_at = None;
         next.updated_at = Utc::now().to_rfc3339();
         next.message = Some("Native preview surface stopped.".to_string());
@@ -169,6 +173,8 @@ pub async fn destroy_preview_surface(state: &AppState) -> PreviewSurfaceStatus {
         next.preview_target_fps = None;
         next.preview_frame_age_ms = None;
         next.preview_surface_backing = PreviewSurfaceBacking::None;
+        next.preview_frame_polling_suppressed = false;
+        next.preview_source_pixels_present = false;
         next.preview_present_fps = None;
         next.preview_input_to_present_latency_ms = None;
         next.preview_input_to_present_latency_p50_ms = None;
@@ -248,6 +254,8 @@ pub async fn update_preview_surface_present(
         next.present_fps = params.present_fps;
         next.interval_p95_ms = params.interval_p95_ms;
         next.interval_p99_ms = params.interval_p99_ms;
+        next.frame_polling_suppressed = params.frame_polling_suppressed;
+        next.source_pixels_present = params.source_pixels_present;
         next.updated_at = Utc::now().to_rfc3339();
         slot.status = next.clone();
         next
@@ -268,6 +276,8 @@ pub async fn update_preview_surface_present(
         next.preview_render_frame_time_p99_ms = status.interval_p99_ms;
         next.preview_transport = status.transport;
         next.preview_surface_backing = status.backing;
+        next.preview_frame_polling_suppressed = status.frame_polling_suppressed;
+        next.preview_source_pixels_present = status.source_pixels_present;
         next.updated_at = Utc::now().to_rfc3339();
         *diagnostics = next.clone();
         next
@@ -385,6 +395,8 @@ fn unavailable_status(message: Option<String>) -> PreviewSurfaceStatus {
         present_fps: None,
         interval_p95_ms: None,
         interval_p99_ms: None,
+        frame_polling_suppressed: false,
+        source_pixels_present: false,
         bounds: None,
         started_at: None,
         updated_at: Utc::now().to_rfc3339(),
@@ -565,6 +577,8 @@ mod tests {
                 present_fps: Some(58.5),
                 interval_p95_ms: Some(19.0),
                 interval_p99_ms: Some(24.0),
+                frame_polling_suppressed: true,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -579,6 +593,8 @@ mod tests {
         assert_eq!(status.input_to_present_latency_p95_ms, Some(48));
         assert_eq!(status.input_to_present_latency_p99_ms, Some(73));
         assert_eq!(status.present_fps, Some(58.5));
+        assert!(status.frame_polling_suppressed);
+        assert!(!status.source_pixels_present);
 
         let diagnostics = state.diagnostics.lock().await;
         assert_eq!(
@@ -603,6 +619,8 @@ mod tests {
             diagnostics.preview_input_to_present_latency_p99_ms,
             Some(73)
         );
+        assert!(diagnostics.preview_frame_polling_suppressed);
+        assert!(!diagnostics.preview_source_pixels_present);
         assert_eq!(diagnostics.preview_compositor_frame_lag, Some(1));
         assert_eq!(diagnostics.preview_dropped_frames, 3);
         assert_eq!(diagnostics.preview_render_frame_time_p95_ms, Some(19.0));
@@ -637,6 +655,8 @@ mod tests {
                 present_fps: Some(58.5),
                 interval_p95_ms: Some(19.0),
                 interval_p99_ms: Some(24.0),
+                frame_polling_suppressed: false,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -690,6 +710,8 @@ mod tests {
                 present_fps: Some(58.5),
                 interval_p95_ms: Some(19.0),
                 interval_p99_ms: Some(24.0),
+                frame_polling_suppressed: false,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -709,6 +731,8 @@ mod tests {
                 present_fps: Some(60.0),
                 interval_p95_ms: Some(17.0),
                 interval_p99_ms: Some(18.0),
+                frame_polling_suppressed: false,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -747,6 +771,8 @@ mod tests {
                 present_fps: Some(58.5),
                 interval_p95_ms: Some(19.0),
                 interval_p99_ms: Some(24.0),
+                frame_polling_suppressed: false,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -766,6 +792,8 @@ mod tests {
                 present_fps: Some(12.0),
                 interval_p95_ms: Some(80.0),
                 interval_p99_ms: Some(100.0),
+                frame_polling_suppressed: false,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -820,6 +848,8 @@ mod tests {
                 present_fps: Some(58.5),
                 interval_p95_ms: Some(19.0),
                 interval_p99_ms: Some(24.0),
+                frame_polling_suppressed: false,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -839,6 +869,8 @@ mod tests {
                 present_fps: Some(60.0),
                 interval_p95_ms: Some(17.0),
                 interval_p99_ms: Some(18.0),
+                frame_polling_suppressed: false,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -880,6 +912,8 @@ mod tests {
                 present_fps: Some(58.5),
                 interval_p95_ms: Some(19.0),
                 interval_p99_ms: Some(24.0),
+                frame_polling_suppressed: false,
+                source_pixels_present: false,
             },
         )
         .await;
@@ -908,6 +942,8 @@ mod tests {
         assert_eq!(diagnostics.preview_input_to_present_latency_p95_ms, None);
         assert_eq!(diagnostics.preview_input_to_present_latency_p99_ms, None);
         assert_eq!(diagnostics.preview_compositor_frame_lag, None);
+        assert!(!diagnostics.preview_frame_polling_suppressed);
+        assert!(!diagnostics.preview_source_pixels_present);
         assert_eq!(diagnostics.preview_render_frame_time_p95_ms, None);
         assert_eq!(diagnostics.preview_dropped_frames, 0);
     }

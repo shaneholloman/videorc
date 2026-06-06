@@ -23,6 +23,8 @@ function cleanInput() {
       previewInputToPresentLatencyP95Ms: 18,
       previewInputToPresentLatencyP99Ms: 32,
       previewCompositorFrameLag: 0,
+      previewFramePollingSuppressed: false,
+      previewSourcePixelsPresent: true,
       minEncoderSpeed: 1.0,
     },
   }
@@ -78,6 +80,22 @@ test('obs parity evidence assigns preview problems to proof transport and image 
   assert.equal(quality.status, 'fail')
   assert.match(quality.owner, /native Metal preview host/)
   assert.match(quality.owner, /PNG\/JPEG fallback preview/)
+})
+
+test('obs parity evidence flags proof host when source pixels are suppressed', () => {
+  const input = cleanInput()
+  input.claimsNative = false
+  input.diagnostics.previewSurfaceBacking = 'electron-browser-window'
+  input.diagnostics.previewFramePollingSuppressed = true
+  input.diagnostics.previewSourcePixelsPresent = false
+
+  const quality = byArea(classifyObsParityEvidence(input), 'Preview quality vs OBS')
+
+  assert.equal(quality.status, 'fail')
+  assert.match(quality.owner, /proof preview source suppression/)
+  assert.match(quality.owner, /preview source-pixel proof/)
+  assert.match(quality.evidence.join(' '), /frame polling suppressed/)
+  assert.match(quality.evidence.join(' '), /source pixels not proven/)
 })
 
 test('obs parity evidence marks preview areas unmeasured for no-preview comparisons', () => {

@@ -164,6 +164,14 @@ function classifyPreviewQuality({ diagnostics, claimsNative, imagePolls, cpuFall
     owners.add('native Metal preview host')
     evidence.push(`preview backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'}`)
   }
+  if (diagnostics.previewFramePollingSuppressed) {
+    owners.add('proof preview source suppression')
+    evidence.push('frame polling suppressed while recording')
+  }
+  if (!diagnostics.previewSourcePixelsPresent) {
+    owners.add('preview source-pixel proof')
+    evidence.push('source pixels not proven on preview host')
+  }
   if (imagePolls != null && imagePolls > 0) {
     owners.add('PNG/JPEG fallback preview')
     evidence.push(`${imagePolls} image poll(s) during recording`)

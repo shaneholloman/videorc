@@ -888,6 +888,16 @@ pub struct DiagnosticStats {
     pub preview_source_fps: BTreeMap<String, f64>,
     #[serde(default)]
     pub preview_surface_backing: PreviewSurfaceBacking,
+    /// True while the proof/fallback host has source image polling disabled. This can be
+    /// intentional during recording, but it means a fast preview host is not proving
+    /// visible source pixels.
+    #[serde(default)]
+    pub preview_frame_polling_suppressed: bool,
+    /// True when the host reports at least one live source layer/pixel source presented.
+    /// A native CAMetalLayer activation should eventually make this true without HTTP
+    /// image polling.
+    #[serde(default)]
+    pub preview_source_pixels_present: bool,
     pub preview_present_fps: Option<f64>,
     pub preview_input_to_present_latency_ms: Option<u64>,
     pub preview_input_to_present_latency_p50_ms: Option<u64>,
@@ -1181,6 +1191,10 @@ pub struct PreviewSurfacePresentParams {
     pub present_fps: Option<f64>,
     pub interval_p95_ms: Option<f64>,
     pub interval_p99_ms: Option<f64>,
+    #[serde(default)]
+    pub frame_polling_suppressed: bool,
+    #[serde(default)]
+    pub source_pixels_present: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1215,6 +1229,10 @@ pub struct PreviewSurfaceStatus {
     pub interval_p95_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_p99_ms: Option<f64>,
+    #[serde(default)]
+    pub frame_polling_suppressed: bool,
+    #[serde(default)]
+    pub source_pixels_present: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<PreviewSurfaceBounds>,
     #[serde(skip_serializing_if = "Option::is_none")]

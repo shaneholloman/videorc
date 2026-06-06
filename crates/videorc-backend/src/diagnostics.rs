@@ -113,6 +113,8 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         preview_transport: PreviewTransport::Unavailable,
         preview_source_fps: Default::default(),
         preview_surface_backing: PreviewSurfaceBacking::None,
+        preview_frame_polling_suppressed: false,
+        preview_source_pixels_present: false,
         preview_present_fps: None,
         preview_input_to_present_latency_ms: None,
         preview_input_to_present_latency_p50_ms: None,
@@ -668,6 +670,10 @@ pub fn apply_compositor_stats(
     stats.preview_frame_age_ms = preview_presenting.then_some(frame_age_ms);
     stats.preview_transport = preview_transport;
     stats.preview_surface_backing = preview_surface_backing;
+    if !preview_presenting {
+        stats.preview_frame_polling_suppressed = false;
+        stats.preview_source_pixels_present = false;
+    }
     stats.compositor_backend = Some(compositor_backend);
     stats.compositor_fallback_reason = compositor_fallback_reason;
     stats.compositor_cpu_fallback_frames = compositor_cpu_fallback_frames;
@@ -1067,6 +1073,8 @@ mod tests {
         assert_eq!(stats.compositor_fallback_reason, None);
         assert_eq!(stats.compositor_cpu_fallback_frames, 0);
         assert_eq!(stats.preview_compositor_frame_lag, None);
+        assert!(!stats.preview_frame_polling_suppressed);
+        assert!(!stats.preview_source_pixels_present);
         assert_eq!(stats.preview_camera_frame_age_ms, None);
         assert_eq!(stats.preview_camera_source_fps, None);
         assert_eq!(stats.preview_camera_dropped_frames, 0);

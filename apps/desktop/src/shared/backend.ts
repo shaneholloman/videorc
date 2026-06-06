@@ -925,6 +925,8 @@ export interface PreviewSurfaceStatus {
   presentFps?: number
   intervalP95Ms?: number
   intervalP99Ms?: number
+  framePollingSuppressed: boolean
+  sourcePixelsPresent: boolean
   bounds?: PreviewSurfaceBounds
   startedAt?: string
   updatedAt: string
@@ -944,6 +946,8 @@ export interface PreviewSurfacePresentParams {
   presentFps?: number
   intervalP95Ms?: number
   intervalP99Ms?: number
+  framePollingSuppressed?: boolean
+  sourcePixelsPresent?: boolean
 }
 
 export interface PreviewSurfaceCreateParams {
@@ -1146,6 +1150,8 @@ export interface DiagnosticStats {
   previewTransport: PreviewTransport
   previewSourceFps: Record<string, number>
   previewSurfaceBacking: PreviewSurfaceBacking
+  previewFramePollingSuppressed: boolean
+  previewSourcePixelsPresent: boolean
   previewPresentFps?: number
   previewInputToPresentLatencyMs?: number
   previewInputToPresentLatencyP50Ms?: number
