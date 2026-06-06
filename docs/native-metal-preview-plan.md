@@ -130,9 +130,11 @@ fails a "native" claim — by design.
   `MaxKeyFrameInterval=60` before `prepare_to_encode_frames()`, then encodes a
   two-frame retained-target sequence through the same realtime session with explicit
   monotonic timestamps at PTS 0 and 1/30. This proves the retained target can cross the
-  VideoToolbox boundary, carry production-shaped frame timing, and expose compressed
-  payload bytes to Rust through a realtime H.264 session; the production recording bridge
-  still needs to replace the raw-YUV FIFO copy before
+  VideoToolbox boundary, carry production-shaped frame timing, expose compressed payload
+  bytes to Rust, copy SPS/PPS H.264 parameter sets from the sample format description,
+  and parse copied sample bytes as AVCC length-prefixed NAL units through a realtime
+  H.264 session; the production recording bridge still needs to replace the raw-YUV FIFO
+  copy before
   `encoderBridgeZeroCopyFrames` can grow.
 - The production recording bridge now retains the actual Metal target handle on each fed
   compositor frame and has an opt-in sidecar VideoToolbox probe, enabled with

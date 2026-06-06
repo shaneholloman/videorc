@@ -1,11 +1,14 @@
-use std::ffi::c_void;
+use std::ffi::{c_int, c_void};
 use std::ptr::{self, NonNull};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail, ensure};
 use block2::RcBlock;
 use objc2_core_foundation::{CFBoolean, CFNumber, CFRetained, CFString, CFType};
-use objc2_core_media::{CMSampleBuffer, CMTime, kCMTimeInvalid, kCMVideoCodecType_H264};
+use objc2_core_media::{
+    CMSampleBuffer, CMTime, CMVideoFormatDescriptionGetH264ParameterSetAtIndex, kCMTimeInvalid,
+    kCMVideoCodecType_H264,
+};
 use objc2_core_video::{CVPixelBufferGetHeight, CVPixelBufferGetWidth};
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSession, VTSessionSetProperty,
@@ -89,6 +92,15 @@ pub struct VideoToolboxH264ProbeResult {
     pub copied_sample_count: usize,
     pub copied_sample_bytes: usize,
     pub copied_sample_prefix: Vec<u8>,
+    pub copied_sample_avcc_nal_count: usize,
+    pub copied_sample_avcc_payload_bytes: usize,
+    pub copied_sample_avcc_nal_types: Vec<u8>,
+    pub h264_parameter_set_count: usize,
+    pub h264_parameter_set_copied_count: usize,
+    pub h264_parameter_set_total_bytes: usize,
+    pub h264_parameter_set_nal_unit_header_length: Option<i32>,
+    pub h264_parameter_set_nal_types: Vec<u8>,
+    pub h264_parameter_set_error_status: Option<OSStatus>,
     pub sample_copy_error_status: Option<OSStatus>,
     pub frame_dropped: bool,
     pub iosurface_backed: bool,
@@ -120,6 +132,15 @@ impl VideoToolboxH264ProbeResult {
             copied_sample_count: 0,
             copied_sample_bytes: 0,
             copied_sample_prefix: Vec::new(),
+            copied_sample_avcc_nal_count: 0,
+            copied_sample_avcc_payload_bytes: 0,
+            copied_sample_avcc_nal_types: Vec::new(),
+            h264_parameter_set_count: 0,
+            h264_parameter_set_copied_count: 0,
+            h264_parameter_set_total_bytes: 0,
+            h264_parameter_set_nal_unit_header_length: None,
+            h264_parameter_set_nal_types: Vec::new(),
+            h264_parameter_set_error_status: None,
             sample_copy_error_status: None,
             frame_dropped: false,
             iosurface_backed: false,
@@ -138,6 +159,15 @@ struct EncodeCallbackState {
     copied_sample_count: usize,
     copied_sample_bytes: usize,
     copied_sample_prefix: Vec<u8>,
+    copied_sample_avcc_nal_count: usize,
+    copied_sample_avcc_payload_bytes: usize,
+    copied_sample_avcc_nal_types: Vec<u8>,
+    h264_parameter_set_count: usize,
+    h264_parameter_set_copied_count: usize,
+    h264_parameter_set_total_bytes: usize,
+    h264_parameter_set_nal_unit_header_length: Option<i32>,
+    h264_parameter_set_nal_types: Vec<u8>,
+    h264_parameter_set_error_status: Option<OSStatus>,
     sample_copy_error_status: Option<OSStatus>,
     frame_dropped: bool,
 }
@@ -283,6 +313,27 @@ impl VideoToolboxH264Session {
                         if let Some(data_buffer) = unsafe { sample_buffer.data_buffer() } {
                             state.block_buffer_data_bytes += unsafe { data_buffer.data_length() };
                         }
+                        match copy_h264_parameter_sets(sample_buffer) {
+                            Ok(parameter_sets) => {
+                                state.h264_parameter_set_count =
+                                    state.h264_parameter_set_count.max(parameter_sets.count);
+                                state.h264_parameter_set_copied_count +=
+                                    parameter_sets.copied_count;
+                                state.h264_parameter_set_total_bytes += parameter_sets.total_bytes;
+                                if state.h264_parameter_set_nal_unit_header_length.is_none() {
+                                    state.h264_parameter_set_nal_unit_header_length =
+                                        parameter_sets.nal_unit_header_length;
+                                }
+                                if state.h264_parameter_set_nal_types.is_empty() {
+                                    state
+                                        .h264_parameter_set_nal_types
+                                        .extend_from_slice(&parameter_sets.nal_types);
+                                }
+                            }
+                            Err(status) => {
+                                state.h264_parameter_set_error_status = Some(status);
+                            }
+                        }
                         match copy_encoded_sample_buffer_bytes(sample_buffer) {
                             Ok(bytes) if !bytes.is_empty() => {
                                 state.copied_sample_count += 1;
@@ -292,6 +343,19 @@ impl VideoToolboxH264Session {
                                     state
                                         .copied_sample_prefix
                                         .extend_from_slice(&bytes[..prefix_len]);
+                                }
+                                if let Some(header_len) = state
+                                    .h264_parameter_set_nal_unit_header_length
+                                    .and_then(|length| usize::try_from(length).ok())
+                                    && let Some(avcc) = summarize_avcc_nal_units(&bytes, header_len)
+                                {
+                                    state.copied_sample_avcc_nal_count += avcc.nal_count;
+                                    state.copied_sample_avcc_payload_bytes += avcc.payload_bytes;
+                                    if state.copied_sample_avcc_nal_types.is_empty() {
+                                        state
+                                            .copied_sample_avcc_nal_types
+                                            .extend_from_slice(&avcc.nal_types);
+                                    }
                                 }
                             }
                             Ok(_) => {}
@@ -358,6 +422,16 @@ impl VideoToolboxH264Session {
             copied_sample_count: state.copied_sample_count,
             copied_sample_bytes: state.copied_sample_bytes,
             copied_sample_prefix: state.copied_sample_prefix.clone(),
+            copied_sample_avcc_nal_count: state.copied_sample_avcc_nal_count,
+            copied_sample_avcc_payload_bytes: state.copied_sample_avcc_payload_bytes,
+            copied_sample_avcc_nal_types: state.copied_sample_avcc_nal_types.clone(),
+            h264_parameter_set_count: state.h264_parameter_set_count,
+            h264_parameter_set_copied_count: state.h264_parameter_set_copied_count,
+            h264_parameter_set_total_bytes: state.h264_parameter_set_total_bytes,
+            h264_parameter_set_nal_unit_header_length: state
+                .h264_parameter_set_nal_unit_header_length,
+            h264_parameter_set_nal_types: state.h264_parameter_set_nal_types.clone(),
+            h264_parameter_set_error_status: state.h264_parameter_set_error_status,
             sample_copy_error_status: state.sample_copy_error_status,
             frame_dropped: state.frame_dropped
                 || encode_info_flags.contains(VTEncodeInfoFlags::FrameDropped),
@@ -438,6 +512,126 @@ fn copy_encoded_sample_buffer_bytes(
         return Err(status);
     }
     Ok(bytes)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct H264ParameterSetSummary {
+    count: usize,
+    copied_count: usize,
+    total_bytes: usize,
+    nal_unit_header_length: Option<i32>,
+    nal_types: Vec<u8>,
+}
+
+fn copy_h264_parameter_sets(
+    sample_buffer: &CMSampleBuffer,
+) -> std::result::Result<H264ParameterSetSummary, OSStatus> {
+    let Some(format_description) = (unsafe { sample_buffer.format_description() }) else {
+        return Ok(H264ParameterSetSummary {
+            count: 0,
+            copied_count: 0,
+            total_bytes: 0,
+            nal_unit_header_length: None,
+            nal_types: Vec::new(),
+        });
+    };
+
+    let mut parameter_set_count = 0usize;
+    let mut nal_unit_header_length: c_int = 0;
+    let status = unsafe {
+        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+            format_description.as_ref(),
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut parameter_set_count,
+            &mut nal_unit_header_length,
+        )
+    };
+    if status != NO_ERR {
+        return Err(status);
+    }
+
+    let mut copied_count = 0usize;
+    let mut total_bytes = 0usize;
+    let mut nal_types = Vec::new();
+    for parameter_set_index in 0..parameter_set_count {
+        let mut parameter_set_pointer: *const u8 = ptr::null();
+        let mut parameter_set_size = 0usize;
+        let mut ignored_count = 0usize;
+        let mut ignored_header_length: c_int = 0;
+        let status = unsafe {
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                format_description.as_ref(),
+                parameter_set_index,
+                &mut parameter_set_pointer,
+                &mut parameter_set_size,
+                &mut ignored_count,
+                &mut ignored_header_length,
+            )
+        };
+        if status != NO_ERR {
+            return Err(status);
+        }
+        if parameter_set_pointer.is_null() || parameter_set_size == 0 {
+            continue;
+        }
+
+        let parameter_set =
+            unsafe { std::slice::from_raw_parts(parameter_set_pointer, parameter_set_size) };
+        copied_count += 1;
+        total_bytes += parameter_set.len();
+        nal_types.push(parameter_set[0] & 0x1f);
+    }
+
+    Ok(H264ParameterSetSummary {
+        count: parameter_set_count,
+        copied_count,
+        total_bytes,
+        nal_unit_header_length: (nal_unit_header_length > 0).then_some(nal_unit_header_length),
+        nal_types,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AvccNalSummary {
+    nal_count: usize,
+    payload_bytes: usize,
+    nal_types: Vec<u8>,
+}
+
+fn summarize_avcc_nal_units(bytes: &[u8], nal_unit_header_length: usize) -> Option<AvccNalSummary> {
+    if bytes.is_empty() || !(1..=4).contains(&nal_unit_header_length) {
+        return None;
+    }
+
+    let mut offset = 0usize;
+    let mut nal_count = 0usize;
+    let mut payload_bytes = 0usize;
+    let mut nal_types = Vec::new();
+    while offset < bytes.len() {
+        if bytes.len().saturating_sub(offset) < nal_unit_header_length {
+            return None;
+        }
+        let mut nal_size = 0usize;
+        for byte in &bytes[offset..offset + nal_unit_header_length] {
+            nal_size = (nal_size << 8) | usize::from(*byte);
+        }
+        offset += nal_unit_header_length;
+        if nal_size == 0 || bytes.len().saturating_sub(offset) < nal_size {
+            return None;
+        }
+        nal_count += 1;
+        payload_bytes += nal_size;
+        nal_types.push(bytes[offset] & 0x1f);
+        offset += nal_size;
+    }
+
+    (nal_count > 0).then_some(AvccNalSummary {
+        nal_count,
+        payload_bytes,
+        nal_types,
+    })
 }
 
 impl Drop for VideoToolboxH264Session {
@@ -567,6 +761,7 @@ mod tests {
                     !result.copied_sample_prefix.is_empty(),
                     "VideoToolbox copied sample prefix is empty: {result:?}"
                 );
+                assert_h264_muxable_probe_result(&result);
             }
             Err(error) => {
                 eprintln!(
@@ -637,12 +832,70 @@ mod tests {
                 result.copied_sample_bytes > 0,
                 "VideoToolbox copied no sample bytes for frame {frame_index}: {result:?}"
             );
+            assert_h264_muxable_probe_result(&result);
             copied_sequence_bytes += result.copied_sample_bytes;
         }
 
         assert!(
             copied_sequence_bytes > 0,
             "VideoToolbox sequence copied no encoded bytes"
+        );
+    }
+
+    #[test]
+    fn avcc_summary_parses_length_prefixed_nal_units() {
+        let bytes = [
+            0, 0, 0, 2, 0x65, 0xaa, // IDR slice
+            0, 0, 0, 1, 0x41, // non-IDR slice
+        ];
+        let summary = summarize_avcc_nal_units(&bytes, 4).expect("valid AVCC summary");
+
+        assert_eq!(summary.nal_count, 2);
+        assert_eq!(summary.payload_bytes, 3);
+        assert_eq!(summary.nal_types, [5, 1]);
+        assert!(summarize_avcc_nal_units(&bytes[..bytes.len() - 1], 4).is_none());
+    }
+
+    fn assert_h264_muxable_probe_result(result: &VideoToolboxH264ProbeResult) {
+        assert_eq!(result.h264_parameter_set_error_status, None);
+        assert!(
+            result.h264_parameter_set_count >= 2,
+            "VideoToolbox returned too few H.264 parameter sets: {result:?}"
+        );
+        assert!(
+            result.h264_parameter_set_copied_count >= 2,
+            "VideoToolbox copied too few H.264 parameter sets: {result:?}"
+        );
+        assert!(
+            result.h264_parameter_set_total_bytes > 0,
+            "VideoToolbox H.264 parameter sets were empty: {result:?}"
+        );
+        assert!(
+            matches!(
+                result.h264_parameter_set_nal_unit_header_length,
+                Some(1..=4)
+            ),
+            "VideoToolbox did not report a usable H.264 NAL length header: {result:?}"
+        );
+        assert!(
+            result.h264_parameter_set_nal_types.contains(&7),
+            "VideoToolbox H.264 parameter sets did not include SPS: {result:?}"
+        );
+        assert!(
+            result.h264_parameter_set_nal_types.contains(&8),
+            "VideoToolbox H.264 parameter sets did not include PPS: {result:?}"
+        );
+        assert!(
+            result.copied_sample_avcc_nal_count > 0,
+            "VideoToolbox copied sample was not parsed as AVCC NAL units: {result:?}"
+        );
+        assert!(
+            result.copied_sample_avcc_payload_bytes > 0,
+            "VideoToolbox AVCC sample payload was empty: {result:?}"
+        );
+        assert!(
+            !result.copied_sample_avcc_nal_types.is_empty(),
+            "VideoToolbox AVCC sample NAL types were empty: {result:?}"
         );
     }
 }
