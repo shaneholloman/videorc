@@ -27,6 +27,8 @@ fails a "native" claim — by design.
 - Recording startup now waits for consecutive target-resolution compositor frames that
   include every visible non-test source required by the scene, preventing a screen-only or
   camera-only early frame from satisfying a screen+camera recording barrier.
+- The Electron proof surface now coalesces compositor-status IPC updates while a paint is
+  in flight, so stale preview frames are dropped before they reach the proof window.
 - `make_preview_layer()` / `present_texture_to_layer()` — the GPU-side preview present
   (CAMetalLayer + blit + present), compile-and-run tested headlessly.
 - Scene/transform math in `scene.rs` (tested) maps 1:1 to each `GpuSource.dest` rect.

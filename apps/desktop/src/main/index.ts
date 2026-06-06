@@ -27,6 +27,8 @@ import type {
 let mainWindow: BrowserWindow | null = null
 let nativePreviewSurfaceWindow: BrowserWindow | null = null
 let nativePreviewSurfaceStatus: PreviewSurfaceStatus = idleNativePreviewSurfaceStatus()
+let nativePreviewSurfaceCompositorUpdateInFlight: Promise<PreviewSurfaceStatus> | null = null
+let nativePreviewSurfaceCompositorRequestSerial = 0
 let backendProcess: ChildProcessWithoutNullStreams | null = null
 let backendConnection: BackendConnection | null = null
 let smokePreviewMotionServer: HttpServer | null = null
@@ -728,6 +730,30 @@ async function updateNativePreviewSurfaceScene(params: PreviewSurfaceSceneUpdate
 }
 
 async function updateNativePreviewSurfaceCompositor(status: CompositorStatus): Promise<PreviewSurfaceStatus> {
+  const requestSerial = ++nativePreviewSurfaceCompositorRequestSerial
+  if (nativePreviewSurfaceCompositorUpdateInFlight) {
+    try {
+      await nativePreviewSurfaceCompositorUpdateInFlight
+    } catch {
+      // The next call will surface the real error if the proof window is still broken.
+    }
+    if (requestSerial < nativePreviewSurfaceCompositorRequestSerial) {
+      return nativePreviewSurfaceStatus
+    }
+  }
+
+  const update = presentNativePreviewSurfaceCompositor(status)
+  nativePreviewSurfaceCompositorUpdateInFlight = update
+  try {
+    return await update
+  } finally {
+    if (nativePreviewSurfaceCompositorUpdateInFlight === update) {
+      nativePreviewSurfaceCompositorUpdateInFlight = null
+    }
+  }
+}
+
+async function presentNativePreviewSurfaceCompositor(status: CompositorStatus): Promise<PreviewSurfaceStatus> {
   const compositorScene = buildPreviewSurfaceSceneFromCompositorStatus(status)
   if (compositorScene) {
     nativePreviewSurfaceScene = compositorScene
@@ -811,6 +837,7 @@ function delay(ms: number): Promise<void> {
 }
 
 function destroyNativePreviewSurface(): PreviewSurfaceStatus {
+  nativePreviewSurfaceCompositorRequestSerial += 1
   if (nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed()) {
     nativePreviewSurfaceWindow.close()
   }
