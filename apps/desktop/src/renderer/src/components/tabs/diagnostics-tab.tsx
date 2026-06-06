@@ -123,6 +123,10 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Preview age" value={formatMs(diagnosticStats.previewFrameAgeMs)} />
             <DiagnosticMetric label="Input to present" value={formatMs(diagnosticStats.previewInputToPresentLatencyMs)} />
             <DiagnosticMetric label="Render p95" value={formatMs(diagnosticStats.previewRenderFrameTimeP95Ms)} />
+            <DiagnosticMetric label="Tick gap p95" value={formatMs(diagnosticStats.compositorTickGapP95Ms)} />
+            <DiagnosticMetric label="Tick gap max" value={formatMs(diagnosticStats.compositorTickGapMaxMs)} />
+            <DiagnosticMetric label="Source fetch p95" value={formatMs(diagnosticStats.compositorSourceFetchP95Ms)} />
+            <DiagnosticMetric label="Metal p95" value={formatMs(diagnosticStats.compositorGpuTotalP95Ms)} />
             <DiagnosticMetric label="Preview lag" value={formatFrameLag(diagnosticStats.previewCompositorFrameLag)} />
             <DiagnosticMetric label="Preview drops" value={diagnosticStats.previewDroppedFrames.toString()} />
             <DiagnosticMetric label="Camera age" value={formatMs(diagnosticStats.previewCameraFrameAgeMs ?? previewCameraStatus.frameAgeMs)} />
@@ -156,6 +160,8 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Recording repeats" value={diagnosticStats.encoderBridgeRepeatedFrames.toString()} />
             <DiagnosticMetric label="Synthetic frames" value={diagnosticStats.encoderBridgeSyntheticFrames.toString()} />
             <DiagnosticMetric label="Bridge src age" value={formatMs(diagnosticStats.encoderBridgeSourceAgeMs)} />
+            <DiagnosticMetric label="Bridge wait p95" value={formatMs(diagnosticStats.encoderBridgeCompositorWaitP95Ms)} />
+            <DiagnosticMetric label="Writer loop p95" value={formatMs(diagnosticStats.encoderBridgeWriterLoopP95Ms)} />
             <DiagnosticMetric label="Metal targets" value={diagnosticStats.encoderBridgeMetalTargetFrames.toString()} />
             <DiagnosticMetric
               label="VT probe"
@@ -173,6 +179,13 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="FFprobe procs" value={diagnosticStats.activeFfprobeProcesses.toString()} />
             <DiagnosticMetric label="Backend RSS" value={formatBytes(diagnosticStats.backendRssBytes)} />
             <DiagnosticMetric label="Duplicate capture" value={formatDuplicateCapture(diagnosticStats.duplicateCaptureSources)} />
+            <DiagnosticMetric
+              label="Source try-locks"
+              value={formatSourceTryLocks(
+                diagnosticStats.compositorCameraSourceTryLockMisses,
+                diagnosticStats.compositorScreenSourceTryLockMisses
+              )}
+            />
             <DiagnosticMetric
               label="Source frame store"
               value={`${diagnosticStats.previewSourceFrameBufferCount} buffers, ${formatBytes(diagnosticStats.previewSourceFrameBytes)}, ${diagnosticStats.previewSourceFrameDroppedFrames} replaced`}
@@ -470,6 +483,22 @@ function sourceSummaryCopy(
 }
 
 function compositorSummaryCopy(stats: DiagnosticStats): { label: string; tone: StatusTone } {
+  const targetFps = stats.targetFps ?? stats.previewTargetFps
+  if (targetFps) {
+    const frameBudgetMs = 1000 / Math.max(1, targetFps)
+    if (
+      typeof stats.compositorTickGapP95Ms === 'number' &&
+      stats.compositorTickGapP95Ms > frameBudgetMs * 1.5
+    ) {
+      return { label: 'Tick gap high', tone: 'warn' }
+    }
+    if (
+      typeof stats.compositorTickGapMaxMs === 'number' &&
+      stats.compositorTickGapMaxMs > frameBudgetMs * 3
+    ) {
+      return { label: 'Tick spike', tone: 'warn' }
+    }
+  }
   if (stats.renderFps && stats.targetFps && stats.renderFps < stats.targetFps * 0.9) {
     return { label: 'Render slow', tone: 'warn' }
   }
@@ -715,6 +744,10 @@ function formatBytes(value?: number): string {
 
 function formatDuplicateCapture(sources: string[]): string {
   return sources.length ? sources.join(', ') : 'None'
+}
+
+function formatSourceTryLocks(cameraMisses: number, screenMisses: number): string {
+  return `cam ${cameraMisses}, screen ${screenMisses}`
 }
 
 function formatSourceRegistry(registry?: DiagnosticStats['sourceRegistry']): string {
