@@ -206,6 +206,9 @@ fails a "native" claim — by design.
   or `previewSurfaceBacking = cametal-layer` until the host has reported a presented
   compositor frame id. The focused `preview_surface` regression keeps the Electron proof
   status in place until that first native frame exists.
+- Real-source baseline ownership and acceptance now compute the native-preview claim from
+  both reported transport and `CAMetalLayer` backing, so `native-surface` alone cannot
+  make proof/fallback diagnostics look OBS-native. `pnpm test:scripts` covers the helper.
 
 ## What remains (on-device only)
 

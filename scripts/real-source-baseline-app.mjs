@@ -36,6 +36,7 @@ import { analyzeRecording, writeReports } from './lib/recording-analyzer.mjs'
 import { analyzeStartupResolution, writeStartupReports } from './lib/startup-resolution-analyzer.mjs'
 import { evaluateAcceptance } from './lib/acceptance-gate.mjs'
 import { classifyObsParityEvidence } from './lib/obs-parity-evidence.mjs'
+import { claimsNativePreview, formatTransportHonesty } from './lib/native-preview-claim.mjs'
 
 const config = {
   recordingMs: Number(process.env.VIDEORC_BASELINE_RECORDING_MS ?? 60000),
@@ -180,8 +181,7 @@ async function main() {
     const startupPaths = await writeStartupReports(startupReport, {
       ffmpegPath: config.ffmpegPath,
     })
-    const claimsNative =
-      previewTransport === 'native-surface' || diagnostics.transports.includes('native-surface')
+    const claimsNative = claimsNativePreview({ previewTransport, diagnostics })
     const ownership = classifyObsParityEvidence({
       analyzerVerdict: report.verdict,
       startupVerdict: startupReport.verdict,
@@ -201,8 +201,8 @@ async function main() {
 
     // Full real-source acceptance gate: final-file verdict + recording repeats +
     // encoder speed + mic drops/coverage + transport honesty, all enforced together.
-    // The Electron proof surface reports metrics, but only native-surface is the real
-    // CAMetalLayer path and therefore an OBS-native claim.
+    // The Electron proof surface reports metrics, but only native-surface plus a real
+    // CAMetalLayer backing is an OBS-native claim.
     const acceptance = evaluateAcceptance({
       analyzerVerdict: report.verdict,
       startupVerdict: startupReport.verdict,
@@ -560,7 +560,7 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
     `Preview backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'} (saw: ${diagnostics.surfaceBackings.join(', ') || 'unknown'})`
   )
   console.log(
-    `Transport honesty: ${diagnostics.imagePollDuringSession.total === 0 ? 'native (0 image polls)' : `NOT native (${diagnostics.imagePollDuringSession.total} image polls during session)`}`
+    `Transport honesty: ${formatTransportHonesty({ previewTransport, diagnostics })}`
   )
   console.log(
     `Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}` +
