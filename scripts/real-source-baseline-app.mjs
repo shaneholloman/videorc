@@ -22,6 +22,7 @@
 //   VIDEORC_BASELINE_RECORDING_MS   recording length (default 60000)
 //   VIDEORC_BASELINE_WIDTH/HEIGHT/FPS/BITRATE_KBPS   output video (default 1920x1080@30, 6000)
 //   VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW=1   deliberately launch the legacy FFmpeg MJPEG preview
+//   VIDEORC_BASELINE_NO_PREVIEW_SURFACE=1      warm sources, but do not create the proof/native preview surface
 //   VIDEORC_SMOKE_OUTPUT_DIR        where recordings + reports land
 //   VIDEORC_BASELINE_SCREEN_ID / _CAMERA_ID / _MIC_ID   force a specific device id
 //   VIDEORC_BASELINE_NO_SCREEN / _NO_CAMERA / _NO_MIC   omit that source
@@ -53,6 +54,7 @@ const config = {
   ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? siblingFfprobe(process.env.VIDEORC_SMOKE_FFMPEG_PATH) ?? 'ffprobe',
   bridgeVideoOutput: process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'raw-yuv420p',
   fallbackLivePreview: process.env.VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW === '1',
+  noPreviewSurface: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE === '1',
   outputDirectory: resolve(
     process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-real-source-baseline-${Date.now()}`)
   ),
@@ -150,6 +152,14 @@ async function main() {
           video: videoSettings(),
         })
         previewTransport = status?.transport ?? previewTransport
+      })
+    } else if (config.noPreviewSurface) {
+      await tryStep('preview.live.stop', async () => {
+        await request(ws, config.timeoutMs, 'preview.live.stop')
+      })
+      await tryStep('preview.surface.destroy', async () => {
+        const status = await request(ws, config.timeoutMs, 'preview.surface.destroy')
+        previewTransport = status?.transport ?? 'unavailable'
       })
     } else {
       await tryStep('preview.live.stop', async () => {
