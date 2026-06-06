@@ -799,6 +799,13 @@ pub struct DiagnosticStats {
     /// final file). Honest signal for the recording repeated-frame gate.
     #[serde(default)]
     pub encoder_bridge_repeated_frames: u64,
+    /// Distinct bridge under-run bursts. Separates isolated phase misses from clustered
+    /// stalls when repeated frames are nonzero.
+    #[serde(default)]
+    pub encoder_bridge_repeated_frame_bursts: u64,
+    /// Longest consecutive duplicate re-feed run observed by the bridge.
+    #[serde(default)]
+    pub encoder_bridge_max_repeated_frame_run: u64,
     /// Ticks where synthetic filler was fed because no real compositor frame was ready.
     #[serde(default)]
     pub encoder_bridge_synthetic_frames: u64,

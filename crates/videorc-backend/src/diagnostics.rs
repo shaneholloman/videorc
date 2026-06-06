@@ -83,6 +83,8 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         encoder_bridge_input_fps: None,
         encoder_bridge_dropped_frames: 0,
         encoder_bridge_repeated_frames: 0,
+        encoder_bridge_repeated_frame_bursts: 0,
+        encoder_bridge_max_repeated_frame_run: 0,
         encoder_bridge_synthetic_frames: 0,
         encoder_bridge_source_age_ms: None,
         encoder_bridge_metal_target_frames: 0,
@@ -262,8 +264,19 @@ pub fn classify_recording_risk(stats: &DiagnosticStats) -> (bool, Vec<String>) {
         reasons.push(format!("encoder dropped {} frame(s)", stats.dropped_frames));
     }
     if stats.encoder_bridge_repeated_frames > 0 {
+        let burst_detail = if stats.encoder_bridge_repeated_frame_bursts > 0
+            || stats.encoder_bridge_max_repeated_frame_run > 0
+        {
+            format!(
+                " across {} burst(s), max run {}",
+                stats.encoder_bridge_repeated_frame_bursts,
+                stats.encoder_bridge_max_repeated_frame_run
+            )
+        } else {
+            String::new()
+        };
         reasons.push(format!(
-            "{} duplicate frame(s) re-fed to the encoder (compositor under-run)",
+            "{} duplicate frame(s) re-fed to the encoder{burst_detail} (compositor under-run)",
             stats.encoder_bridge_repeated_frames
         ));
     }
@@ -383,6 +396,8 @@ pub struct EncoderBridgeDiagnosticSnapshot {
     pub dropped_frames: u64,
     pub encoder_speed: Option<f64>,
     pub repeated_fed_frames: u64,
+    pub repeated_frame_bursts: u64,
+    pub max_repeated_frame_run: u64,
     pub synthetic_fallback_frames: u64,
     pub source_to_encode_age_ms: Option<u64>,
     pub metal_target_frames: u64,
@@ -412,6 +427,8 @@ pub fn apply_encoder_bridge_stats(
     stats.encoder_bridge_input_fps = bridge.input_fps;
     stats.encoder_bridge_dropped_frames = bridge.dropped_frames;
     stats.encoder_bridge_repeated_frames = bridge.repeated_fed_frames;
+    stats.encoder_bridge_repeated_frame_bursts = bridge.repeated_frame_bursts;
+    stats.encoder_bridge_max_repeated_frame_run = bridge.max_repeated_frame_run;
     stats.encoder_bridge_synthetic_frames = bridge.synthetic_fallback_frames;
     stats.encoder_bridge_source_age_ms = bridge.source_to_encode_age_ms;
     stats.encoder_bridge_metal_target_frames = bridge.metal_target_frames;
@@ -1261,6 +1278,8 @@ mod tests {
                 dropped_frames: 0,
                 encoder_speed: Some(1.02),
                 repeated_fed_frames: 0,
+                repeated_frame_bursts: 0,
+                max_repeated_frame_run: 0,
                 synthetic_fallback_frames: 0,
                 source_to_encode_age_ms: None,
                 metal_target_frames: 0,
@@ -1297,6 +1316,8 @@ mod tests {
                 dropped_frames: 3,
                 encoder_speed: Some(0.5),
                 repeated_fed_frames: 5,
+                repeated_frame_bursts: 3,
+                max_repeated_frame_run: 2,
                 synthetic_fallback_frames: 1,
                 source_to_encode_age_ms: Some(40),
                 metal_target_frames: 24,
@@ -1321,6 +1342,8 @@ mod tests {
 
         assert_eq!(lagging.encoder_bridge_dropped_frames, 3);
         assert_eq!(lagging.encoder_bridge_repeated_frames, 5);
+        assert_eq!(lagging.encoder_bridge_repeated_frame_bursts, 3);
+        assert_eq!(lagging.encoder_bridge_max_repeated_frame_run, 2);
         assert_eq!(lagging.encoder_bridge_synthetic_frames, 1);
         assert_eq!(lagging.encoder_bridge_source_age_ms, Some(40));
         assert_eq!(lagging.encoder_bridge_metal_target_frames, 24);

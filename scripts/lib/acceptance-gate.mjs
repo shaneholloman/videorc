@@ -51,8 +51,12 @@ export function evaluateAcceptance(input, gates = DEFAULT_ACCEPTANCE_GATES) {
   // decoded-file analyzer. When the analyzer passes, its repeated-frame burst gate is
   // the artifact-level source of truth.
   if ((d.encoderBridgeRepeatedFrames ?? 0) > 0 && !finalFilePassed) {
+    const burstDetail =
+      (d.encoderBridgeRepeatedFrameBursts ?? 0) > 0 || (d.encoderBridgeMaxRepeatedFrameRun ?? 0) > 0
+        ? ` across ${d.encoderBridgeRepeatedFrameBursts ?? 0} burst(s), max run ${d.encoderBridgeMaxRepeatedFrameRun ?? 0}`
+        : ''
     failures.push(
-      `recording: ${d.encoderBridgeRepeatedFrames} duplicate frame(s) re-fed to the encoder (compositor under-run)`
+      `recording: ${d.encoderBridgeRepeatedFrames} duplicate frame(s) re-fed to the encoder${burstDetail} (compositor under-run)`
     )
   }
   if ((d.encoderBridgeSyntheticFrames ?? 0) > 0) {

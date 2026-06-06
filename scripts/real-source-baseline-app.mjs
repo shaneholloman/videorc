@@ -496,6 +496,8 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
       surfaceSamples.map((s) => s.backing).filter(Boolean).pop() ??
       null,
     encoderBridgeRepeatedFrames: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrames ?? 0)) ?? 0,
+    encoderBridgeRepeatedFrameBursts: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrameBursts ?? 0)) ?? 0,
+    encoderBridgeMaxRepeatedFrameRun: maxOf(measured.map((s) => s.encoderBridgeMaxRepeatedFrameRun ?? 0)) ?? 0,
     encoderBridgeSyntheticFrames: maxOf(measured.map((s) => s.encoderBridgeSyntheticFrames ?? 0)) ?? 0,
     encoderBridgeSourceAgeMs: maxOf(collect('encoderBridgeSourceAgeMs')),
     encoderBridgeMetalTargetFrames: maxOf(measured.map((s) => s.encoderBridgeMetalTargetFrames ?? 0)) ?? 0,
@@ -701,7 +703,7 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
       (diagnostics.compositorFallbackReason ? ` | reason: ${diagnostics.compositorFallbackReason}` : '')
   )
   lines.push(`- Encoder: min speed ${fmt(diagnostics.minEncoderSpeed, 2)}x | dropped ${diagnostics.droppedFrames}`)
-  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age max ${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} (${diagnostics.encoderBridgeVideoToolboxOutputBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxOutputEncodeMs}ms max encode) | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`)
+  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age max ${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} (${diagnostics.encoderBridgeVideoToolboxOutputBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxOutputEncodeMs}ms max encode) | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`)
   lines.push(
     `- Recording bridge timings p95: compositor wait ${fmt(diagnostics.encoderBridgeCompositorWaitP95Ms)}ms | ` +
       `VT submit ${fmt(diagnostics.encoderBridgeVideoToolboxSubmitP95Ms)}ms | ` +
@@ -907,7 +909,7 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
       (diagnostics.compositorFallbackReason ? ` | ${diagnostics.compositorFallbackReason}` : '')
   )
   console.log(
-    `Recording bridge: Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames}`
+    `Recording bridge: repeated ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames}`
   )
   console.log(
     `Recording bridge timings p95: compositor wait ${diagnostics.encoderBridgeCompositorWaitP95Ms ?? 'n/a'}ms | VT submit ${diagnostics.encoderBridgeVideoToolboxSubmitP95Ms ?? 'n/a'}ms | H.264 FIFO write ${diagnostics.encoderBridgeVideoToolboxFifoWriteP95Ms ?? 'n/a'}ms | writer loop ${diagnostics.encoderBridgeWriterLoopP95Ms ?? 'n/a'}ms`

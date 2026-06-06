@@ -82,6 +82,10 @@ struct EncoderBridgeRuntimeStats {
     /// CFR deadline — these become duplicate frames in the final file (the classic
     /// "frozen capture, ffmpeg duplicates the last frame" failure, now counted).
     repeated_fed_frames: u64,
+    /// Number of distinct runs where the bridge re-fed one or more duplicate frames.
+    repeated_frame_bursts: u64,
+    /// Longest consecutive duplicate re-feed run observed by the bridge.
+    max_repeated_frame_run: u64,
     /// Ticks where no usable compositor frame existed and synthetic filler was fed.
     synthetic_fallback_frames: u64,
     /// Max age (ms) of a compositor frame at the moment it was fed to the encoder.
@@ -655,6 +659,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut next_frame_at = Instant::now();
     let mut queue_depth = 0_u64;
     let mut repeated_fed_frames = 0_u64;
+    let mut repeated_frame_bursts = 0_u64;
+    let mut max_repeated_frame_run = 0_u64;
     let mut synthetic_fallback_frames = 0_u64;
     let mut max_source_to_encode_age_ms: Option<u64> = None;
     let mut metal_target_frames = 0_u64;
@@ -748,6 +754,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                             dropped_frames: 0,
                             encoder_speed: None,
                             repeated_fed_frames,
+                            repeated_frame_bursts,
+                            max_repeated_frame_run,
                             synthetic_fallback_frames,
                             source_to_encode_age_ms: max_source_to_encode_age_ms,
                             metal_target_frames,
@@ -779,8 +787,12 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                 render_synthetic_yuv420p_frame(&frame, &mut bytes);
             }
             BridgeFrameSource::Repeated => {
+                if consecutive_repeated_frames == 0 {
+                    repeated_frame_bursts = repeated_frame_bursts.saturating_add(1);
+                }
                 repeated_fed_frames = repeated_fed_frames.saturating_add(1);
                 consecutive_repeated_frames = consecutive_repeated_frames.saturating_add(1);
+                max_repeated_frame_run = max_repeated_frame_run.max(consecutive_repeated_frames);
             }
             BridgeFrameSource::Fresh => {
                 consecutive_repeated_frames = 0;
@@ -902,6 +914,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     dropped_frames: 0,
                     encoder_speed: None,
                     repeated_fed_frames,
+                    repeated_frame_bursts,
+                    max_repeated_frame_run,
                     synthetic_fallback_frames,
                     source_to_encode_age_ms: max_source_to_encode_age_ms,
                     metal_target_frames,
@@ -950,6 +964,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     dropped_frames: 0,
                     encoder_speed: None,
                     repeated_fed_frames,
+                    repeated_frame_bursts,
+                    max_repeated_frame_run,
                     synthetic_fallback_frames,
                     source_to_encode_age_ms: max_source_to_encode_age_ms,
                     metal_target_frames,
@@ -993,6 +1009,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     dropped_frames: 0,
                     encoder_speed: None,
                     repeated_fed_frames,
+                    repeated_frame_bursts,
+                    max_repeated_frame_run,
                     synthetic_fallback_frames,
                     source_to_encode_age_ms: max_source_to_encode_age_ms,
                     metal_target_frames,
@@ -1065,6 +1083,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             dropped_frames: 0,
             encoder_speed: None,
             repeated_fed_frames,
+            repeated_frame_bursts,
+            max_repeated_frame_run,
             synthetic_fallback_frames,
             source_to_encode_age_ms: max_source_to_encode_age_ms,
             metal_target_frames,
@@ -1585,6 +1605,8 @@ async fn emit_encoder_bridge_diagnostics(
                 dropped_frames: runtime.dropped_frames,
                 encoder_speed: runtime.encoder_speed,
                 repeated_fed_frames: runtime.repeated_fed_frames,
+                repeated_frame_bursts: runtime.repeated_frame_bursts,
+                max_repeated_frame_run: runtime.max_repeated_frame_run,
                 synthetic_fallback_frames: runtime.synthetic_fallback_frames,
                 source_to_encode_age_ms: runtime.source_to_encode_age_ms,
                 metal_target_frames: runtime.metal_target_frames,

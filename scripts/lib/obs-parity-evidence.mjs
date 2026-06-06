@@ -222,7 +222,7 @@ function classifyRecordingHotPath({
   }
   if ((diagnostics.encoderBridgeRepeatedFrames ?? 0) > 0 && !finalPassed) {
     owners.add('encoder bridge / compositor under-run')
-    evidence.push(`${diagnostics.encoderBridgeRepeatedFrames} duplicate encoder frame(s)`)
+    evidence.push(formatBridgeRepeatEvidence(diagnostics))
   }
   if ((diagnostics.encoderBridgeSyntheticFrames ?? 0) > 0) {
     owners.add('source readiness')
@@ -257,9 +257,7 @@ function classifyRecordingHotPath({
     const residualEvidence = []
     if ((diagnostics.encoderBridgeRepeatedFrames ?? 0) > 0) {
       residualOwners.add('encoder bridge / compositor cadence risk')
-      residualEvidence.push(
-        `${diagnostics.encoderBridgeRepeatedFrames} duplicate encoder frame(s), but decoded artifact passed`
-      )
+      residualEvidence.push(`${formatBridgeRepeatEvidence(diagnostics)}, but decoded artifact passed`)
     }
     const targetFps = diagnostics.targetFps ?? diagnostics.previewTargetFps
     if (targetFps) {
@@ -304,6 +302,16 @@ function classifyRecordingHotPath({
     evidence,
     nextStep: 'Protect encoder throughput first; preview may drop stale frames but recording cannot receive fallback or repeated frames.',
   })
+}
+
+function formatBridgeRepeatEvidence(diagnostics) {
+  const repeated = diagnostics.encoderBridgeRepeatedFrames ?? 0
+  const bursts = diagnostics.encoderBridgeRepeatedFrameBursts ?? 0
+  const maxRun = diagnostics.encoderBridgeMaxRepeatedFrameRun ?? 0
+  if (bursts > 0 || maxRun > 0) {
+    return `${repeated} duplicate encoder frame(s) across ${bursts} burst(s), max run ${maxRun}`
+  }
+  return `${repeated} duplicate encoder frame(s)`
 }
 
 function isTimestampMuxFailure(failure) {

@@ -269,6 +269,8 @@ const idleDiagnosticStats = (): DiagnosticStats => ({
   encoderBridgeQueueDepth: 0,
   encoderBridgeDroppedFrames: 0,
   encoderBridgeRepeatedFrames: 0,
+  encoderBridgeRepeatedFrameBursts: 0,
+  encoderBridgeMaxRepeatedFrameRun: 0,
   encoderBridgeSyntheticFrames: 0,
   encoderBridgeMetalTargetFrames: 0,
   encoderBridgeRawVideoCopiedFrames: 0,

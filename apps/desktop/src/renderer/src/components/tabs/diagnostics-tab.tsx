@@ -158,6 +158,8 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Mic coverage" value={formatCoverage(diagnosticStats.micCaptureCoverage)} />
             <DiagnosticMetric label="Encode backend" value={formatEncodeBackend(diagnosticStats.encodeBackend)} />
             <DiagnosticMetric label="Recording repeats" value={diagnosticStats.encoderBridgeRepeatedFrames.toString()} />
+            <DiagnosticMetric label="Repeat bursts" value={diagnosticStats.encoderBridgeRepeatedFrameBursts.toString()} />
+            <DiagnosticMetric label="Repeat max run" value={diagnosticStats.encoderBridgeMaxRepeatedFrameRun.toString()} />
             <DiagnosticMetric label="Synthetic frames" value={diagnosticStats.encoderBridgeSyntheticFrames.toString()} />
             <DiagnosticMetric label="Bridge src age" value={formatMs(diagnosticStats.encoderBridgeSourceAgeMs)} />
             <DiagnosticMetric label="Bridge wait p95" value={formatMs(diagnosticStats.encoderBridgeCompositorWaitP95Ms)} />

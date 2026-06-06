@@ -1082,6 +1082,10 @@ export interface DiagnosticStats {
   encoderBridgeDroppedFrames: number
   /** Compositor frames re-fed to the encoder on under-run (duplicate frames in the final file). */
   encoderBridgeRepeatedFrames: number
+  /** Distinct bridge under-run bursts; helps separate phase misses from clustered stalls. */
+  encoderBridgeRepeatedFrameBursts: number
+  /** Longest consecutive duplicate re-feed run observed by the bridge. */
+  encoderBridgeMaxRepeatedFrameRun: number
   /** Ticks where synthetic filler was fed because no real compositor frame was ready. */
   encoderBridgeSyntheticFrames: number
   /** Max age (ms) of a compositor frame when it was fed to the encoder. */
