@@ -12,6 +12,7 @@ import type {
   CameraShape,
   CompositorStatus,
   LayoutSettings,
+  NativePreviewHostCommand,
   PreviewSurfaceBounds,
   PreviewSurfaceSceneLayer,
   PreviewSurfaceSceneState,
@@ -751,6 +752,26 @@ async function updateNativePreviewSurfaceBounds(bounds: PreviewSurfaceBounds): P
     updatedAt: new Date().toISOString()
   }
   return nativePreviewSurfaceStatus
+}
+
+async function applyNativePreviewHostCommands(commands: NativePreviewHostCommand[]): Promise<PreviewSurfaceStatus> {
+  let status = nativePreviewSurfaceStatus
+  for (const command of commands) {
+    if (command.kind === 'destroy') {
+      status = destroyNativePreviewSurface()
+      continue
+    }
+
+    if (!command.bounds) {
+      throw new Error(`Native preview host ${command.kind} command is missing bounds.`)
+    }
+
+    status =
+      command.kind === 'create'
+        ? await createNativePreviewSurface(command.bounds)
+        : await updateNativePreviewSurfaceBounds(command.bounds)
+  }
+  return status
 }
 
 async function updateNativePreviewSurfaceScene(params: PreviewSurfaceSceneUpdateParams): Promise<PreviewSurfaceStatus> {
@@ -1615,6 +1636,9 @@ app.whenReady().then(() => {
   ipcMain.handle('preview-surface:create', (_event, bounds: PreviewSurfaceBounds) => createNativePreviewSurface(bounds))
   ipcMain.handle('preview-surface:update-bounds', (_event, bounds: PreviewSurfaceBounds) =>
     updateNativePreviewSurfaceBounds(bounds)
+  )
+  ipcMain.handle('preview-surface:apply-host-commands', (_event, commands: NativePreviewHostCommand[]) =>
+    applyNativePreviewHostCommands(commands)
   )
   ipcMain.handle('preview-surface:update-scene', (_event, scene: PreviewSurfaceSceneUpdateParams) =>
     updateNativePreviewSurfaceScene(scene)

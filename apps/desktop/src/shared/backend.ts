@@ -797,6 +797,13 @@ export interface PreviewSurfaceBounds {
   screenHeight?: number
 }
 
+export type NativePreviewHostCommandKind = 'create' | 'update-bounds' | 'destroy'
+
+export interface NativePreviewHostCommand {
+  kind: NativePreviewHostCommandKind
+  bounds?: PreviewSurfaceBounds
+}
+
 export type PreviewSurfaceState = 'unavailable' | 'starting' | 'live' | 'stopped' | 'failed'
 export type PreviewSurfaceSource = 'synthetic' | 'camera' | 'screen' | 'window'
 export type PreviewSurfaceBacking = 'cametal-layer' | 'electron-browser-window' | 'none'
@@ -1277,6 +1284,7 @@ export interface VideorcApi {
   getNativePreviewSurfaceMode: () => Promise<boolean>
   createNativePreviewSurface: (bounds: PreviewSurfaceBounds) => Promise<PreviewSurfaceStatus>
   updateNativePreviewSurfaceBounds: (bounds: PreviewSurfaceBounds) => Promise<PreviewSurfaceStatus>
+  applyNativePreviewHostCommands: (commands: NativePreviewHostCommand[]) => Promise<PreviewSurfaceStatus>
   updateNativePreviewSurfaceScene: (scene: PreviewSurfaceSceneUpdateParams) => Promise<PreviewSurfaceStatus>
   updateNativePreviewSurfaceCompositor: (status: CompositorStatus) => Promise<PreviewSurfaceStatus>
   destroyNativePreviewSurface: () => Promise<PreviewSurfaceStatus>

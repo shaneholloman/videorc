@@ -63,6 +63,9 @@ fails a "native" claim — by design.
   `preview.surface.take_native_host_commands`, returning serialized command payloads for
   the future Electron/AppKit native host loop without letting that loop reach into Rust
   runtime internals.
+- Electron's current proof host consumes the drained backend host-command batch for
+  create/update, so the BrowserWindow proof path now follows the same lifecycle contract
+  the future real `CAMetalLayer` host will implement.
 - A `NativePreviewPresenterRunner` now owns the AppKit overlay and a same-device Metal
   presenter on the main thread. It can apply host create/update/destroy commands and only
   returns native `CAMetalLayer` activation after `present_latest()` succeeds against the

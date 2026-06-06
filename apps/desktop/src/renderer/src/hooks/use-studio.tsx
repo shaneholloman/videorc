@@ -55,6 +55,7 @@ import type {
   LiveChatMessage,
   LiveChatProviderState,
   LiveChatSnapshot,
+  NativePreviewHostCommand,
   PreviewCameraStatus,
   PreviewScreenStatus,
   PreviewSurfaceBounds,
@@ -1525,6 +1526,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       if (!window.videorc?.createNativePreviewSurface || !window.videorc?.updateNativePreviewSurfaceBounds) {
         return
       }
+      const applyHostCommands = window.videorc.applyNativePreviewHostCommands
 
       const current = previewSurfaceStatusRef.current
       const surfaceSource = captureConfig.sources.windowId
@@ -1542,10 +1544,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
               targetFps: 60,
               source: surfaceSource
             })
+      const hostCommands = await client.request<NativePreviewHostCommand[]>('preview.surface.take_native_host_commands')
       const hostStatus =
-        current.state === 'live'
-          ? await window.videorc.updateNativePreviewSurfaceBounds(bounds)
-          : await window.videorc.createNativePreviewSurface(bounds)
+        hostCommands.length > 0 && applyHostCommands
+          ? await applyHostCommands(hostCommands)
+          : current.state === 'live'
+            ? await window.videorc.updateNativePreviewSurfaceBounds(bounds)
+            : await window.videorc.createNativePreviewSurface(bounds)
       const surfaceStatus = mergePreviewSurfaceHostStatus(backendStatus, hostStatus)
       applyPreviewSurfaceStatus(surfaceStatus)
       setPreviewLiveStatus({
