@@ -14,6 +14,7 @@ const outputDirectory = resolve(
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
 const ffprobePath = process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe'
 const timeoutMs = Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 120000)
+const launchAttempts = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAUNCH_ATTEMPTS ?? 2)
 const recordingMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_RECORDING_MS ?? 15000)
 const warmupMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_WARMUP_MS ?? 5000)
 const previewMeasurementMs = Number(
@@ -43,7 +44,7 @@ let stopping = false
 mkdirSync(outputDirectory, { recursive: true })
 
 try {
-  const { backend, smoke } = await launchAndReadConnections()
+  const { backend, smoke } = await launchAndReadConnectionsWithRetry()
   await runNativePreviewRecordingSmoke(backend, smoke)
 } finally {
   await stopApp()
@@ -670,6 +671,28 @@ function launchAndReadConnections() {
   })
 }
 
+async function launchAndReadConnectionsWithRetry() {
+  let lastError = null
+  const attempts = Math.max(1, Math.floor(launchAttempts))
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await launchAndReadConnections()
+    } catch (error) {
+      lastError = error
+      await stopApp()
+      appProcess = null
+      if (attempt >= attempts) {
+        throw error
+      }
+      console.warn(
+        `Native-preview smoke launch attempt ${attempt}/${attempts} failed before connections were ready: ${error.message}`
+      )
+      await sleep(1000)
+    }
+  }
+  throw lastError ?? new Error('Native-preview smoke failed before launch.')
+}
+
 function handleAppOutput(text, connections, maybeResolve) {
   for (const line of text.split(/\r?\n/)) {
     if (line.trim() && !stopping) {
@@ -696,18 +719,23 @@ function handleAppOutput(text, connections, maybeResolve) {
 function stopApp() {
   return new Promise((resolveStop) => {
     if (!appProcess?.pid || appProcess.killed) {
+      stopping = false
       resolveStop()
       return
     }
 
     const timer = setTimeout(() => {
       killApp('SIGKILL')
+      appProcess = null
+      stopping = false
       resolveStop()
     }, 5000)
 
     stopping = true
     appProcess.once('exit', () => {
       clearTimeout(timer)
+      appProcess = null
+      stopping = false
       resolveStop()
     })
     killApp('SIGTERM')
