@@ -35,6 +35,7 @@ mod source_status;
 mod state;
 mod storage;
 mod streaming;
+mod synthetic_diagnostic;
 mod twitch;
 mod twitch_chat;
 #[cfg(target_os = "macos")]

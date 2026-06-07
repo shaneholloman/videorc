@@ -543,11 +543,8 @@ pub async fn start_session(
                 &session_id,
                 "camera source cadence",
                 &error.to_string(),
-                params.output.video.width,
-                params.output.video.height,
-                params.output.video.fps,
-                startup_source_requirements.require_camera_source,
-                startup_source_requirements.require_screen_source,
+                &params,
+                &startup_source_requirements,
             )
             .await;
             if let Some(fifo_path) = encoder_bridge_fifo.as_ref() {
@@ -574,11 +571,8 @@ pub async fn start_session(
                     &session_id,
                     "compositor startup",
                     &error.to_string(),
-                    params.output.video.width,
-                    params.output.video.height,
-                    params.output.video.fps,
-                    startup_source_requirements.require_camera_source,
-                    startup_source_requirements.require_screen_source,
+                    &params,
+                    &startup_source_requirements,
                 )
                 .await;
                 if let Some(fifo_path) = encoder_bridge_fifo.as_ref() {
@@ -3090,22 +3084,19 @@ async fn emit_preflight_failure_report(
     session_id: &str,
     owner: &str,
     reason: &str,
-    width: u32,
-    height: u32,
-    target_fps: u32,
-    require_camera: bool,
-    require_screen: bool,
+    params: &StartSessionParams,
+    requirements: &CompositorStartupSourceRequirements,
 ) {
     let snapshot = { state.diagnostics.lock().await.clone() };
     let maintenance = state.ffmpeg_work.snapshot();
     let report = format_preflight_failure_report(&PreflightFailureReport {
         owner,
         reason,
-        width,
-        height,
-        target_fps,
-        require_camera,
-        require_screen,
+        width: params.output.video.width,
+        height: params.output.video.height,
+        target_fps: params.output.video.fps,
+        require_camera: requirements.require_camera_source,
+        require_screen: requirements.require_screen_source,
         compositor_backend: compositor_backend_label(snapshot.compositor_backend),
         compositor_cpu_fallback_frames: snapshot.compositor_cpu_fallback_frames,
         encode_backend: encode_backend_label(snapshot.encode_backend),

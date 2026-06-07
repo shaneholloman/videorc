@@ -137,6 +137,29 @@ export function SourcesTab(): ReactElement {
             }
           />
         </div>
+
+        {import.meta.env.DEV ? (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed bg-muted/20 px-3 py-2">
+            <div className="flex min-w-0 flex-col">
+              <span className="text-sm font-medium">Synthetic diagnostic source</span>
+              <span className="text-xs text-muted-foreground">
+                Dev-only. Replaces the screen with a deterministic frame-number + timecode source
+                for regression tests.
+              </span>
+            </div>
+            <Switch
+              checked={captureConfig.sources.testPattern === true}
+              disabled={isSessionActive}
+              size="sm"
+              onCheckedChange={(testPattern) =>
+                setCaptureConfig((current) => ({
+                  ...current,
+                  sources: { ...current.sources, testPattern }
+                }))
+              }
+            />
+          </div>
+        ) : null}
       </PanelSection>
 
       <PanelSection

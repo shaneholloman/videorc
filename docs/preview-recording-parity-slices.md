@@ -18,7 +18,7 @@ the remaining work.
 | 2 | Hardware VideoToolbox zero-copy = adaptive default | ✅ adaptive default shipped | deterministic (cargo test) + on-device gate (user) |
 | 3 | "Preparing recording…" UX + copyable preflight report | ✅ done | deterministic (cargo test + typecheck) |
 | 4 | Studio health badge + degraded indicator | ✅ done | deterministic (vitest + typecheck + build) |
-| 5 | Developer-only synthetic camera source (selectable) | ⬜ todo | deterministic (cargo test) |
+| 5 | Developer-only synthetic camera source (selectable) | ✅ done | deterministic (cargo test + typecheck) |
 | 6 | ProgramFrame contract + parity check (hardening) | ⬜ todo | deterministic (test:scripts) |
 | 7 | Visual/timing parity fixtures (hardening) | ⬜ todo | deterministic (test:scripts) |
 | 8 | Real-camera product acceptance (closes plan) | ⬜ todo | real-camera by-eye (user) |
@@ -106,6 +106,21 @@ user-facing surface without touching that tuned block logic:
 Verified: `cargo test -p videorc-backend preflight` (3 new pass), `cargo clippy -D warnings`,
 desktop `vitest` (40 pass), `typecheck`, `build`. Operator check: start with a covered
 camera lens or a disconnected source → start blocks, no file, report appears in Diagnostics.
+
+## Slice 5 — Developer-only synthetic diagnostic source ✅
+
+A new `crates/videorc-backend/src/synthetic_diagnostic.rs` module draws, over the existing
+animated test pattern, a **machine-decodable frame-number strip** (16-bit, MSB-first cells big
+enough to survive scaling + H.264) plus a human-readable **frame number** and **HH:MM:SS:FF
+timecode** (3×5 bitmap font). `synthetic_test_pattern_bgra` calls it, so both the Metal and CPU
+composite paths get the markers, and `decode_sequence` reads the frame number back — giving a
+deterministic way to match a decoded recording frame to the exact source frame (the basis for
+the Slice 6/7 parity checks). The Sources tab gains a **dev-only** (`import.meta.env.DEV`)
+toggle that selects this source (`sources.testPattern`).
+
+Verified: `cargo test -p videorc-backend` (synthetic round-trip/timecode/render tests + full
+suite), `cargo clippy -D warnings`, desktop `typecheck` + `vitest` + `build`. The frame number
+is authoritative; the timecode is rendered at a fixed 30fps reference for readability.
 
 ## Slice 4 — Studio health badge ✅
 

@@ -1630,6 +1630,14 @@ fn synthetic_test_pattern_bgra(sequence: u64) -> SyntheticTestPatternBgra {
         }
     }
 
+    crate::synthetic_diagnostic::overlay_frame_markers(
+        &mut bytes,
+        width,
+        height,
+        sequence,
+        crate::synthetic_diagnostic::SYNTHETIC_TIMECODE_FPS,
+    );
+
     SyntheticTestPatternBgra {
         bytes,
         width,
