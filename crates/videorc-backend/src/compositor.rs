@@ -42,7 +42,6 @@ const COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL: Duration = Duration::from_millis(
 const COMPOSITOR_LIVE_SOURCE_STALE_RECOVERY_AFTER: Duration = Duration::from_secs(1);
 const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_AFTER: Duration = Duration::from_millis(125);
 const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_MISSES: u32 = 3;
-const COMPOSITOR_SUPPRESSED_PROOF_PROGRESS_FPS: u32 = 10;
 
 pub type CompositorSlot = std::sync::Arc<tokio::sync::Mutex<CompositorRuntime>>;
 pub type CompositorFrameStore =
@@ -1029,11 +1028,7 @@ async fn run_synthetic_compositor_loop(
                     .push(surface_progress_started_at.elapsed().as_secs_f64() * 1000.0);
 
                 if preview_surface_active
-                    && should_emit_preview_surface_compositor_progress(
-                        latest_surface_status.as_ref(),
-                        frames_rendered,
-                        target_fps,
-                    )
+                    && should_emit_preview_surface_compositor_progress(latest_surface_status.as_ref())
                 {
                     let status_progress_started_at = Instant::now();
                     match try_update_compositor_frame_progress(
@@ -1235,24 +1230,12 @@ fn is_repeated_compositor_frame(
 
 fn should_emit_preview_surface_compositor_progress(
     surface_status: Option<&PreviewSurfaceStatus>,
-    frames_rendered: u64,
-    target_fps: u32,
 ) -> bool {
-    let Some(surface_status) = surface_status else {
-        return false;
-    };
-    if surface_status.transport == PreviewTransport::ElectronProofSurface
-        && surface_status.frame_polling_suppressed
-    {
-        let stride = suppressed_proof_progress_stride(target_fps);
-        return frames_rendered == 1 || frames_rendered.is_multiple_of(stride);
-    }
-    true
-}
-
-fn suppressed_proof_progress_stride(target_fps: u32) -> u64 {
-    let target_fps = target_fps.max(1);
-    u64::from((target_fps / COMPOSITOR_SUPPRESSED_PROOF_PROGRESS_FPS).max(1))
+    // Always emit compositor progress while a preview surface is active. These events
+    // carry the metal_target_handoff that the live preview presents, so throttling them
+    // while recording (previously to 10fps for the Electron proof surface) starved the
+    // preview and made it choppy during recording.
+    surface_status.is_some()
 }
 
 /// Whether the Metal/GPU compositor path is requested. Metal is default-on for OBS
@@ -2877,46 +2860,32 @@ mod tests {
     }
 
     #[test]
-    fn suppressed_proof_surface_progress_is_throttled() {
+    fn suppressed_proof_surface_progress_stays_full_rate_during_recording() {
+        // Regression: the Electron proof surface used to be throttled to 10fps while
+        // recording (frame polling suppressed), which starved the live preview. The
+        // preview must keep receiving fresh compositor progress at full cadence.
         let status = preview_surface_status(PreviewTransport::ElectronProofSurface, true);
 
-        assert!(should_emit_preview_surface_compositor_progress(
-            Some(&status),
-            1,
-            30
-        ));
-        assert!(!should_emit_preview_surface_compositor_progress(
-            Some(&status),
-            2,
-            30
-        ));
-        assert!(should_emit_preview_surface_compositor_progress(
-            Some(&status),
-            3,
-            30
-        ));
+        assert!(should_emit_preview_surface_compositor_progress(Some(&status)));
     }
 
     #[test]
     fn native_surface_progress_stays_full_rate() {
         let status = preview_surface_status(PreviewTransport::NativeSurface, true);
 
-        assert!(should_emit_preview_surface_compositor_progress(
-            Some(&status),
-            2,
-            30
-        ));
+        assert!(should_emit_preview_surface_compositor_progress(Some(&status)));
     }
 
     #[test]
     fn active_proof_source_polling_keeps_full_rate_progress() {
         let status = preview_surface_status(PreviewTransport::ElectronProofSurface, false);
 
-        assert!(should_emit_preview_surface_compositor_progress(
-            Some(&status),
-            2,
-            30
-        ));
+        assert!(should_emit_preview_surface_compositor_progress(Some(&status)));
+    }
+
+    #[test]
+    fn no_preview_surface_emits_no_progress() {
+        assert!(!should_emit_preview_surface_compositor_progress(None));
     }
 
     #[test]
