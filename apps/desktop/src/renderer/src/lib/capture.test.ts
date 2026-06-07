@@ -53,9 +53,17 @@ describe('smokePreviewCompositorCaptureConfig', () => {
 })
 
 describe('normalizeMicrophoneSyncOffsetMs', () => {
-  it('preserves exact measured millisecond offsets', () => {
+  it('preserves exact measured millisecond offsets when the user has set one', () => {
     expect(normalizeMicrophoneSyncOffsetMs(-166)).toBe(-166)
-    expect(normalizeAudioSettings({ microphoneSyncOffsetMs: -166 }).microphoneSyncOffsetMs).toBe(-166)
+    expect(
+      normalizeAudioSettings({ microphoneSyncOffsetMs: -166, microphoneSyncOffsetUserSet: true })
+        .microphoneSyncOffsetMs
+    ).toBe(-166)
+  })
+
+  it('applies the calibrated default until the user sets an offset', () => {
+    expect(normalizeAudioSettings({ microphoneSyncOffsetMs: 0 }).microphoneSyncOffsetMs).toBe(-120)
+    expect(normalizeAudioSettings({}).microphoneSyncOffsetMs).toBe(-120)
   })
 
   it('clamps to the backend-supported range', () => {

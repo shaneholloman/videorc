@@ -5134,7 +5134,10 @@ mod tests {
                     stream_key: "abc123".to_string(),
                 },
             },
-            audio: Default::default(),
+            audio: AudioSettings {
+                microphone_sync_offset_ms: 0,
+                ..Default::default()
+            },
             streaming: None,
         }
     }
@@ -6972,6 +6975,31 @@ mod tests {
         assert_eq!(
             arg_value(&disabled, "-af"),
             Some("pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0")
+        );
+    }
+
+    #[test]
+    fn default_microphone_sync_offset_compensates_capture_latency() {
+        let mut params = base_params(true, false);
+        params.audio = AudioSettings::default();
+        let args = ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::MacScreen { index: 3 },
+                camera_index: None,
+                microphone: Some(MicrophoneInput::AvFoundation { index: 1 }),
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-test.mkv")),
+            &[],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            arg_value(&args, "-af"),
+            Some(
+                "atrim=start=0.120,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0"
+            )
         );
     }
 

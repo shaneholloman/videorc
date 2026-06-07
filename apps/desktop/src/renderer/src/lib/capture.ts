@@ -164,7 +164,7 @@ export const defaultCaptureConfig: CaptureConfig = {
   audio: {
     microphoneGainDb: 0,
     microphoneMuted: false,
-    microphoneSyncOffsetMs: 0,
+    microphoneSyncOffsetMs: -120,
     microphoneSyncOffsetUserSet: false
   },
   video: videoPresets['tutorial-1440p30'],
@@ -225,12 +225,15 @@ export function smokePreviewCompositorCaptureConfig(
 
 export function normalizeAudioSettings(audio: unknown): AudioSettings {
   const candidate = audio && typeof audio === 'object' ? (audio as Partial<AudioSettings>) : {}
-  const savedOffset = candidate.microphoneSyncOffsetMs
   const offsetUserSet = candidate.microphoneSyncOffsetUserSet === true
-  const microphoneSyncOffsetMs =
-    savedOffset === -250 && !offsetUserSet
-      ? 0
-      : normalizeMicrophoneSyncOffsetMs(savedOffset, defaultCaptureConfig.audio.microphoneSyncOffsetMs)
+  // Until the user explicitly sets a sync offset, always apply the calibrated default so
+  // mic audio is compensated for capture-pipeline latency out of the box.
+  const microphoneSyncOffsetMs = offsetUserSet
+    ? normalizeMicrophoneSyncOffsetMs(
+        candidate.microphoneSyncOffsetMs,
+        defaultCaptureConfig.audio.microphoneSyncOffsetMs
+      )
+    : defaultCaptureConfig.audio.microphoneSyncOffsetMs
 
   return {
     microphoneGainDb: clampNumber(candidate.microphoneGainDb, defaultCaptureConfig.audio.microphoneGainDb, -24, 24),
