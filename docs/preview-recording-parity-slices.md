@@ -21,7 +21,7 @@ the remaining work.
 | 5 | Developer-only synthetic camera source (selectable) | ✅ done | deterministic (cargo test + typecheck) |
 | 6 | ProgramFrame contract + parity check | ✅ done | deterministic (test:scripts) |
 | 7 | Visual/timing parity fixtures | ✅ done | deterministic (test:scripts) |
-| 8 | Real-camera product acceptance (closes plan) | ⬜ todo | real-camera by-eye (user) |
+| 8 | Real-camera product acceptance (closes plan) | 🟡 note ready, operator pass pending | real-camera by-eye (user) |
 
 Legend: ✅ done · ⏳ in progress / blocked · ⬜ todo.
 
@@ -175,9 +175,14 @@ deterministically: `pnpm --filter @videorc/desktop test` (40 pass), `pnpm typech
 `pnpm build`. Operator visual check: `VIDEORC_METAL_COMPOSITOR=0 pnpm dev` → badge reads
 **Degraded** with the strip.
 
-## Slice 8 — Real-camera product acceptance
+## Slice 8 — Real-camera product acceptance 🟡
 
-Run `pnpm baseline:real-source --gate` at 1080p30 / 1440p30 + a 10-min endurance run, then
-the manual by-eye pass (hand-wave idle + recording, scroll text, move the camera overlay
-mid-recording, clap once; confirm the file matches the preview and mouth/voice sync). Record
-the outcome in a dated note under `docs/acceptance/`. Only the operator can close this.
+The dated acceptance note is prepared with the full operator procedure — automated metric
+gates (`pnpm baseline:real-source --gate` at 1080p30 / 1440p30 + 10-min endurance) and the
+by-eye checklist (hand-wave idle + recording, scroll text, preflight block, health badge,
+layout move, clap) — plus the agent-run deterministic evidence (cargo 469, desktop 40,
+test:scripts 130, clippy clean, typecheck/build clean):
+[`docs/acceptance/2026-06-07-smooth-preview-correct-recording-acceptance.md`](acceptance/2026-06-07-smooth-preview-correct-recording-acceptance.md).
+
+The agent does not autonomously launch the app / trigger capture permissions, so the
+real-camera run and by-eye sign-off are the operator's. **Only the operator can close this.**
