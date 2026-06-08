@@ -1254,12 +1254,15 @@ mod macos {
                 if session.canSetSessionPreset(AVCaptureSessionPresetInputPriority) {
                     session.setSessionPreset(AVCaptureSessionPresetInputPriority);
                 }
-                let capture_pixel_format = preferred_capture_pixel_format(&output);
+                let prefer_zero_copy_source_format =
+                    crate::metal_compositor::source_zerocopy_enabled();
+                let capture_pixel_format =
+                    preferred_capture_pixel_format(&output, prefer_zero_copy_source_format);
                 tracing::info!(
                     "Native camera capture pixel format: {} ({})",
                     format_fourcc(capture_pixel_format),
                     if capture_pixel_format == kCVPixelFormatType_32BGRA {
-                        "BGRA, full bandwidth"
+                        "BGRA, zero-copy source import"
                     } else {
                         "Y'CbCr, reduced bandwidth"
                     }
@@ -1479,14 +1482,13 @@ mod macos {
             || format == kCVPixelFormatType_422YpCbCr8_yuvs
     }
 
-    /// Pick the most bandwidth-efficient capture pixel format the output advertises.
-    /// 4:2:0 / 4:2:2 Y'CbCr are ~3/8 and ~1/2 the bytes of BGRA, so a bandwidth-limited
-    /// USB capture card (e.g. a Cam Link 4K at 4K) can deliver more frames per second.
-    /// `availableVideoCVPixelFormatTypes` is ordered most-efficient-first, so the first
-    /// entry is the device's native wire format. Requesting a *non*-native format forces
-    /// a slow host conversion (NV12 on a 4:2:2 card drops it to a few fps), so we take the
-    /// first advertised format we can convert ourselves; BGRA only if no YUV is offered.
-    fn preferred_capture_pixel_format(output: &AVCaptureVideoDataOutput) -> u32 {
+    /// Pick the best capture pixel format for the current source import mode.
+    /// Source zero-copy needs a BGRA CoreVideo texture view today; otherwise keep the
+    /// previous bandwidth-efficient Y'CbCr preference.
+    fn preferred_capture_pixel_format(
+        output: &AVCaptureVideoDataOutput,
+        prefer_zero_copy_source_format: bool,
+    ) -> u32 {
         let available = unsafe { output.availableVideoCVPixelFormatTypes() };
         let formats: Vec<u32> = (0..available.count())
             .map(|index| available.objectAtIndex(index).unsignedIntValue())
@@ -1499,8 +1501,27 @@ mod macos {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+        select_preferred_capture_pixel_format(&formats, prefer_zero_copy_source_format)
+    }
+
+    /// Pick the best capture pixel format from an advertised list.
+    /// 4:2:0 / 4:2:2 Y'CbCr are ~3/8 and ~1/2 the bytes of BGRA, so a bandwidth-limited
+    /// USB capture card (e.g. a Cam Link 4K at 4K) can deliver more frames per second.
+    /// `availableVideoCVPixelFormatTypes` is ordered most-efficient-first, so without
+    /// source zero-copy the first entry is the device's native wire format. Requesting a
+    /// *non*-native format forces a slow host conversion (NV12 on a 4:2:2 card drops it
+    /// to a few fps), so we take the first advertised format we can convert ourselves;
+    /// BGRA only if no YUV is offered.
+    pub(super) fn select_preferred_capture_pixel_format(
+        formats: &[u32],
+        prefer_zero_copy_source_format: bool,
+    ) -> u32 {
+        if prefer_zero_copy_source_format && formats.contains(&kCVPixelFormatType_32BGRA) {
+            return kCVPixelFormatType_32BGRA;
+        }
         formats
-            .into_iter()
+            .iter()
+            .copied()
             .find(|format| is_yuv_capture_format(*format))
             .unwrap_or(kCVPixelFormatType_32BGRA)
     }
@@ -2007,6 +2028,32 @@ mod tests {
 
         assert_eq!(params.video.fps, 60);
         assert!(params.layout.camera_mirror);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn zero_copy_camera_capture_prefers_bgra_when_available() {
+        use objc2_core_video::{kCVPixelFormatType_32BGRA, kCVPixelFormatType_422YpCbCr8};
+
+        let selected = super::macos::select_preferred_capture_pixel_format(
+            &[kCVPixelFormatType_422YpCbCr8, kCVPixelFormatType_32BGRA],
+            true,
+        );
+
+        assert_eq!(selected, kCVPixelFormatType_32BGRA);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn non_zero_copy_camera_capture_keeps_yuv_preference() {
+        use objc2_core_video::{kCVPixelFormatType_32BGRA, kCVPixelFormatType_422YpCbCr8};
+
+        let selected = super::macos::select_preferred_capture_pixel_format(
+            &[kCVPixelFormatType_422YpCbCr8, kCVPixelFormatType_32BGRA],
+            false,
+        );
+
+        assert_eq!(selected, kCVPixelFormatType_422YpCbCr8);
     }
 
     #[test]
