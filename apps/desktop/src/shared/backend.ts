@@ -313,7 +313,15 @@ export interface ActiveSceneState {
 }
 
 export type RtmpPreset = 'youtube' | 'twitch' | 'x' | 'custom'
-export type VideoPreset = 'tutorial-1080p30' | 'tutorial-1440p30' | 'stream-1080p60' | 'custom'
+export type VideoPreset =
+  | 'tutorial-1080p30'
+  | 'tutorial-1440p30'
+  | 'record-4k30'
+  | 'record-4k60-experimental'
+  | 'stream-safe-1080p30'
+  | 'stream-safe-1080p60'
+  | 'stream-1080p60'
+  | 'custom'
 
 export interface VideoSettings {
   preset: VideoPreset

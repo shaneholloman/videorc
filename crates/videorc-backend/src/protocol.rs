@@ -536,6 +536,14 @@ pub enum VideoPreset {
     Tutorial1080p30,
     #[serde(rename = "tutorial-1440p30")]
     Tutorial1440p30,
+    #[serde(rename = "record-4k30")]
+    Record4k30,
+    #[serde(rename = "record-4k60-experimental")]
+    Record4k60Experimental,
+    #[serde(rename = "stream-safe-1080p30")]
+    StreamSafe1080p30,
+    #[serde(rename = "stream-safe-1080p60")]
+    StreamSafe1080p60,
     #[serde(rename = "stream-1080p60")]
     Stream1080p60,
     Custom,
@@ -1834,6 +1842,26 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CameraTransformMode::Custom).unwrap(),
             serde_json::json!("custom")
+        );
+    }
+
+    #[test]
+    fn video_presets_serialize_to_product_profile_labels() {
+        assert_eq!(
+            serde_json::to_value(VideoPreset::Record4k30).unwrap(),
+            serde_json::json!("record-4k30")
+        );
+        assert_eq!(
+            serde_json::to_value(VideoPreset::Record4k60Experimental).unwrap(),
+            serde_json::json!("record-4k60-experimental")
+        );
+        assert_eq!(
+            serde_json::to_value(VideoPreset::StreamSafe1080p30).unwrap(),
+            serde_json::json!("stream-safe-1080p30")
+        );
+        assert_eq!(
+            serde_json::to_value(VideoPreset::StreamSafe1080p60).unwrap(),
+            serde_json::json!("stream-safe-1080p60")
         );
     }
 

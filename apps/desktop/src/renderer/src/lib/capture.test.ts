@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import type { CaptureConfig } from './capture'
-import { normalizeAudioSettings, normalizeMicrophoneSyncOffsetMs, smokePreviewCompositorCaptureConfig } from './capture'
+import {
+  normalizeAudioSettings,
+  normalizeMicrophoneSyncOffsetMs,
+  normalizeVideoSettings,
+  smokePreviewCompositorCaptureConfig,
+  videoPresets
+} from './capture'
 
 describe('smokePreviewCompositorCaptureConfig', () => {
   it('uses a renderable test-pattern source instead of stopped real preview sources', () => {
@@ -73,5 +79,41 @@ describe('normalizeMicrophoneSyncOffsetMs', () => {
 
   it('uses the provided fallback when the value is not numeric', () => {
     expect(normalizeMicrophoneSyncOffsetMs('nope', -120)).toBe(-120)
+  })
+})
+
+describe('videoPresets', () => {
+  it('includes first-class 4K recording and platform-safe streaming presets', () => {
+    expect(videoPresets['record-4k30']).toMatchObject({
+      width: 3840,
+      height: 2160,
+      fps: 30,
+      bitrateKbps: 30000
+    })
+    expect(videoPresets['record-4k60-experimental']).toMatchObject({
+      width: 3840,
+      height: 2160,
+      fps: 60,
+      bitrateKbps: 50000
+    })
+    expect(videoPresets['stream-safe-1080p30']).toMatchObject({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      bitrateKbps: 6000
+    })
+    expect(videoPresets['stream-safe-1080p60']).toMatchObject({
+      width: 1920,
+      height: 1080,
+      fps: 60,
+      bitrateKbps: 6000
+    })
+  })
+
+  it('normalizes persisted first-class presets through the shared map', () => {
+    expect(normalizeVideoSettings({ preset: 'record-4k30' })).toEqual(videoPresets['record-4k30'])
+    expect(normalizeVideoSettings({ preset: 'stream-safe-1080p30' })).toEqual(
+      videoPresets['stream-safe-1080p30']
+    )
   })
 })

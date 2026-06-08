@@ -127,6 +127,34 @@ export const videoPresets: Record<VideoPreset, VideoSettings> = {
     fps: 30,
     bitrateKbps: 8000
   },
+  'record-4k30': {
+    preset: 'record-4k30',
+    width: 3840,
+    height: 2160,
+    fps: 30,
+    bitrateKbps: 30000
+  },
+  'record-4k60-experimental': {
+    preset: 'record-4k60-experimental',
+    width: 3840,
+    height: 2160,
+    fps: 60,
+    bitrateKbps: 50000
+  },
+  'stream-safe-1080p30': {
+    preset: 'stream-safe-1080p30',
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    bitrateKbps: 6000
+  },
+  'stream-safe-1080p60': {
+    preset: 'stream-safe-1080p60',
+    width: 1920,
+    height: 1080,
+    fps: 60,
+    bitrateKbps: 6000
+  },
   'stream-1080p60': {
     preset: 'stream-1080p60',
     width: 1920,

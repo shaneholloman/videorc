@@ -63,6 +63,19 @@ pnpm baseline:real-source:4k30:endurance -- --gate
 
 Both commands request real sources at `3840x2160`, `30fps`, `30000kbps`, and launch the screen motion stimulus so freeze/repeated-frame gates measure moving content.
 
+## Output Profiles
+
+Phase 2 introduces first-class profile IDs for the committed recording/streaming surface:
+
+| Profile | Size | FPS | Bitrate | Intent |
+|---|---:|---:|---:|---|
+| `record-4k30` | 3840x2160 | 30 | 30000kbps | Required local recording target. |
+| `stream-safe-1080p30` | 1920x1080 | 30 | 6000kbps | v1 platform-safe livestream target. |
+| `stream-safe-1080p60` | 1920x1080 | 60 | 6000kbps | Optional safe stream target when 60fps is explicitly allowed. |
+| `record-4k60-experimental` | 3840x2160 | 60 | 50000kbps | Experimental only, not a v1 acceptance requirement. |
+
+Existing `tutorial-1080p30`, `tutorial-1440p30`, `stream-1080p60`, and `custom` presets remain for compatibility until later policy slices decide which product paths stay visible.
+
 ## First Internal Gate
 
 The first internal checkpoint is:

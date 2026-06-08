@@ -47,6 +47,10 @@ export function RecordingTab(): ReactElement {
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
+                  <SelectItem value="record-4k30">Record 4K30</SelectItem>
+                  <SelectItem value="record-4k60-experimental">Record 4K60 experimental</SelectItem>
+                  <SelectItem value="stream-safe-1080p30">Stream-safe 1080p30</SelectItem>
+                  <SelectItem value="stream-safe-1080p60">Stream-safe 1080p60</SelectItem>
                   <SelectItem value="tutorial-1440p30">Tutorial 1440p30</SelectItem>
                   <SelectItem value="tutorial-1080p30">Tutorial 1080p30</SelectItem>
                   <SelectItem value="stream-1080p60">Stream 1080p60</SelectItem>
