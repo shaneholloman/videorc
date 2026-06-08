@@ -3529,6 +3529,83 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_compose_supports_side_by_side_screen_camera_layout() {
+        let Some(mut gpu) = new_gpu_compositor() else {
+            eprintln!("skipping: Metal compositor unavailable");
+            return;
+        };
+        let mut layout = crate::protocol::default_layout_settings();
+        layout.layout_preset = LayoutPreset::SideBySide;
+        layout.side_by_side_split = crate::protocol::SideBySideSplit::SixtyForty;
+        layout.side_by_side_camera_side = crate::protocol::SideBySideCameraSide::Left;
+        let scene = crate::scene::scene_from_capture_config(SceneConfigParams {
+            sources: SourceSelection {
+                screen_id: Some("screen-1".to_string()),
+                window_id: None,
+                camera_id: Some("camera-1".to_string()),
+                microphone_id: None,
+                test_pattern: false,
+            },
+            layout: layout.clone(),
+            video: Some(VideoSettings {
+                preset: VideoPreset::Custom,
+                width: 10,
+                height: 4,
+                fps: 30,
+                bitrate_kbps: 2000,
+            }),
+        });
+        let snapshot = CompositorSceneSnapshot {
+            revision: 1,
+            scene: Some(scene),
+            layout,
+            active_screen: None,
+        };
+        let screen_frame = Arc::new(crate::frame_store::StoredFrame {
+            sequence: 1,
+            width: 4,
+            height: 4,
+            pixel_format: PreviewScreenPixelFormat::Bgra8,
+            metadata: (),
+            bytes: [255, 0, 0, 255].repeat(16),
+            source_iosurface: None,
+            source_pixel_buffer: None,
+            captured_at: Instant::now(),
+        });
+        let camera_frame = Arc::new(crate::frame_store::StoredFrame {
+            sequence: 1,
+            width: 4,
+            height: 4,
+            pixel_format: PreviewCameraPixelFormat::Bgra8,
+            metadata: (),
+            bytes: [0, 0, 255, 255].repeat(16),
+            source_iosurface: None,
+            source_pixel_buffer: None,
+            captured_at: Instant::now(),
+        });
+
+        let output = try_gpu_compose(
+            Some(&mut gpu),
+            &CompositorRenderInputs {
+                sequence: 1,
+                width: 10,
+                height: 4,
+                snapshot: Some(&snapshot),
+                active_image_source: None,
+                camera_frame: Some(&camera_frame),
+                screen_frame: Some(&screen_frame),
+            },
+            true,
+        )
+        .expect("side-by-side layout should render on Metal");
+
+        assert_eq!(output.yuv.len(), raw_yuv420p_len(10, 4));
+        assert!(output.pixel_format.has_metal_iosurface_target());
+        assert!(output.timings.source_texture_ms >= 0.0);
+    }
+
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn publish_compositor_frame_retains_metal_target_export_handle_or_skips() {
         let Some(mut gpu) = new_gpu_compositor() else {
