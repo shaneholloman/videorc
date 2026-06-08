@@ -58,8 +58,10 @@ Named Phase 1 commands replace env-var memory for the required 4K baseline:
 
 ```sh
 pnpm baseline:real-source:4k30 -- --gate
+pnpm baseline:evidence:4k30 -- <path-to-run.evidence.json>
 pnpm baseline:real-source:4k30:av-sync -- --gate
 pnpm baseline:real-source:4k30:endurance -- --gate
+pnpm baseline:evidence:4k30:endurance -- <path-to-endurance.evidence.json>
 ```
 
 The motion and endurance commands request real sources at `3840x2160`, `30fps`, `30000kbps`, and launch the screen motion stimulus so freeze/repeated-frame gates measure moving content. The A/V-sync command uses the same 4K30 output request with the flash/click stimulus for `pnpm measure:av-sync`.

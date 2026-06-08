@@ -1401,6 +1401,7 @@ function writeEvidenceManifest(
     sources: selectedSourcesManifest(sources),
     diagnostics: gateDiagnosticsManifest(diagnostics, {
       finalMetrics: report?.metrics,
+      finalFilePath: report?.file ?? outputPath,
       startupMetrics: startupReport?.metrics,
       previewTransport,
       previewSurfaceOutputFailures,
@@ -1509,7 +1510,7 @@ function sourceManifest(source) {
 
 function gateDiagnosticsManifest(
   diagnostics,
-  { finalMetrics, startupMetrics, previewTransport, previewSurfaceOutputFailures = [] }
+  { finalMetrics, finalFilePath = null, startupMetrics, previewTransport, previewSurfaceOutputFailures = [] }
 ) {
   return {
     previewTransportRequested: previewTransport,
@@ -1544,7 +1545,7 @@ function gateDiagnosticsManifest(
     minEncoderSpeed: diagnostics.minEncoderSpeed,
     finalFile: finalMetrics
       ? {
-          path: finalMetrics.file ?? null,
+          path: finalFilePath,
           width: finalMetrics.width ?? null,
           height: finalMetrics.height ?? null,
           durationSeconds: finalMetrics.durationSeconds ?? null,
