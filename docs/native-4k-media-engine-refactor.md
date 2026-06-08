@@ -52,6 +52,17 @@ Diagnostics and acceptance reports use this shared vocabulary for the strongest 
 
 For now the mode is computed by `scripts/lib/media-quality-mode.mjs` from summarized run diagnostics and printed by `pnpm baseline:real-source` reports. It is diagnostics/reporting vocabulary only; Studio UI health remains the separate Ready/Live/Degraded/Blocked signal until the native-preview UI slices promote this vocabulary deliberately.
 
+## 4K Measurement Commands
+
+Named Phase 1 commands replace env-var memory for the required 4K baseline:
+
+```sh
+pnpm baseline:real-source:4k30 -- --gate
+pnpm baseline:real-source:4k30:endurance -- --gate
+```
+
+Both commands request real sources at `3840x2160`, `30fps`, `30000kbps`, and launch the screen motion stimulus so freeze/repeated-frame gates measure moving content.
+
 ## First Internal Gate
 
 The first internal checkpoint is:
