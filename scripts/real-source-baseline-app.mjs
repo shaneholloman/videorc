@@ -332,6 +332,8 @@ async function main() {
           claimsNative,
           requireObsNativePreview: !config.noPreviewSurface,
           requireGpuCompositor: true,
+          requestedOutput: requestedOutputSettings(),
+          require4kMediaEvidence: requires4kMediaEvidence(),
           expectAudio: Boolean(sources.microphone),
         },
         acceptanceGates()
@@ -1650,6 +1652,10 @@ function videoSettings() {
 
 function requestedOutputSettings() {
   return { width: config.width, height: config.height, fps: config.fps, bitrateKbps: config.bitrateKbps }
+}
+
+function requires4kMediaEvidence() {
+  return config.width >= 3840 && config.height >= 2160 && config.fps >= 30
 }
 
 function previewSourceParams(sources) {

@@ -29,6 +29,33 @@ const cleanInput = () => ({
   expectAudio: true,
 })
 
+const dimensions = (width, height) => ({
+  latest: { width, height },
+  max: { width, height },
+  observed: [`${width}x${height}`],
+  sampleCount: 3,
+})
+
+const clean4kInput = () => {
+  const input = cleanInput()
+  input.requireGpuCompositor = true
+  input.requireObsNativePreview = true
+  input.require4kMediaEvidence = true
+  input.requestedOutput = { width: 3840, height: 2160, fps: 30 }
+  input.startupVerdict = { pass: true, failures: [] }
+  input.diagnostics.compositorBackend = 'metal'
+  input.diagnostics.compositorCpuFallbackFrames = 0
+  input.diagnostics.encoderBridgeVideoToolboxOutputFrames = 120
+  input.diagnostics.mediaDimensions = {
+    requestedOutput: input.requestedOutput,
+    screenSource: dimensions(3840, 2160),
+    compositorScreenSource: dimensions(3840, 2160),
+    compositorTarget: dimensions(3840, 2160),
+    compositorMetalTarget: dimensions(3840, 2160),
+  }
+  return input
+}
+
 describe('evaluateAcceptance', () => {
   it('passes a clean real-source run', () => {
     const v = evaluateAcceptance(cleanInput())
@@ -256,6 +283,57 @@ describe('evaluateAcceptance', () => {
     fallback.diagnostics.previewInputToPresentLatencyMs = 180
     fallback.diagnostics.previewCompositorFrameLag = 5
     assert.equal(evaluateAcceptance(fallback).pass, true)
+  })
+
+  it('passes a clean 4K media evidence fixture', () => {
+    const v = evaluateAcceptance(clean4kInput())
+
+    assert.equal(v.pass, true)
+    assert.deepEqual(v.failures, [])
+  })
+
+  it('fails the 4K fixture when the compositor falls back to CPU', () => {
+    const input = clean4kInput()
+    input.diagnostics.compositorBackend = 'cpu-fallback'
+    input.diagnostics.compositorCpuFallbackFrames = 1
+    const v = evaluateAcceptance(input)
+
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /expected Metal backend/)
+    assert.match(v.failures.join(' '), /1 CPU fallback frame/)
+  })
+
+  it('fails the 4K fixture when raw copied frames are still present', () => {
+    const input = clean4kInput()
+    input.diagnostics.encoderBridgeRawVideoCopiedFrames = 12
+    input.diagnostics.encoderBridgeMetalTargetCopiedFrames = 12
+    input.diagnostics.encoderBridgeZeroCopyFrames = 0
+    const v = evaluateAcceptance(input)
+
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /still copied through the raw-video FFmpeg bridge/)
+    assert.match(v.failures.join(' '), /expected zero-copy/)
+  })
+
+  it('fails the 4K fixture when the screen source is downscaled', () => {
+    const input = clean4kInput()
+    input.diagnostics.mediaDimensions.screenSource = dimensions(1920, 1080)
+    const v = evaluateAcceptance(input)
+
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /screen source capture: 1920x1080 below requested 3840x2160/)
+  })
+
+  it('fails the 4K fixture when first-frame dimensions fail startup analysis', () => {
+    const input = clean4kInput()
+    input.startupVerdict = {
+      pass: false,
+      failures: ['first startup frame 1920x1080 does not match expected 3840x2160'],
+    }
+    const v = evaluateAcceptance(input)
+
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /startup: first startup frame 1920x1080/)
   })
 
   it('accumulates every failure at once', () => {

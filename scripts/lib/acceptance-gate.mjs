@@ -26,6 +26,8 @@ export const DEFAULT_ACCEPTANCE_GATES = Object.freeze({
  * @param {boolean} input.claimsNative - whether the preview reported the real native Metal transport
  * @param {boolean} [input.requireObsNativePreview] - whether OBS parity requires that real native transport
  * @param {boolean} [input.requireGpuCompositor] - whether OBS parity requires the Metal compositor/backend export path
+ * @param {{width:number,height:number,fps:number}} [input.requestedOutput] - requested recording output dimensions
+ * @param {boolean} [input.require4kMediaEvidence] - whether 4K source/compositor/Metal evidence is required
  * @param {boolean} input.expectAudio - whether a mic was selected
  * @param {object} [gates]
  * @returns {{pass:boolean, failures:string[]}}
@@ -92,6 +94,14 @@ export function evaluateAcceptance(input, gates = DEFAULT_ACCEPTANCE_GATES) {
   }
   if (input.requireGpuCompositor && (d.encoderBridgeZeroCopyFrames ?? 0) <= 0) {
     failures.push('recording: expected zero-copy encoder bridge frames, got none')
+  }
+
+  // 2c. 4K evidence: the 4K command must not pass because the final mux happened to
+  // write a 4K container around a downscaled source/compositor path.
+  if (input.require4kMediaEvidence) {
+    for (const failure of evaluate4kMediaEvidence(d.mediaDimensions, input.requestedOutput)) {
+      failures.push(failure)
+    }
   }
 
   // 3. Encoder progress speed is useful live telemetry, but VideoToolbox can report
@@ -175,4 +185,64 @@ export function evaluateAcceptance(input, gates = DEFAULT_ACCEPTANCE_GATES) {
   }
 
   return { pass: failures.length === 0, failures }
+}
+
+function evaluate4kMediaEvidence(mediaDimensions, requestedOutput) {
+  const failures = []
+  const requested = requestedOutput ?? mediaDimensions?.requestedOutput
+  if (!isAtLeast(requested?.width, 3840) || !isAtLeast(requested?.height, 2160) || !isAtLeast(requested?.fps, 30)) {
+    failures.push(
+      `4k: expected requested output at least 3840x2160@30, got ${formatDimension(requested?.width, requested?.height)}@${requested?.fps ?? 'n/a'}`
+    )
+    return failures
+  }
+
+  requireDimensionAtLeast(
+    failures,
+    '4k: screen source capture',
+    mediaDimensions?.screenSource?.max,
+    requested
+  )
+  requireDimensionAtLeast(
+    failures,
+    '4k: compositor screen source',
+    mediaDimensions?.compositorScreenSource?.max,
+    requested
+  )
+  requireDimensionAtLeast(
+    failures,
+    '4k: compositor target',
+    mediaDimensions?.compositorTarget?.max,
+    requested
+  )
+  requireDimensionAtLeast(
+    failures,
+    '4k: Metal target',
+    mediaDimensions?.compositorMetalTarget?.max,
+    requested
+  )
+
+  return failures
+}
+
+function requireDimensionAtLeast(failures, label, actual, requested) {
+  if (!actual) {
+    failures.push(`${label}: dimensions not reported`)
+    return
+  }
+  if (!isAtLeast(actual.width, requested.width) || !isAtLeast(actual.height, requested.height)) {
+    failures.push(
+      `${label}: ${formatDimension(actual.width, actual.height)} below requested ${formatDimension(requested.width, requested.height)}`
+    )
+  }
+}
+
+function isAtLeast(value, minimum) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= minimum
+}
+
+function formatDimension(width, height) {
+  const w = typeof width === 'number' && Number.isFinite(width) ? Math.round(width) : 'n/a'
+  const h = typeof height === 'number' && Number.isFinite(height) ? Math.round(height) : 'n/a'
+  return `${w}x${h}`
 }
