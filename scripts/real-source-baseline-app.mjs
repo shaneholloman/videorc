@@ -780,9 +780,22 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
       ...surfaceSamples.map((s) => num(s.compositorFrameLag)).filter((v) => v !== null),
     ]),
     previewCameraFrameAgeMs: maxOf(collect('previewCameraFrameAgeMs')),
+    previewCameraState: lastValue('previewCameraState'),
+    previewCameraDeviceUniqueId: lastValue('previewCameraDeviceUniqueId'),
+    previewCameraStatusMessage: lastValue('previewCameraStatusMessage'),
+    previewCameraRequestedWidth: maxOf(collect('previewCameraRequestedWidth')),
+    previewCameraRequestedHeight: maxOf(collect('previewCameraRequestedHeight')),
+    previewCameraActualWidth: maxOf(collect('previewCameraActualWidth')),
+    previewCameraActualHeight: maxOf(collect('previewCameraActualHeight')),
+    previewCameraSelectedFormatWidth: maxOf(collect('previewCameraSelectedFormatWidth')),
+    previewCameraSelectedFormatHeight: maxOf(collect('previewCameraSelectedFormatHeight')),
+    previewCameraSelectedFormatMinFps: maxOf(collect('previewCameraSelectedFormatMinFps')),
+    previewCameraSelectedFormatMaxFps: maxOf(collect('previewCameraSelectedFormatMaxFps')),
     previewCameraCaptureGapP95Ms: maxOf(collect('previewCameraCaptureGapP95Ms')),
+    previewCameraCaptureGapP99Ms: maxOf(collect('previewCameraCaptureGapP99Ms')),
     previewCameraCaptureGapMaxMs: maxOf(collect('previewCameraCaptureGapMaxMs')),
     previewCameraSamplePtsGapP95Ms: maxOf(collect('previewCameraSamplePtsGapP95Ms')),
+    previewCameraSamplePtsGapP99Ms: maxOf(collect('previewCameraSamplePtsGapP99Ms')),
     previewCameraSamplePtsGapMaxMs: maxOf(collect('previewCameraSamplePtsGapMaxMs')),
     previewCameraPixelBufferLockP95Ms: maxOf(collect('previewCameraPixelBufferLockP95Ms')),
     previewCameraRowCopyP95Ms: maxOf(collect('previewCameraRowCopyP95Ms')),
@@ -1293,6 +1306,12 @@ function append4kMediaPathEvidence(lines, { sources, diagnostics, report, startu
     `- Source native/requested/actual: camera native ${formatDimensionSummary(media.cameraSource)} / requested ${formatRequestedSource(requested)} / compositor actual ${formatDimensionSummary(media.compositorCameraSource)}`
   )
   lines.push(
+    `- Camera source health: state ${diagnostics.previewCameraState ?? 'n/a'} | selected ${formatDimension(diagnostics.previewCameraSelectedFormatWidth, diagnostics.previewCameraSelectedFormatHeight)} @ ${formatRange(diagnostics.previewCameraSelectedFormatMinFps, diagnostics.previewCameraSelectedFormatMaxFps)}fps | requested ${formatDimension(diagnostics.previewCameraRequestedWidth, diagnostics.previewCameraRequestedHeight)} @ ${requested.fps ?? 'n/a'}fps | actual ${formatDimension(diagnostics.previewCameraActualWidth, diagnostics.previewCameraActualHeight)} @ ${formatRange(diagnostics.previewCameraSourceFps, diagnostics.previewCameraSourceFps)}fps | dropped ${diagnostics.previewCameraDroppedFrames ?? 'n/a'}`
+  )
+  lines.push(
+    `- Camera frame intervals: callback p95 ${formatMilliseconds(diagnostics.previewCameraCaptureGapP95Ms)} / p99 ${formatMilliseconds(diagnostics.previewCameraCaptureGapP99Ms)} / max ${formatMilliseconds(diagnostics.previewCameraCaptureGapMaxMs)} | PTS p95 ${formatMilliseconds(diagnostics.previewCameraSamplePtsGapP95Ms)} / p99 ${formatMilliseconds(diagnostics.previewCameraSamplePtsGapP99Ms)} / max ${formatMilliseconds(diagnostics.previewCameraSamplePtsGapMaxMs)} | copy lock ${formatMilliseconds(diagnostics.previewCameraPixelBufferLockP95Ms)} / rows ${formatMilliseconds(diagnostics.previewCameraRowCopyP95Ms)} / publish ${formatMilliseconds(diagnostics.previewCameraPublishP95Ms)}`
+  )
+  lines.push(
     `- Camera capability matrix: ${formatCameraCapabilityMatrix(diagnostics.previewCameraCapabilityFormats)}${diagnostics.previewCameraCapabilityError ? ` | error ${diagnostics.previewCameraCapabilityError}` : ''}`
   )
   lines.push(
@@ -1377,6 +1396,10 @@ function formatDimensionSummaryOr(summary, fallback) {
 
 function formatBoolean(value) {
   return typeof value === 'boolean' ? (value ? 'yes' : 'no') : 'n/a'
+}
+
+function formatMilliseconds(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)}ms` : 'n/a'
 }
 
 function formatCameraCapabilityMatrix(formats) {

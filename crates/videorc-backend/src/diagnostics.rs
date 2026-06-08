@@ -159,12 +159,25 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         preview_camera_frame_age_ms: None,
         preview_camera_source_fps: None,
         preview_camera_dropped_frames: 0,
+        preview_camera_state: None,
+        preview_camera_device_unique_id: None,
+        preview_camera_status_message: None,
+        preview_camera_requested_width: None,
+        preview_camera_requested_height: None,
+        preview_camera_actual_width: None,
+        preview_camera_actual_height: None,
+        preview_camera_selected_format_width: None,
+        preview_camera_selected_format_height: None,
+        preview_camera_selected_format_min_fps: None,
+        preview_camera_selected_format_max_fps: None,
         preview_camera_capability_device_id: None,
         preview_camera_capability_formats: Vec::new(),
         preview_camera_capability_error: None,
         preview_camera_capture_gap_p95_ms: None,
+        preview_camera_capture_gap_p99_ms: None,
         preview_camera_capture_gap_max_ms: None,
         preview_camera_sample_pts_gap_p95_ms: None,
+        preview_camera_sample_pts_gap_p99_ms: None,
         preview_camera_sample_pts_gap_max_ms: None,
         preview_camera_pixel_buffer_lock_p95_ms: None,
         preview_camera_row_copy_p95_ms: None,
@@ -537,6 +550,17 @@ pub fn apply_preview_camera_source_stats(
     stats.preview_camera_frame_age_ms = status.frame_age_ms;
     stats.preview_camera_source_fps = status.source_fps;
     stats.preview_camera_dropped_frames = status.dropped_frames;
+    stats.preview_camera_state = Some(status.state.clone());
+    stats.preview_camera_device_unique_id = status.device_unique_id.clone();
+    stats.preview_camera_status_message = status.message.clone();
+    stats.preview_camera_requested_width = status.requested_width;
+    stats.preview_camera_requested_height = status.requested_height;
+    stats.preview_camera_actual_width = status.actual_width;
+    stats.preview_camera_actual_height = status.actual_height;
+    stats.preview_camera_selected_format_width = status.selected_format_width;
+    stats.preview_camera_selected_format_height = status.selected_format_height;
+    stats.preview_camera_selected_format_min_fps = status.selected_format_min_fps;
+    stats.preview_camera_selected_format_max_fps = status.selected_format_max_fps;
     if status.dropped_frames > 0 {
         stats.bottleneck = DiagnosticBottleneck::Capture;
     }
@@ -560,8 +584,10 @@ pub fn apply_preview_camera_capability_stats(
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PreviewCameraCaptureTimingStats {
     pub capture_gap_p95_ms: Option<f64>,
+    pub capture_gap_p99_ms: Option<f64>,
     pub capture_gap_max_ms: Option<f64>,
     pub sample_pts_gap_p95_ms: Option<f64>,
+    pub sample_pts_gap_p99_ms: Option<f64>,
     pub sample_pts_gap_max_ms: Option<f64>,
     pub pixel_buffer_lock_p95_ms: Option<f64>,
     pub row_copy_p95_ms: Option<f64>,
@@ -574,8 +600,10 @@ pub fn apply_preview_camera_capture_timing_stats(
     timings: PreviewCameraCaptureTimingStats,
 ) -> DiagnosticStats {
     stats.preview_camera_capture_gap_p95_ms = timings.capture_gap_p95_ms;
+    stats.preview_camera_capture_gap_p99_ms = timings.capture_gap_p99_ms;
     stats.preview_camera_capture_gap_max_ms = timings.capture_gap_max_ms;
     stats.preview_camera_sample_pts_gap_p95_ms = timings.sample_pts_gap_p95_ms;
+    stats.preview_camera_sample_pts_gap_p99_ms = timings.sample_pts_gap_p99_ms;
     stats.preview_camera_sample_pts_gap_max_ms = timings.sample_pts_gap_max_ms;
     stats.preview_camera_pixel_buffer_lock_p95_ms = timings.pixel_buffer_lock_p95_ms;
     stats.preview_camera_row_copy_p95_ms = timings.row_copy_p95_ms;
@@ -969,7 +997,7 @@ fn active_media_process_count(name: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{PreviewScreenSourceKind, PreviewScreenState};
+    use crate::protocol::{PreviewCameraState, PreviewScreenSourceKind, PreviewScreenState};
 
     #[test]
     fn preview_transport_counters_track_each_route_independently() {
@@ -1133,6 +1161,17 @@ mod tests {
         assert_eq!(stats.preview_camera_frame_age_ms, None);
         assert_eq!(stats.preview_camera_source_fps, None);
         assert_eq!(stats.preview_camera_dropped_frames, 0);
+        assert_eq!(stats.preview_camera_state, None);
+        assert_eq!(stats.preview_camera_device_unique_id, None);
+        assert_eq!(stats.preview_camera_status_message, None);
+        assert_eq!(stats.preview_camera_requested_width, None);
+        assert_eq!(stats.preview_camera_requested_height, None);
+        assert_eq!(stats.preview_camera_actual_width, None);
+        assert_eq!(stats.preview_camera_actual_height, None);
+        assert_eq!(stats.preview_camera_selected_format_width, None);
+        assert_eq!(stats.preview_camera_selected_format_height, None);
+        assert_eq!(stats.preview_camera_selected_format_min_fps, None);
+        assert_eq!(stats.preview_camera_selected_format_max_fps, None);
         assert_eq!(stats.preview_camera_capability_device_id, None);
         assert!(stats.preview_camera_capability_formats.is_empty());
         assert_eq!(stats.preview_camera_capability_error, None);
@@ -1310,8 +1349,10 @@ mod tests {
             idle_diagnostics(),
             PreviewCameraCaptureTimingStats {
                 capture_gap_p95_ms: Some(33.1),
+                capture_gap_p99_ms: Some(48.9),
                 capture_gap_max_ms: Some(72.4),
                 sample_pts_gap_p95_ms: Some(33.3),
+                sample_pts_gap_p99_ms: Some(50.0),
                 sample_pts_gap_max_ms: Some(66.7),
                 pixel_buffer_lock_p95_ms: Some(0.3),
                 row_copy_p95_ms: Some(4.2),
@@ -1321,13 +1362,57 @@ mod tests {
         );
 
         assert_eq!(stats.preview_camera_capture_gap_p95_ms, Some(33.1));
+        assert_eq!(stats.preview_camera_capture_gap_p99_ms, Some(48.9));
         assert_eq!(stats.preview_camera_capture_gap_max_ms, Some(72.4));
         assert_eq!(stats.preview_camera_sample_pts_gap_p95_ms, Some(33.3));
+        assert_eq!(stats.preview_camera_sample_pts_gap_p99_ms, Some(50.0));
         assert_eq!(stats.preview_camera_sample_pts_gap_max_ms, Some(66.7));
         assert_eq!(stats.preview_camera_pixel_buffer_lock_p95_ms, Some(0.3));
         assert_eq!(stats.preview_camera_row_copy_p95_ms, Some(4.2));
         assert_eq!(stats.preview_camera_publish_p95_ms, Some(0.8));
         assert_eq!(stats.preview_camera_frame_bytes, 3_686_400);
+    }
+
+    #[test]
+    fn preview_camera_source_stats_record_format_and_state_evidence() {
+        let stats = apply_preview_camera_source_stats(
+            idle_diagnostics(),
+            &PreviewCameraStatus {
+                state: PreviewCameraState::Live,
+                camera_id: Some("camera:avfoundation-native:abc".to_string()),
+                device_unique_id: Some("device-abc".to_string()),
+                target_fps: 60,
+                width: Some(1920),
+                height: Some(1080),
+                requested_width: Some(3840),
+                requested_height: Some(2160),
+                actual_width: Some(1920),
+                actual_height: Some(1080),
+                selected_format_width: Some(1920),
+                selected_format_height: Some(1080),
+                selected_format_min_fps: Some(1.0),
+                selected_format_max_fps: Some(60.0),
+                source_fps: Some(59.94),
+                frame_age_ms: Some(8),
+                frames_captured: 120,
+                dropped_frames: 0,
+                sequence: Some(120),
+                updated_at: "2026-06-08T00:00:00Z".to_string(),
+                message: Some("Live".to_string()),
+            },
+        );
+
+        assert_eq!(stats.preview_camera_state, Some(PreviewCameraState::Live));
+        assert_eq!(
+            stats.preview_camera_device_unique_id.as_deref(),
+            Some("device-abc")
+        );
+        assert_eq!(stats.preview_camera_requested_width, Some(3840));
+        assert_eq!(stats.preview_camera_requested_height, Some(2160));
+        assert_eq!(stats.preview_camera_actual_width, Some(1920));
+        assert_eq!(stats.preview_camera_actual_height, Some(1080));
+        assert_eq!(stats.preview_camera_selected_format_width, Some(1920));
+        assert_eq!(stats.preview_camera_selected_format_max_fps, Some(60.0));
     }
 
     #[test]

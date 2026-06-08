@@ -1037,6 +1037,39 @@ pub struct DiagnosticStats {
     pub preview_camera_frame_age_ms: Option<u64>,
     pub preview_camera_source_fps: Option<f64>,
     pub preview_camera_dropped_frames: u64,
+    /// Latest native camera state reported by the AVFoundation preview source.
+    #[serde(default)]
+    pub preview_camera_state: Option<PreviewCameraState>,
+    /// Native AVFoundation unique ID for the selected camera.
+    #[serde(default)]
+    pub preview_camera_device_unique_id: Option<String>,
+    /// Latest native camera status message, including permission/device-missing reasons.
+    #[serde(default)]
+    pub preview_camera_status_message: Option<String>,
+    /// Camera capture width requested by layout/output policy.
+    #[serde(default)]
+    pub preview_camera_requested_width: Option<u32>,
+    /// Camera capture height requested by layout/output policy.
+    #[serde(default)]
+    pub preview_camera_requested_height: Option<u32>,
+    /// Latest actual camera frame width received from AVFoundation.
+    #[serde(default)]
+    pub preview_camera_actual_width: Option<u32>,
+    /// Latest actual camera frame height received from AVFoundation.
+    #[serde(default)]
+    pub preview_camera_actual_height: Option<u32>,
+    /// Selected native AVFoundation format width.
+    #[serde(default)]
+    pub preview_camera_selected_format_width: Option<u32>,
+    /// Selected native AVFoundation format height.
+    #[serde(default)]
+    pub preview_camera_selected_format_height: Option<u32>,
+    /// Selected native AVFoundation format minimum FPS.
+    #[serde(default)]
+    pub preview_camera_selected_format_min_fps: Option<f64>,
+    /// Selected native AVFoundation format maximum FPS.
+    #[serde(default)]
+    pub preview_camera_selected_format_max_fps: Option<f64>,
     /// Native AVFoundation camera whose capability matrix was sampled.
     #[serde(default)]
     pub preview_camera_capability_device_id: Option<String>,
@@ -1049,12 +1082,18 @@ pub struct DiagnosticStats {
     /// P95 interval between AVFoundation camera sample callbacks.
     #[serde(default)]
     pub preview_camera_capture_gap_p95_ms: Option<f64>,
+    /// P99 interval between AVFoundation camera sample callbacks.
+    #[serde(default)]
+    pub preview_camera_capture_gap_p99_ms: Option<f64>,
     /// Max interval between AVFoundation camera sample callbacks.
     #[serde(default)]
     pub preview_camera_capture_gap_max_ms: Option<f64>,
     /// P95 interval between AVFoundation camera sample presentation timestamps.
     #[serde(default)]
     pub preview_camera_sample_pts_gap_p95_ms: Option<f64>,
+    /// P99 interval between AVFoundation camera sample presentation timestamps.
+    #[serde(default)]
+    pub preview_camera_sample_pts_gap_p99_ms: Option<f64>,
     /// Max interval between AVFoundation camera sample presentation timestamps.
     #[serde(default)]
     pub preview_camera_sample_pts_gap_max_ms: Option<f64>,
@@ -1495,6 +1534,22 @@ pub struct PreviewCameraStatus {
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_format_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_format_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_format_min_fps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_format_max_fps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_fps: Option<f64>,
     pub frame_age_ms: Option<u64>,

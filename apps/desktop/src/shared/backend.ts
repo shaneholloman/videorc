@@ -1027,6 +1027,14 @@ export interface PreviewCameraStatus {
   targetFps: number
   width?: number
   height?: number
+  requestedWidth?: number
+  requestedHeight?: number
+  actualWidth?: number
+  actualHeight?: number
+  selectedFormatWidth?: number
+  selectedFormatHeight?: number
+  selectedFormatMinFps?: number
+  selectedFormatMaxFps?: number
   sourceFps?: number
   frameAgeMs?: number
   framesCaptured: number
@@ -1290,6 +1298,28 @@ export interface DiagnosticStats {
   previewCameraFrameAgeMs?: number
   previewCameraSourceFps?: number
   previewCameraDroppedFrames: number
+  /** Latest native camera state reported by the AVFoundation preview source. */
+  previewCameraState?: PreviewCameraState
+  /** Native AVFoundation unique ID for the selected camera. */
+  previewCameraDeviceUniqueId?: string
+  /** Latest native camera status message, including permission/device-missing reasons. */
+  previewCameraStatusMessage?: string
+  /** Camera capture width requested by layout/output policy. */
+  previewCameraRequestedWidth?: number
+  /** Camera capture height requested by layout/output policy. */
+  previewCameraRequestedHeight?: number
+  /** Latest actual camera frame width received from AVFoundation. */
+  previewCameraActualWidth?: number
+  /** Latest actual camera frame height received from AVFoundation. */
+  previewCameraActualHeight?: number
+  /** Selected native AVFoundation format width. */
+  previewCameraSelectedFormatWidth?: number
+  /** Selected native AVFoundation format height. */
+  previewCameraSelectedFormatHeight?: number
+  /** Selected native AVFoundation format minimum FPS. */
+  previewCameraSelectedFormatMinFps?: number
+  /** Selected native AVFoundation format maximum FPS. */
+  previewCameraSelectedFormatMaxFps?: number
   /** Native AVFoundation camera whose capability matrix was sampled. */
   previewCameraCapabilityDeviceId?: string
   /** Structured AVFoundation camera format matrix: one entry per resolution/fps range. */
@@ -1298,10 +1328,14 @@ export interface DiagnosticStats {
   previewCameraCapabilityError?: string
   /** P95 interval between AVFoundation camera sample callbacks. */
   previewCameraCaptureGapP95Ms?: number
+  /** P99 interval between AVFoundation camera sample callbacks. */
+  previewCameraCaptureGapP99Ms?: number
   /** Max interval between AVFoundation camera sample callbacks. */
   previewCameraCaptureGapMaxMs?: number
   /** P95 interval between AVFoundation camera sample presentation timestamps. */
   previewCameraSamplePtsGapP95Ms?: number
+  /** P99 interval between AVFoundation camera sample presentation timestamps. */
+  previewCameraSamplePtsGapP99Ms?: number
   /** Max interval between AVFoundation camera sample presentation timestamps. */
   previewCameraSamplePtsGapMaxMs?: number
   /** P95 time spent locking the AVFoundation camera CVPixelBuffer base address. */
