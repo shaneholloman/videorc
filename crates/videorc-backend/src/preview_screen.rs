@@ -564,6 +564,47 @@ fn choose_preview_dimensions(
     (width, height)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreviewScreenCaptureRequest {
+    native_width: u32,
+    native_height: u32,
+    requested_width: u32,
+    requested_height: u32,
+    requested_fps: u32,
+    include_cursor: bool,
+    exclude_current_process_windows: bool,
+    queue_depth: u32,
+    preserves_aspect_ratio: bool,
+    scales_to_fit: bool,
+}
+
+fn select_preview_screen_capture_request(
+    source_kind: &PreviewScreenSourceKind,
+    source_width: u32,
+    source_height: u32,
+    video: &VideoSettings,
+    include_cursor: bool,
+    exclude_current_process_windows: bool,
+) -> PreviewScreenCaptureRequest {
+    let native_width = source_width.max(1);
+    let native_height = source_height.max(1);
+    let (requested_width, requested_height) =
+        choose_preview_dimensions(native_width, native_height, video);
+
+    PreviewScreenCaptureRequest {
+        native_width,
+        native_height,
+        requested_width,
+        requested_height,
+        requested_fps: video.fps.clamp(1, 120),
+        include_cursor,
+        exclude_current_process_windows,
+        queue_depth: PREVIEW_SCREEN_CAPTURE_QUEUE_DEPTH,
+        preserves_aspect_ratio: true,
+        scales_to_fit: matches!(source_kind, PreviewScreenSourceKind::Window),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SelectedScreenSource {
     source_id: String,
@@ -1048,10 +1089,16 @@ mod macos {
     ) -> Result<ScreenSession, NativeScreenStartup> {
         let content = load_shareable_content()?;
         let selected = select_content(&content, &config)?;
-        let output_size =
-            choose_preview_dimensions(selected.source_width, selected.source_height, &config.video);
+        let capture_request = select_preview_screen_capture_request(
+            &config.source_kind,
+            selected.source_width,
+            selected.source_height,
+            &config.video,
+            config.include_cursor,
+            config.exclude_current_process_windows,
+        );
         let stream_config = unsafe { SCStreamConfiguration::new() };
-        configure_stream(&stream_config, output_size, &config);
+        configure_stream(&stream_config, &capture_request);
         let delegate = ScreenPreviewDelegate::new(shared);
         let delegate_protocol = ProtocolObject::from_ref(&*delegate);
         let stream = unsafe {
@@ -1080,15 +1127,17 @@ mod macos {
         }
         start_capture(&stream)?;
 
-        let selected_fps = f64::from(config.video.fps.clamp(1, 120));
+        let selected_fps = f64::from(capture_request.requested_fps);
         let message = Some(format!(
-            "Native {} preview running at {}x{} and {:.0} fps. Cursor {}, Videorc windows excluded {}.",
+            "Native {} preview running at {}x{} from {}x{} source and {:.0} fps. Cursor {}, Videorc windows excluded {}.",
             match config.source_kind {
                 PreviewScreenSourceKind::Screen => "screen",
                 PreviewScreenSourceKind::Window => "window",
             },
-            output_size.0,
-            output_size.1,
+            capture_request.requested_width,
+            capture_request.requested_height,
+            capture_request.native_width,
+            capture_request.native_height,
             selected_fps,
             if config.include_cursor {
                 "visible"
@@ -1108,8 +1157,8 @@ mod macos {
             _filter: selected.filter,
             _configuration: stream_config,
             _queue: queue,
-            width: output_size.0,
-            height: output_size.1,
+            width: capture_request.requested_width,
+            height: capture_request.requested_height,
             selected_fps,
             message,
         })
@@ -1243,19 +1292,18 @@ mod macos {
 
     fn configure_stream(
         stream_config: &SCStreamConfiguration,
-        output_size: (u32, u32),
-        config: &NativeScreenPreviewConfig,
+        capture_request: &PreviewScreenCaptureRequest,
     ) {
         unsafe {
-            stream_config.setWidth(output_size.0 as usize);
-            stream_config.setHeight(output_size.1 as usize);
+            stream_config.setWidth(capture_request.requested_width as usize);
+            stream_config.setHeight(capture_request.requested_height as usize);
             stream_config.setPixelFormat(kCVPixelFormatType_32BGRA);
             stream_config
-                .setMinimumFrameInterval(CMTime::new(1, config.video.fps.clamp(1, 120) as i32));
-            stream_config.setQueueDepth(PREVIEW_SCREEN_CAPTURE_QUEUE_DEPTH as isize);
-            stream_config.setShowsCursor(config.include_cursor);
-            stream_config.setScalesToFit(config.source_kind == PreviewScreenSourceKind::Window);
-            stream_config.setPreservesAspectRatio(true);
+                .setMinimumFrameInterval(CMTime::new(1, capture_request.requested_fps as i32));
+            stream_config.setQueueDepth(capture_request.queue_depth as isize);
+            stream_config.setShowsCursor(capture_request.include_cursor);
+            stream_config.setScalesToFit(capture_request.scales_to_fit);
+            stream_config.setPreservesAspectRatio(capture_request.preserves_aspect_ratio);
             stream_config.setCapturesAudio(false);
             stream_config.setCaptureMicrophone(false);
         }
@@ -1683,6 +1731,73 @@ mod tests {
 
         assert_eq!(preview_screen_png_max_width(Some(4096)), 2560);
         assert_eq!(choose_preview_dimensions(3840, 2160, &video), (3840, 2160));
+    }
+
+    #[test]
+    fn screen_capture_request_selects_native_4k_output_dimensions() {
+        let video = test_video_with_dimensions(3840, 2160);
+
+        let request = select_preview_screen_capture_request(
+            &PreviewScreenSourceKind::Screen,
+            3840,
+            2160,
+            &video,
+            true,
+            true,
+        );
+
+        assert_eq!(request.native_width, 3840);
+        assert_eq!(request.native_height, 2160);
+        assert_eq!(request.requested_width, 3840);
+        assert_eq!(request.requested_height, 2160);
+        assert_eq!(request.requested_fps, 30);
+        assert!(request.include_cursor);
+        assert!(request.exclude_current_process_windows);
+        assert!(request.preserves_aspect_ratio);
+        assert!(!request.scales_to_fit);
+        assert!((1..=8).contains(&request.queue_depth));
+    }
+
+    #[test]
+    fn screen_capture_request_preserves_source_aspect_ratio() {
+        let video = test_video_with_dimensions(3840, 2160);
+
+        let request = select_preview_screen_capture_request(
+            &PreviewScreenSourceKind::Screen,
+            3840,
+            2400,
+            &video,
+            true,
+            true,
+        );
+
+        assert_eq!(request.native_width, 3840);
+        assert_eq!(request.native_height, 2400);
+        assert_eq!(request.requested_width, 3456);
+        assert_eq!(request.requested_height, 2160);
+    }
+
+    #[test]
+    fn window_capture_request_preserves_cursor_and_fit_policy() {
+        let video = test_video_with_dimensions(3840, 2160);
+        let video = VideoSettings { fps: 240, ..video };
+
+        let request = select_preview_screen_capture_request(
+            &PreviewScreenSourceKind::Window,
+            1920,
+            1080,
+            &video,
+            false,
+            false,
+        );
+
+        assert_eq!(request.requested_width, 1920);
+        assert_eq!(request.requested_height, 1080);
+        assert_eq!(request.requested_fps, 120);
+        assert!(!request.include_cursor);
+        assert!(!request.exclude_current_process_windows);
+        assert!(request.preserves_aspect_ratio);
+        assert!(request.scales_to_fit);
     }
 
     #[tokio::test]
