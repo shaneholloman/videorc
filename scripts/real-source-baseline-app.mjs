@@ -520,12 +520,14 @@ async function sampleDuringRecording(ws, durationMs) {
 }
 
 async function sampleDiagnosticsSnapshot(ws) {
-  const [diagnostics, compositor, surface] = await Promise.all([
+  const [diagnostics, compositor, surface, camera, screen] = await Promise.all([
     requestSafe(ws, 'diagnostics.stats'),
     requestSafe(ws, 'compositor.status'),
     requestSafe(ws, 'preview.surface.status'),
+    requestSafe(ws, 'preview.camera.status'),
+    requestSafe(ws, 'preview.screen.status'),
   ])
-  return { at: Date.now(), diagnostics, compositor, surface }
+  return { at: Date.now(), diagnostics, compositor, surface, camera, screen }
 }
 
 function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, options = {}) {
@@ -820,11 +822,136 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     duplicateCaptureSamples: measured.filter(
       (s) => Array.isArray(s.duplicateCaptureSources) && s.duplicateCaptureSources.length > 0
     ).length,
+    mediaDimensions: summarizeMediaDimensions(snapshots),
     imagePollDuringSession,
     transports: [...transports],
     surfaceBackings: [...surfaceBackings],
     bottlenecks: [...bottlenecks],
   }
+}
+
+function summarizeMediaDimensions(snapshots) {
+  const compositorSamples = snapshots.map((s) => s.compositor).filter(Boolean)
+  const surfaceSamples = snapshots.map((s) => s.surface).filter(Boolean)
+  const cameraStatusSamples = snapshots.map((s) => s.camera).filter(Boolean)
+  const screenStatusSamples = snapshots.map((s) => s.screen).filter(Boolean)
+  const compositorSourceSamples = compositorSamples.flatMap((s) => s.sources ?? [])
+
+  return {
+    requestedOutput: requestedOutputSettings(),
+    cameraSource: summarizeDimensionSamples(cameraStatusSamples, {
+      idKeys: ['cameraId', 'deviceUniqueId'],
+      fpsKeys: ['sourceFps', 'targetFps'],
+      stateKey: 'state',
+    }),
+    screenSource: summarizeDimensionSamples(screenStatusSamples, {
+      idKeys: ['sourceId'],
+      fpsKeys: ['sourceFps', 'targetFps'],
+      stateKey: 'state',
+    }),
+    compositorTarget: summarizeDimensionSamples(compositorSamples, {
+      fpsKeys: ['targetFps', 'renderFps'],
+      stateKey: 'state',
+    }),
+    compositorMetalTarget: summarizeDimensionSamples(
+      compositorSamples.map((s) => ({
+        width: s.metalTargetWidth,
+        height: s.metalTargetHeight,
+        state: s.state,
+        targetFps: s.targetFps,
+      })),
+      { fpsKeys: ['targetFps'], stateKey: 'state' }
+    ),
+    compositorCameraSource: summarizeDimensionSamples(
+      compositorSourceSamples.filter((s) => s.kind === 'camera'),
+      { idKeys: ['sourceId'], fpsKeys: ['sourceFps'], stateKey: 'state' }
+    ),
+    compositorScreenSource: summarizeDimensionSamples(
+      compositorSourceSamples.filter((s) => s.kind === 'screen'),
+      { idKeys: ['sourceId'], fpsKeys: ['sourceFps'], stateKey: 'state' }
+    ),
+    previewDrawable: summarizeDimensionSamples(surfaceSamples, {
+      fpsKeys: ['targetFps', 'presentFps'],
+      stateKey: 'state',
+      bounds: summarizeSurfaceBounds(surfaceSamples),
+    }),
+  }
+}
+
+function summarizeDimensionSamples(samples, options = {}) {
+  const dimensions = []
+  for (const sample of samples) {
+    const width = finiteNumber(sample?.width)
+    const height = finiteNumber(sample?.height)
+    if (width !== null && height !== null) {
+      dimensions.push({ width, height })
+    }
+  }
+  const latest = dimensions[dimensions.length - 1] ?? null
+  const max = dimensions.reduce((best, current) => {
+    if (!best) return current
+    return current.width * current.height > best.width * best.height ? current : best
+  }, null)
+  const observed = [...new Set(dimensions.map((d) => `${Math.round(d.width)}x${Math.round(d.height)}`))]
+  const ids = uniqueValues(samples, options.idKeys ?? [])
+  const states = options.stateKey ? uniqueValues(samples, [options.stateKey]) : []
+  const fps = collectFinite(samples, options.fpsKeys ?? [])
+
+  return {
+    latest,
+    max,
+    observed,
+    ids,
+    states,
+    fpsMin: fps.length ? Math.min(...fps) : null,
+    fpsMax: fps.length ? Math.max(...fps) : null,
+    sampleCount: samples.length,
+    bounds: options.bounds ?? null,
+  }
+}
+
+function summarizeSurfaceBounds(samples) {
+  const boundsSamples = samples.map((sample) => sample.bounds).filter(Boolean)
+  const latest = boundsSamples[boundsSamples.length - 1] ?? null
+  if (!latest) return null
+  const scale = finiteNumber(latest.scaleFactor) ?? 1
+  return {
+    css: {
+      width: finiteNumber(latest.width),
+      height: finiteNumber(latest.height),
+    },
+    drawable: {
+      width: finiteNumber(latest.width) != null ? finiteNumber(latest.width) * scale : null,
+      height: finiteNumber(latest.height) != null ? finiteNumber(latest.height) * scale : null,
+    },
+    scaleFactor: scale,
+  }
+}
+
+function uniqueValues(samples, keys) {
+  const values = []
+  for (const sample of samples) {
+    for (const key of keys) {
+      const value = sample?.[key]
+      if (value !== undefined && value !== null && value !== '') values.push(String(value))
+    }
+  }
+  return [...new Set(values)]
+}
+
+function collectFinite(samples, keys) {
+  const values = []
+  for (const sample of samples) {
+    for (const key of keys) {
+      const value = finiteNumber(sample?.[key])
+      if (value !== null) values.push(value)
+    }
+  }
+  return values
+}
+
+function finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 // --- Report -----------------------------------------------------------------
@@ -926,6 +1053,12 @@ function writeBaselineReport(
     lines.push(`- Synthetic evidence: ${s.syntheticEvidence == null ? 'not available' : `${s.syntheticEvidence} diagnostic frame(s)`}`)
     lines.push('')
   }
+  append4kMediaPathEvidence(lines, {
+    sources,
+    diagnostics,
+    report,
+    startupReport,
+  })
   lines.push('## Media quality mode')
   lines.push('')
   lines.push(`- Mode: \`${qualityMode.mode}\` - ${qualityMode.description}`)
@@ -1057,7 +1190,6 @@ function writeBaselineReport(
       lines.push(`- ${failure}`)
     }
   }
-  lines.push('')
   lines.push('## Problem ownership triage')
   lines.push('')
   if (ownership?.length) {
@@ -1097,6 +1229,137 @@ function writeBaselineReport(
 
   writeFileSync(reportPath, lines.join('\n'))
   return reportPath
+}
+
+function append4kMediaPathEvidence(lines, { sources, diagnostics, report, startupReport, blocked = false }) {
+  const media = diagnostics.mediaDimensions ?? {}
+  const requested = media.requestedOutput ?? requestedOutputSettings()
+  const final = report?.metrics ?? {}
+  const startup = startupReport?.metrics ?? {}
+
+  lines.push('## 4K media path evidence')
+  lines.push('')
+  lines.push(
+    `- Requested output/encoder target: ${formatRequestedOutput(requested)}${blocked ? ' (blocked before encoding)' : ''}`
+  )
+  lines.push(
+    `- Source selected IDs: screen ${sources.screen?.id ?? 'none'}; camera ${sources.camera?.id ?? 'none'}; microphone ${sources.microphone?.id ?? 'none'}`
+  )
+  lines.push(
+    `- Source native/requested/actual: camera native ${formatDimensionSummary(media.cameraSource)} / requested ${formatRequestedSource(requested)} / compositor actual ${formatDimensionSummary(media.compositorCameraSource)}`
+  )
+  lines.push(
+    `- Source native/requested/actual: screen native ${formatDimensionSummary(media.screenSource)} / requested ${formatRequestedSource(requested)} / compositor actual ${formatDimensionSummary(media.compositorScreenSource)}`
+  )
+  lines.push(
+    `- Compositor target: ${formatDimensionSummary(media.compositorTarget)} | Metal target ${formatDimensionSummary(media.compositorMetalTarget)}`
+  )
+  lines.push(
+    `- Preview drawable: ${formatDimensionSummary(media.previewDrawable)}${formatPreviewBoundsSuffix(media.previewDrawable)}`
+  )
+  lines.push(
+    `- Encoder input/output dimensions: requested ${formatDimension(requested.width, requested.height)} | Metal/VT input ${formatDimensionSummary(media.compositorMetalTarget)} | final file ${formatDimension(final.width, final.height)}`
+  )
+  lines.push(
+    `- Startup/final dimensions: startup metadata ${formatDimension(startup.metadataWidth, startup.metadataHeight)} | startup target ${formatDimension(startup.targetWidth, startup.targetHeight)} | first frame ${formatFrameDimension(startup.firstStartupFrame)} | final file ${formatDimension(final.width, final.height)}`
+  )
+  lines.push(
+    `- Copy/fallback counters: compositor CPU fallback ${diagnostics.compositorCpuFallbackFrames}; raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames}; Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames}; Metal targets ${diagnostics.encoderBridgeMetalTargetFrames}; Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames}; zero-copy ${diagnostics.encoderBridgeZeroCopyFrames}; VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames}; VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames}; image polls ${diagnostics.imagePollDuringSession?.total ?? 'n/a'}`
+  )
+  lines.push(
+    `- Dimension triage: ${dimensionTriage({ requested, media, final, startup, blocked })}`
+  )
+  lines.push('')
+}
+
+function dimensionTriage({ requested, media, final, startup, blocked }) {
+  if (blocked) return 'recording blocked before encoder/final-file dimensions existed'
+  const problems = []
+  if (dimensionBelow(media.cameraSource?.max, requested) || dimensionBelow(media.screenSource?.max, requested)) {
+    problems.push('source below requested output')
+  }
+  if (dimensionBelow(media.compositorTarget?.max, requested)) {
+    problems.push('compositor target below requested output')
+  }
+  if (dimensionBelow(media.compositorMetalTarget?.max, requested)) {
+    problems.push('Metal target below requested output')
+  }
+  if (dimensionBelow(media.previewDrawable?.max, requested)) {
+    problems.push('preview drawable below requested output')
+  }
+  if (dimensionMismatch(startup.metadataWidth, startup.metadataHeight, requested)) {
+    problems.push('startup metadata mismatch')
+  }
+  if (dimensionMismatch(final.width, final.height, requested)) {
+    problems.push('final-file mismatch')
+  }
+  return problems.length ? problems.join('; ') : 'no dimension mismatch detected from collected evidence'
+}
+
+function dimensionBelow(dimension, requested) {
+  if (!dimension || !requested?.width || !requested?.height) return false
+  return dimension.width < requested.width || dimension.height < requested.height
+}
+
+function dimensionMismatch(width, height, requested) {
+  if (!requested?.width || !requested?.height) return false
+  if (width == null || height == null) return false
+  return width !== requested.width || height !== requested.height
+}
+
+function formatDimensionSummary(summary) {
+  if (!summary || summary.sampleCount === 0) return 'not reported'
+  const parts = []
+  parts.push(`latest ${formatDimensionObject(summary.latest)}`)
+  parts.push(`max ${formatDimensionObject(summary.max)}`)
+  if (summary.observed?.length) parts.push(`observed ${summary.observed.join(', ')}`)
+  if (summary.fpsMin != null || summary.fpsMax != null) {
+    parts.push(`fps ${formatRange(summary.fpsMin, summary.fpsMax)}`)
+  }
+  if (summary.states?.length) parts.push(`state ${summary.states.join('/')}`)
+  if (summary.ids?.length) parts.push(`id ${summary.ids.join(', ')}`)
+  return parts.join('; ')
+}
+
+function formatPreviewBoundsSuffix(summary) {
+  const bounds = summary?.bounds
+  if (!bounds) return ''
+  const css = formatDimension(bounds.css?.width, bounds.css?.height)
+  const drawable = formatDimension(bounds.drawable?.width, bounds.drawable?.height)
+  return ` | bounds CSS ${css}, drawable ${drawable}, scale ${bounds.scaleFactor ?? 'n/a'}`
+}
+
+function formatRequestedOutput(output) {
+  return `${formatDimension(output.width, output.height)} @ ${output.fps ?? 'n/a'}fps, ${output.bitrateKbps ?? 'n/a'}kbps`
+}
+
+function formatRequestedSource(output) {
+  return `${formatDimension(output.width, output.height)} @ ${output.fps ?? 'n/a'}fps`
+}
+
+function formatFrameDimension(frame) {
+  return frame ? formatDimension(frame.width, frame.height) : 'n/a'
+}
+
+function formatDimensionObject(dimension) {
+  return dimension ? formatDimension(dimension.width, dimension.height) : 'n/a'
+}
+
+function formatDimension(width, height) {
+  const w = typeof width === 'number' && Number.isFinite(width) ? Math.round(width) : null
+  const h = typeof height === 'number' && Number.isFinite(height) ? Math.round(height) : null
+  return w != null && h != null ? `${w}x${h}` : 'n/a'
+}
+
+function formatRange(min, max) {
+  if (min == null && max == null) return 'n/a'
+  if (min === max || max == null) return `${formatNumber(min)}`
+  if (min == null) return `${formatNumber(max)}`
+  return `${formatNumber(min)}-${formatNumber(max)}`
+}
+
+function formatNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(value % 1 === 0 ? 0 : 1) : 'n/a'
 }
 
 function writeBlockedStartupReport({
@@ -1192,6 +1455,13 @@ function writeBlockedStartupReport({
     }
   }
   lines.push('')
+  append4kMediaPathEvidence(lines, {
+    sources,
+    diagnostics,
+    report: null,
+    startupReport: null,
+    blocked: true,
+  })
   lines.push('## Media quality mode')
   lines.push('')
   lines.push(`- Mode: \`${qualityMode.mode}\` - ${qualityMode.description}`)
