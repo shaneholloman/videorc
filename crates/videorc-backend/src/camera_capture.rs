@@ -110,11 +110,11 @@ pub fn choose_camera_format(
     target_height: u32,
     target_fps: u32,
 ) -> Option<CameraFormatChoice> {
+    let target_fps = f64::from(target_fps);
     let supports_target = |format: &&CameraFormatSummary| {
         format.width == target_width
             && format.height == target_height
-            && format.min_fps <= f64::from(target_fps)
-            && format.max_fps >= f64::from(target_fps)
+            && format_supports_fps(format, target_fps)
     };
 
     if let Some(format) = formats.iter().find(supports_target) {
@@ -125,21 +125,39 @@ pub fn choose_camera_format(
     }
 
     let target_pixels = u64::from(target_width) * u64::from(target_height);
-    formats
+    let fps_capable = formats
         .iter()
-        .filter(|format| format.max_fps >= f64::from(target_fps))
-        .min_by_key(|format| {
-            let pixels = u64::from(format.width) * u64::from(format.height);
-            pixels.abs_diff(target_pixels)
+        .filter(|format| format_supports_fps(format, target_fps))
+        .collect::<Vec<_>>();
+    let selected = fps_capable
+        .iter()
+        .copied()
+        .filter(|format| camera_format_pixels(format) >= target_pixels)
+        .min_by_key(|format| camera_format_pixels(format).saturating_sub(target_pixels))
+        .or_else(|| {
+            fps_capable.iter().copied().max_by_key(|format| {
+                (
+                    camera_format_pixels(format),
+                    format.max_fps.round().max(0.0) as u64,
+                )
+            })
         })
-        .or_else(|| formats.iter().max_by_key(|format| format.width * format.height))
-        .map(|format| CameraFormatChoice {
-            format: format.clone(),
-            fallback_reason: Some(format!(
-                "Requested {target_width}x{target_height}@{target_fps} was not available; selected {}x{} up to {:.0} fps.",
-                format.width, format.height, format.max_fps
-            )),
-        })
+        .or_else(|| {
+            formats.iter().max_by_key(|format| {
+                (
+                    camera_format_pixels(format),
+                    format.max_fps.round().max(0.0) as u64,
+                )
+            })
+        })?;
+
+    Some(CameraFormatChoice {
+        format: selected.clone(),
+        fallback_reason: Some(format!(
+            "Requested {target_width}x{target_height}@{target_fps:.0} was not available; selected native {}x{} at {:.0}-{:.0} fps.",
+            selected.width, selected.height, selected.min_fps, selected.max_fps
+        )),
+    })
 }
 
 pub fn normalize_camera_formats(mut formats: Vec<CameraFormatSummary>) -> Vec<CameraFormatSummary> {
@@ -165,6 +183,14 @@ pub fn normalize_camera_formats(mut formats: Vec<CameraFormatSummary>) -> Vec<Ca
             && left.max_fps == right.max_fps
     });
     formats
+}
+
+fn format_supports_fps(format: &CameraFormatSummary, target_fps: f64) -> bool {
+    format.min_fps <= target_fps && format.max_fps >= target_fps
+}
+
+fn camera_format_pixels(format: &CameraFormatSummary) -> u64 {
+    u64::from(format.width) * u64::from(format.height)
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -504,6 +530,94 @@ mod tests {
 
         assert_eq!(choice.format.width, 1280);
         assert!(choice.fallback_reason.unwrap().contains("not available"));
+    }
+
+    #[test]
+    fn chooses_smallest_native_format_covering_target_at_requested_fps() {
+        let formats = vec![
+            CameraFormatSummary {
+                width: 640,
+                height: 360,
+                min_fps: 1.0,
+                max_fps: 60.0,
+            },
+            CameraFormatSummary {
+                width: 3840,
+                height: 2160,
+                min_fps: 1.0,
+                max_fps: 30.0,
+            },
+            CameraFormatSummary {
+                width: 1920,
+                height: 1080,
+                min_fps: 1.0,
+                max_fps: 30.0,
+            },
+        ];
+
+        let choice = choose_camera_format(&formats, 1280, 720, 30).unwrap();
+
+        assert_eq!(choice.format.width, 1920);
+        assert_eq!(choice.format.height, 1080);
+    }
+
+    #[test]
+    fn chooses_largest_format_at_requested_fps_when_no_mode_covers_target() {
+        let formats = vec![
+            CameraFormatSummary {
+                width: 1280,
+                height: 720,
+                min_fps: 1.0,
+                max_fps: 60.0,
+            },
+            CameraFormatSummary {
+                width: 1920,
+                height: 1080,
+                min_fps: 1.0,
+                max_fps: 60.0,
+            },
+            CameraFormatSummary {
+                width: 3840,
+                height: 2160,
+                min_fps: 1.0,
+                max_fps: 30.0,
+            },
+        ];
+
+        let choice = choose_camera_format(&formats, 3840, 2160, 60).unwrap();
+
+        assert_eq!(choice.format.width, 1920);
+        assert_eq!(choice.format.height, 1080);
+        assert!(
+            choice
+                .fallback_reason
+                .unwrap()
+                .contains("selected native 1920x1080")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_largest_mode_when_requested_fps_is_unavailable() {
+        let formats = vec![
+            CameraFormatSummary {
+                width: 1920,
+                height: 1080,
+                min_fps: 1.0,
+                max_fps: 30.0,
+            },
+            CameraFormatSummary {
+                width: 3840,
+                height: 2160,
+                min_fps: 1.0,
+                max_fps: 30.0,
+            },
+        ];
+
+        let choice = choose_camera_format(&formats, 3840, 2160, 60).unwrap();
+
+        assert_eq!(choice.format.width, 3840);
+        assert_eq!(choice.format.height, 2160);
+        assert!(choice.fallback_reason.unwrap().contains("1-30 fps"));
     }
 
     #[test]
