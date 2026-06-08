@@ -20,7 +20,7 @@ whole point of the root-fix work.
 | `pnpm smoke:preview-motion` | Native preview motion/currentness smoke that exercises scene/layout changes and verifies native-surface/CAMetalLayer cadence, blank-frame count, and compositor lag. |
 | `pnpm analyze:recording <file> --fps N` | Honest final-file analyzer on any recording (freeze / repeated-frame bursts / pacing / audio gaps / A/V skew). |
 | `pnpm analyze:startup <file> --width W --height H --fps N` | First-2-seconds startup analyzer (metadata + decoded frame dimensions + first-frame hashes + startup thumbnail sheet). |
-| `pnpm measure:av-sync <file> --current-offset-ms N --require-target` | Lip-sync measurement against the flash+click fixture. `--require-target` makes the 100 ms target a failing acceptance gate, and `--current-offset-ms` prints the next microphone sync estimate. |
+| `pnpm measure:av-sync <recording-or-evidence-json> --current-offset-ms N --require-target` | Lip-sync measurement against the flash+click fixture. Evidence manifests resolve to their recorded MP4. `--require-target` makes the 100 ms target a failing acceptance gate, and `--current-offset-ms` prints the next microphone sync estimate. |
 | `pnpm measure:av-sync --make-fixture out.mp4 --seconds 120` | Generate the flash+click reference to play on a second screen / through speakers while recording. |
 | `pnpm test:scripts` | Unit/integration tests for all of the above (must stay green). |
 
@@ -73,7 +73,7 @@ pnpm baseline:evidence:4k30 -- <output-dir>/latest-real-source-evidence.json
 
 # 4K30 A/V sync stimulus, then measure the generated MP4
 pnpm baseline:real-source:4k30:av-sync -- --gate
-pnpm measure:av-sync -- <recording-path-from-latest-real-source-evidence.json> --require-target
+pnpm measure:av-sync -- <output-dir>/latest-real-source-evidence.json --require-target
 
 # 1080p60 (if the selected sources support it)
 VIDEORC_BASELINE_FPS=60 pnpm baseline:real-source --gate
@@ -99,9 +99,9 @@ honesty, mic capture, and native preview currentness remain hard gates. Use
 prove motion smoothness from the final file alone.
 
 Lip-sync pass: play `--make-fixture` output on a second screen + through speakers (or clap
-on camera), record 30–120 s, then `pnpm measure:av-sync <recording>`. For the automated
+on camera), record 30–120 s, then `pnpm measure:av-sync <recording-or-evidence-json>`. For the automated
 browser-stimulus path, run `pnpm baseline:real-source:av-sync-mpegts-output`, then run
-`pnpm measure:av-sync <recording> --current-offset-ms N --require-target`. If the median
+`pnpm measure:av-sync <recording-or-evidence-json> --current-offset-ms N --require-target`. If the median
 is over the 100 ms target but under the 150 ms hard fail, set
 `VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS` to verify the matching microphone calibration and
 re-measure before considering mouth/voice sync accepted.

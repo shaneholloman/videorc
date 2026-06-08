@@ -64,7 +64,7 @@ pnpm baseline:real-source:4k30:endurance -- --gate
 pnpm baseline:evidence:4k30:endurance -- <output-dir>/latest-real-source-evidence.json
 ```
 
-The motion and endurance commands request real sources at `3840x2160`, `30fps`, `30000kbps`, and launch the screen motion stimulus so freeze/repeated-frame gates measure moving content. The A/V-sync command uses the same 4K30 output request with the flash/click stimulus for `pnpm measure:av-sync`.
+The motion and endurance commands request real sources at `3840x2160`, `30fps`, `30000kbps`, and launch the screen motion stimulus so freeze/repeated-frame gates measure moving content. The A/V-sync command uses the same 4K30 output request with the flash/click stimulus; pass `latest-real-source-evidence.json` directly to `pnpm measure:av-sync`.
 Each successful or blocked real-source run writes a sibling `.evidence.json` manifest plus `latest-real-source-evidence.json` in the output directory, with the recording path, baseline report, analyzer reports, startup report, gate verdict, selected sources, and zero-copy/native-preview counters.
 
 ## Output Profiles

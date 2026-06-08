@@ -6,6 +6,7 @@
 // picture in the finished file:
 //
 //   node scripts/measure-av-sync.mjs <recording.mp4>
+//   node scripts/measure-av-sync.mjs <run.evidence.json>
 //
 // To generate the reference fixture to play while recording (or to self-test):
 //   node scripts/measure-av-sync.mjs --make-fixture out.mp4 [--seconds 10] [--audio-delay-ms 0]
@@ -14,6 +15,7 @@
 // `--require-target` is set and the median misses the 100ms target.
 
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 
 import { flashClickFixtureArgs, measureAvSync } from './lib/av-sync.mjs'
 
@@ -34,11 +36,12 @@ async function main() {
     return 0
   }
 
-  const file = argv[0]
-  if (!file) {
-    console.error('Usage: node scripts/measure-av-sync.mjs <recording.mp4>')
+  const input = argv[0]
+  if (!input) {
+    console.error('Usage: node scripts/measure-av-sync.mjs <recording.mp4|run.evidence.json>')
     process.exit(2)
   }
+  const file = recordingFileFromInput(input)
 
   const requireTarget = argv.includes('--require-target')
   const currentMicrophoneSyncOffsetMs = numFlag(argv, '--current-offset-ms') ?? 0
@@ -61,6 +64,17 @@ async function main() {
   for (const w of result.warnings) console.log(`  ⚠️  ${w}`)
   console.log(result.pass ? 'PASS' : 'FAIL')
   return result.pass ? 0 : 1
+}
+
+function recordingFileFromInput(input) {
+  if (!input.endsWith('.json')) return input
+  const manifest = JSON.parse(readFileSync(input, 'utf8'))
+  const recording = manifest?.paths?.recording ?? manifest?.diagnostics?.finalFile?.path
+  if (typeof recording !== 'string' || recording.trim() === '') {
+    throw new Error(`Evidence manifest does not include a recording path: ${input}`)
+  }
+  console.log(`Using recording from evidence manifest: ${recording}`)
+  return recording
 }
 
 function numFlag(argv, name) {
