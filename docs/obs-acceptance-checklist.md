@@ -70,6 +70,10 @@ VIDEORC_BASELINE_WIDTH=2560 VIDEORC_BASELINE_HEIGHT=1440 VIDEORC_BASELINE_BITRAT
 # 4K30 with required screen motion stimulus
 pnpm baseline:real-source:4k30 -- --gate
 
+# 4K30 A/V sync stimulus, then measure the generated MP4
+pnpm baseline:real-source:4k30:av-sync -- --gate
+pnpm measure:av-sync -- <recording-from-evidence-manifest.mp4> --require-target
+
 # 1080p60 (if the selected sources support it)
 VIDEORC_BASELINE_FPS=60 pnpm baseline:real-source --gate
 
