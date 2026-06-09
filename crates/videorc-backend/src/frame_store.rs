@@ -167,6 +167,7 @@ impl<P, M> FrameStore<P, M> {
         self.buffer_allocations = self.buffer_allocations.saturating_add(1);
     }
 
+    #[cfg(test)]
     pub fn publish(
         &mut self,
         sequence: u64,

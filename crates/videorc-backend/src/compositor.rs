@@ -33,10 +33,13 @@ use crate::protocol::{
     CompositorSceneSourceStatus, CompositorSceneUpdateParams, CompositorSourceKind,
     CompositorSourceStatus, CompositorState, CompositorStatus, DiagnosticStats, LayoutPreset,
     LayoutSettings, PreviewCameraState, PreviewScreenSourceKind, PreviewScreenState,
-    PreviewSurfaceState, PreviewSurfaceStatus, PreviewTransport, Scene, SceneSource,
-    SceneSourceKind, SceneTransform, StreamScreen,
+    PreviewSurfaceState, PreviewSurfaceStatus, PreviewTransport, Scene, SceneSourceKind,
+    SceneTransform, StreamScreen,
 };
 use crate::state::AppState;
+
+#[cfg(test)]
+use crate::protocol::SceneSource;
 
 const COMPOSITOR_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
 const COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
@@ -1484,10 +1487,12 @@ fn new_gpu_compositor() -> Option<GpuCompositor> {
     None
 }
 
+#[cfg(test)]
 fn missing_scene_source_frame_reason(source: &SceneSource) -> String {
     format!("{} frame unavailable", scene_source_label(source))
 }
 
+#[cfg(test)]
 fn scene_source_label(source: &SceneSource) -> String {
     let mut label = match source.name.trim() {
         "" => format!(
@@ -1513,6 +1518,7 @@ fn scene_source_label(source: &SceneSource) -> String {
     label
 }
 
+#[cfg(test)]
 fn scene_source_kind_label(kind: &SceneSourceKind) -> &'static str {
     match kind {
         SceneSourceKind::Screen => "screen",
