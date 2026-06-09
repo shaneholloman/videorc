@@ -14,6 +14,7 @@ import {
 import { toast } from 'sonner'
 
 import { BackendClient } from '@/backendClient'
+import { previewSurfaceBoundsChanged } from '../../../shared/native-preview-bounds'
 import {
   bridgeStreamingToLegacy,
   areEnabledStreamTargetsStartReady,
@@ -407,21 +408,6 @@ const idlePreviewSurfaceStatus = (): PreviewSurfaceStatus => ({
 
 const isPreviewSurfaceTransport = (transport: PreviewLiveStatus['transport']): boolean =>
   transport === 'native-surface' || transport === 'electron-proof-surface'
-
-function previewSurfaceBoundsChanged(previous: PreviewSurfaceBounds | null, next: PreviewSurfaceBounds): boolean {
-  if (!previous) {
-    return true
-  }
-
-  return (
-    Math.abs(previous.screenX - next.screenX) >= 1 ||
-    Math.abs(previous.screenY - next.screenY) >= 1 ||
-    Math.abs(previous.width - next.width) >= 1 ||
-    Math.abs(previous.height - next.height) >= 1 ||
-    Math.abs(previous.scaleFactor - next.scaleFactor) >= 0.01 ||
-    Math.abs((previous.screenHeight ?? 0) - (next.screenHeight ?? 0)) >= 1
-  )
-}
 
 function pendingCompositorStatusSupersedes(
   pending: CompositorStatus | null,

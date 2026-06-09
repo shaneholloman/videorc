@@ -1300,7 +1300,7 @@ pub struct PreviewBaselineParams {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewSurfaceBounds {
     pub screen_x: f64,
@@ -1310,6 +1310,22 @@ pub struct PreviewSurfaceBounds {
     pub scale_factor: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_height: Option<f64>,
+    // Visible intersection of the studio slot with its clipping ancestors and the
+    // window viewport, in the same screen coordinate space as screen_x/screen_y.
+    // Absent means the full rect is visible (legacy callers). The native host crops
+    // the surface to this rect so a half-scrolled preview clips instead of floating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_height: Option<f64>,
+    // False when the slot is fully scrolled away or the document/window is hidden —
+    // the native host must hide the surface entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

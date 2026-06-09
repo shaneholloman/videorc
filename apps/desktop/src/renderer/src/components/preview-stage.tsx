@@ -23,6 +23,11 @@ import type {
   StreamScreen
 } from '@/lib/backend'
 import { cn } from '@/lib/utils'
+import {
+  computePreviewSurfaceBounds,
+  previewSurfaceBoundsChanged,
+  type RectLike
+} from '../../../shared/native-preview-bounds'
 
 // Widths mirror the backend camera_box_size() (260/360/480 over the 1280px
 // reference) so the schematic placeholder matches the recorded camera geometry.
@@ -271,21 +276,21 @@ export function PreviewStage({
         }
         const rect = element.getBoundingClientRect()
         if (rect.width <= 0 || rect.height <= 0) {
+          // Slot not laid out yet — there is nothing to place or hide.
           return
         }
-        if (!previewSurfaceRectUsable(rect)) {
-          lastNativeBoundsRef.current = null
-          return
-        }
-        const bounds: PreviewSurfaceBounds = {
-          screenX: window.screenX + rect.left,
-          screenY: window.screenY + rect.top,
-          width: rect.width,
-          height: rect.height,
+        const bounds = computePreviewSurfaceBounds({
+          slotRect: rect,
+          clipRects: collectClipAncestorRects(element),
+          viewportWidth: window.innerWidth || document.documentElement.clientWidth,
+          viewportHeight: window.innerHeight || document.documentElement.clientHeight,
+          windowScreenX: window.screenX,
+          windowScreenY: window.screenY,
           scaleFactor: window.devicePixelRatio || 1,
-          screenHeight: window.screen.height
-        }
-        if (nativeSurfaceLive && !boundsChanged(lastNativeBoundsRef.current, bounds)) {
+          screenHeight: window.screen.height,
+          documentVisible: document.visibilityState === 'visible'
+        })
+        if (nativeSurfaceLive && !previewSurfaceBoundsChanged(lastNativeBoundsRef.current, bounds)) {
           return
         }
         lastNativeBoundsRef.current = bounds
@@ -295,16 +300,43 @@ export function PreviewStage({
       })
     }
 
+    // OS window moves and display/DPR changes fire no DOM event; poll them on the
+    // frame clock while the native surface is enabled so the glued preview tracks
+    // the window instead of detaching until the next scroll/resize.
+    let placementFrame: number | null = null
+    let lastScreenX = window.screenX
+    let lastScreenY = window.screenY
+    let lastScaleFactor = window.devicePixelRatio
+    const watchWindowPlacement = (): void => {
+      if (
+        window.screenX !== lastScreenX ||
+        window.screenY !== lastScreenY ||
+        window.devicePixelRatio !== lastScaleFactor
+      ) {
+        lastScreenX = window.screenX
+        lastScreenY = window.screenY
+        lastScaleFactor = window.devicePixelRatio
+        reportBounds()
+      }
+      placementFrame = window.requestAnimationFrame(watchWindowPlacement)
+    }
+
     const observer = new ResizeObserver(reportBounds)
     observer.observe(previewSurfaceRef.current)
     window.addEventListener('resize', reportBounds)
     window.addEventListener('scroll', reportBounds, true)
+    document.addEventListener('visibilitychange', reportBounds)
+    placementFrame = window.requestAnimationFrame(watchWindowPlacement)
     reportBounds()
 
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', reportBounds)
       window.removeEventListener('scroll', reportBounds, true)
+      document.removeEventListener('visibilitychange', reportBounds)
+      if (placementFrame !== null) {
+        window.cancelAnimationFrame(placementFrame)
+      }
       if (animationFrame !== null) {
         window.cancelAnimationFrame(animationFrame)
       }
@@ -669,31 +701,21 @@ function withCacheBust(url: string): string {
   return `${url}${separator}t=${Date.now()}`
 }
 
-function boundsChanged(previous: PreviewSurfaceBounds | null, next: PreviewSurfaceBounds): boolean {
-  if (!previous) {
-    return true
+/**
+ * Rects of every ancestor that can crop the slot (overflow other than visible).
+ * The viewport itself is handled by computePreviewSurfaceBounds.
+ */
+function collectClipAncestorRects(element: HTMLElement): RectLike[] {
+  const rects: RectLike[] = []
+  let parent = element.parentElement
+  while (parent && parent !== document.body && parent !== document.documentElement) {
+    const style = window.getComputedStyle(parent)
+    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+      rects.push(parent.getBoundingClientRect())
+    }
+    parent = parent.parentElement
   }
-
-  return (
-    Math.abs(previous.screenX - next.screenX) >= 1 ||
-    Math.abs(previous.screenY - next.screenY) >= 1 ||
-    Math.abs(previous.width - next.width) >= 1 ||
-    Math.abs(previous.height - next.height) >= 1 ||
-    Math.abs(previous.scaleFactor - next.scaleFactor) >= 0.01 ||
-    Math.abs((previous.screenHeight ?? 0) - (next.screenHeight ?? 0)) >= 1
-  )
-}
-
-function previewSurfaceRectUsable(rect: DOMRect): boolean {
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight
-  const tolerance = 0.5
-  return (
-    rect.left >= -tolerance &&
-    rect.top >= -tolerance &&
-    rect.right <= viewportWidth + tolerance &&
-    rect.bottom <= viewportHeight + tolerance
-  )
+  return rects
 }
 
 function sceneSourceStyle(transform: Scene['sources'][number]['transform']): CSSProperties {

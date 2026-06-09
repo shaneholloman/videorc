@@ -805,6 +805,18 @@ export interface PreviewSurfaceBounds {
   height: number
   scaleFactor: number
   screenHeight?: number
+  // Visible intersection of the studio slot with its clipping ancestors and the
+  // window viewport, in the same absolute screen coordinate space as screenX/screenY.
+  // Absent means "treat the full rect as visible" (legacy callers). The native host
+  // crops the surface to this rect so a half-scrolled preview clips instead of
+  // floating over surrounding UI.
+  clipX?: number
+  clipY?: number
+  clipWidth?: number
+  clipHeight?: number
+  // False when the slot is fully scrolled away, the document is hidden, or the
+  // window is not visible — the native host must hide the surface entirely.
+  visible?: boolean
 }
 
 export type NativePreviewHostCommandKind = 'create' | 'update-bounds' | 'destroy'

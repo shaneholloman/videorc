@@ -477,6 +477,7 @@ mod tests {
             height,
             scale_factor: 2.0,
             screen_height: Some(1080.0),
+            ..Default::default()
         }
     }
 

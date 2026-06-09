@@ -13,7 +13,7 @@ mod native_preview_host;
 mod protocol {
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase")]
     pub struct PreviewSurfaceBounds {
         pub screen_x: f64,
@@ -21,7 +21,20 @@ mod protocol {
         pub width: f64,
         pub height: f64,
         pub scale_factor: f64,
+        #[serde(default)]
         pub screen_height: Option<f64>,
+        // Mirror of crate::protocol::PreviewSurfaceBounds (this helper substitutes its
+        // own protocol module): visible clip rect + visibility, absent = fully visible.
+        #[serde(default)]
+        pub clip_x: Option<f64>,
+        #[serde(default)]
+        pub clip_y: Option<f64>,
+        #[serde(default)]
+        pub clip_width: Option<f64>,
+        #[serde(default)]
+        pub clip_height: Option<f64>,
+        #[serde(default)]
+        pub visible: Option<bool>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -245,6 +258,7 @@ mod macos {
                     height: 16.0,
                     scale_factor: 1.0,
                     screen_height: Some(1000.0),
+                    ..Default::default()
                 }),
             },
             mtm,
@@ -449,6 +463,7 @@ mod macos {
             height: smoke_env_f64("VIDEORC_NATIVE_PREVIEW_HELPER_SMOKE_HEIGHT").unwrap_or(24.0),
             scale_factor: smoke_env_f64("VIDEORC_NATIVE_PREVIEW_HELPER_SMOKE_SCALE").unwrap_or(1.0),
             screen_height: None,
+            ..Default::default()
         }
     }
 

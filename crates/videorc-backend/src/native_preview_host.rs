@@ -1,7 +1,7 @@
 use crate::protocol::{PreviewSurfaceBacking, PreviewSurfaceBounds, PreviewTransport};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativePreviewHostBounds {
     pub screen_x: f64,
@@ -9,7 +9,20 @@ pub struct NativePreviewHostBounds {
     pub width: f64,
     pub height: f64,
     pub scale_factor: f64,
+    #[serde(default)]
     pub screen_height: Option<f64>,
+    // Visible clip rect in the same screen coordinate space; absent = fully visible.
+    #[serde(default)]
+    pub clip_x: Option<f64>,
+    #[serde(default)]
+    pub clip_y: Option<f64>,
+    #[serde(default)]
+    pub clip_width: Option<f64>,
+    #[serde(default)]
+    pub clip_height: Option<f64>,
+    // False = hide the surface entirely (slot scrolled away / document hidden).
+    #[serde(default)]
+    pub visible: Option<bool>,
 }
 
 impl NativePreviewHostBounds {
@@ -22,6 +35,11 @@ impl NativePreviewHostBounds {
             height: bounds.height.max(1.0),
             scale_factor: bounds.scale_factor.max(1.0),
             screen_height: bounds.screen_height,
+            clip_x: bounds.clip_x,
+            clip_y: bounds.clip_y,
+            clip_width: bounds.clip_width.map(|width| width.max(0.0)),
+            clip_height: bounds.clip_height.map(|height| height.max(0.0)),
+            visible: bounds.visible,
         }
     }
 
@@ -506,6 +524,7 @@ mod tests {
             height: 450.0,
             scale_factor: 2.0,
             screen_height: Some(1000.0),
+            ..Default::default()
         };
 
         let host_bounds = NativePreviewHostBounds::from_surface_bounds(&bounds);
@@ -517,6 +536,32 @@ mod tests {
     }
 
     #[test]
+    fn host_bounds_carry_clip_and_visibility() {
+        let bounds = PreviewSurfaceBounds {
+            screen_x: 10.0,
+            screen_y: 20.0,
+            width: 640.0,
+            height: 360.0,
+            scale_factor: 2.0,
+            screen_height: Some(1000.0),
+            clip_x: Some(10.0),
+            clip_y: Some(120.0),
+            clip_width: Some(640.0),
+            clip_height: Some(-4.0),
+            visible: Some(true),
+        };
+
+        let host_bounds = NativePreviewHostBounds::from_surface_bounds(&bounds);
+
+        assert_eq!(host_bounds.clip_x, Some(10.0));
+        assert_eq!(host_bounds.clip_y, Some(120.0));
+        assert_eq!(host_bounds.clip_width, Some(640.0));
+        // Negative clip sizes clamp to an empty clip instead of poisoning AppKit math.
+        assert_eq!(host_bounds.clip_height, Some(0.0));
+        assert_eq!(host_bounds.visible, Some(true));
+    }
+
+    #[test]
     fn host_bounds_fall_back_to_reported_y_without_screen_height() {
         let host_bounds = NativePreviewHostBounds {
             screen_x: 10.0,
@@ -525,6 +570,7 @@ mod tests {
             height: 360.0,
             scale_factor: 1.0,
             screen_height: None,
+            ..Default::default()
         };
 
         assert_eq!(host_bounds.appkit_frame(), (10.0, 20.0, 640.0, 360.0));
@@ -540,6 +586,7 @@ mod tests {
             height: 360.0,
             scale_factor: 2.0,
             screen_height: Some(1000.0),
+            ..Default::default()
         };
 
         let create_update = lifecycle.create(&create_bounds);
@@ -556,6 +603,7 @@ mod tests {
                     height: 360.0,
                     scale_factor: 2.0,
                     screen_height: Some(1000.0),
+                    ..Default::default()
                 }),
             })
         );
@@ -590,6 +638,7 @@ mod tests {
                     height: 450.0,
                     scale_factor: 2.0,
                     screen_height: Some(1000.0),
+                    ..Default::default()
                 }),
             })
         );
