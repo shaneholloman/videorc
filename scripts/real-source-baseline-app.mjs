@@ -39,6 +39,7 @@ import { dirname, join, resolve } from 'node:path'
 
 import { launchDevApp, stopProcess } from './lib/app-launcher.mjs'
 import { launchAvSyncStimulus, stopAvSyncStimulus } from './lib/av-sync-stimulus.mjs'
+import { resolveFinalRecordingPath } from './lib/final-recording-path.mjs'
 import { launchScreenMotionStimulus, stopScreenMotionStimulus } from './lib/screen-motion-stimulus.mjs'
 import { connectBackend, request } from './smoke-recording-session.mjs'
 import { analyzeRecording, writeReports } from './lib/recording-analyzer.mjs'
@@ -137,6 +138,7 @@ async function main() {
   const ws = await connectBackend(launched.connections['backend-ready'], config.timeoutMs)
   const diagnosticsEvents = []
   const healthEvents = []
+  const recordingStatusEvents = []
   ws.addEventListener('message', (event) => {
     try {
       const message = JSON.parse(event.data)
@@ -145,6 +147,9 @@ async function main() {
       }
       if (message.event === 'health.event') {
         healthEvents.push({ ...message.payload, receivedAt: Date.now() })
+      }
+      if (message.event === 'recording.status') {
+        recordingStatusEvents.push({ ...message.payload, receivedAt: Date.now() })
       }
     } catch {
       // Ignore non-JSON socket noise.
@@ -294,7 +299,14 @@ async function main() {
     }
     const stopRequestedAt = Date.now()
     const stopped = await request(ws, config.timeoutMs, 'session.stop')
-    const outputPath = stopped.outputPath ?? started.outputPath
+    const outputPath = await resolveFinalRecordingPath({
+      started,
+      stopped,
+      recordingStatusEvents,
+      healthEvents,
+      stopRequestedAt,
+      timeoutMs: config.timeoutMs,
+    })
     if (!outputPath || !existsSync(outputPath)) {
       throw new Error(`Recording output was not created: ${outputPath ?? 'missing path'}`)
     }
