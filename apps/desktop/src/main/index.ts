@@ -394,7 +394,9 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
 
       body {
         --stripe-size: 52px;
-        -webkit-app-region: drag;
+        /* Glued to the studio slot: never a drag region, never a click target. */
+        -webkit-app-region: no-drag;
+        pointer-events: none;
         user-select: none;
         background:
           radial-gradient(circle at var(--dot-x, 10%) 50%, rgba(255, 255, 255, 0.42), transparent 20%),
@@ -404,7 +406,10 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
       }
 
       body.surface-live {
-        background: #05070a;
+        /* Transparent while live: the layer imgs carry the pixels. A solid dark
+           background here used to read as a black box whenever the imgs were not
+           actually painting (e.g. frame polling suppressed by a native claim). */
+        background: transparent;
       }
 
       #scene-root {

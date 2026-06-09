@@ -325,6 +325,10 @@ mod macos {
     pub struct NativePreviewOverlayHost {
         window: Retained<NSWindow>,
         layer_host: NativePreviewLayerHost,
+        bounds: NativePreviewHostBounds,
+        // The overlay may only appear once a real present succeeded: an empty layer
+        // on screen is a lie (and used to read as a black box over the fallback).
+        presented: bool,
     }
 
     impl NativePreviewOverlayHost {
@@ -377,7 +381,12 @@ mod macos {
             unsafe {
                 window.setReleasedWhenClosed(false);
             }
-            Self { window, layer_host }
+            Self {
+                window,
+                layer_host,
+                bounds,
+                presented: false,
+            }
         }
 
         pub fn window(&self) -> &NSWindow {
@@ -393,12 +402,29 @@ mod macos {
         }
 
         pub fn set_bounds(&mut self, bounds: NativePreviewHostBounds) {
+            self.bounds = bounds;
             self.layer_host.set_bounds(bounds);
             self.window.setFrame_display(window_frame(bounds), true);
         }
 
-        pub fn show(&self) {
-            self.window.orderFrontRegardless();
+        /// The single visibility rule: on screen only while the bounds say visible
+        /// AND at least one real frame has been presented into the layer.
+        pub fn sync_visibility(&self) {
+            if self.bounds.is_visible() && self.presented {
+                if !self.window.isVisible() {
+                    self.window.orderFrontRegardless();
+                }
+            } else {
+                self.window.orderOut(None);
+            }
+        }
+
+        /// Called by the present path after a successful layer present.
+        pub fn mark_presented(&mut self) {
+            if !self.presented {
+                self.presented = true;
+                self.sync_visibility();
+            }
         }
 
         pub fn hide(&self) {
@@ -431,13 +457,16 @@ mod macos {
         }
 
         pub fn present_latest(
-            &self,
+            &mut self,
             compositor: &MetalSceneCompositor,
             presented_frame_id: u64,
         ) -> Option<NativePreviewHostActivation> {
             let overlay = self.overlay.as_ref()?;
-            compositor
-                .present_latest_to_layer(&self.presenter, overlay.layer())
+            let presented = compositor.present_latest_to_layer(&self.presenter, overlay.layer());
+            if presented && let Some(overlay) = self.overlay.as_mut() {
+                overlay.mark_presented();
+            }
+            presented
                 .then(|| NativePreviewHostActivation::cametal_layer_presented(presented_frame_id))
         }
 
@@ -515,6 +544,10 @@ mod macos {
             self.presenter
                 .try_present_imported_iosurface_to_layer(overlay.layer(), imported)
                 .map_err(NativePreviewHostPresentFailure::from)?;
+            // Real pixels are in the layer now — the overlay may come on screen.
+            if let Some(overlay) = self.overlay.as_mut() {
+                overlay.mark_presented();
+            }
             Ok(NativePreviewHostActivation::cametal_layer_presented(
                 presented_frame_id,
             ))
@@ -547,12 +580,9 @@ mod macos {
                     }
                 };
                 // A slot scrolled fully away or a hidden document means the surface
-                // must leave the screen — never float over unrelated UI.
-                if bounds.is_visible() {
-                    host.show();
-                } else {
-                    host.hide();
-                }
+                // must leave the screen — never float over unrelated UI. A surface
+                // that has never presented stays hidden too (no empty box on screen).
+                host.sync_visibility();
             }
             NativePreviewHostCommandKind::Destroy => {
                 if let Some(overlay) = overlay.take() {
