@@ -1929,6 +1929,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
               : captureConfig.sources.cameraId
                 ? 'camera'
                 : 'synthetic'
+          // Glue fast path: placement must not wait for two backend round trips
+          // (scrolling reads as the preview sliding over the page). Apply the
+          // update-bounds host command straight to the native hosts, then inform the
+          // backend and drop its stale echo below.
+          const directlyApplied = surfaceAlreadyCreated && applyHostCommands
+          if (directlyApplied) {
+            await applyHostCommands([{ kind: 'update-bounds', bounds: nextBounds }])
+          }
           const backendStatus =
             surfaceAlreadyCreated
               ? await client.request<PreviewSurfaceStatus>('preview.surface.update_bounds', { bounds: nextBounds })
@@ -1942,7 +1950,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             resetNativePreviewCompositorTiming()
           }
           nativePreviewSurfaceCreatedRef.current = backendStatus.state === 'live' || surfaceAlreadyCreated
-          const hostCommands = await client.request<NativePreviewHostCommand[]>('preview.surface.take_native_host_commands')
+          const queuedCommands = await client.request<NativePreviewHostCommand[]>(
+            'preview.surface.take_native_host_commands'
+          )
+          // The backend queues an update-bounds echo for the change we already
+          // applied; replaying it would snap the window back to a stale rect.
+          const hostCommands = directlyApplied
+            ? queuedCommands.filter((command) => command.kind !== 'update-bounds')
+            : queuedCommands
           const hostStatus =
             hostCommands.length > 0 && applyHostCommands
               ? await applyHostCommands(hostCommands)
