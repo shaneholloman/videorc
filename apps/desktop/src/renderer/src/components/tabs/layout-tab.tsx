@@ -70,7 +70,8 @@ export function LayoutTab({ embedded = false }: { embedded?: boolean } = {}): Re
     applyCameraPreset,
     setSceneSourceVisible,
     moveSceneSource,
-    isSessionActive
+    isSessionActive,
+    layoutSwitchPending
   } = useStudio()
   const layout = captureConfig.layout
   const selectedSource = scene?.sources.find((source) => source.id === selectedSceneSourceId)
@@ -91,7 +92,11 @@ export function LayoutTab({ embedded = false }: { embedded?: boolean } = {}): Re
           <div className="flex flex-wrap gap-2">
             {LAYOUT_PRESETS.map((preset) => {
               const needsCamera = preset.id === 'camera-only' || preset.id === 'side-by-side'
-              const disabled = !preset.enabled || isSessionActive || (needsCamera && !hasCamera)
+              const switching = layoutSwitchPending === preset.id
+              // Live sessions switch presets through the backend swap engine
+              // (swap-on-ready); only an in-flight switch or a missing camera blocks.
+              const disabled =
+                !preset.enabled || (needsCamera && !hasCamera) || layoutSwitchPending !== null
               return (
                 <button
                   aria-pressed={layout.layoutPreset === preset.id}
@@ -102,7 +107,7 @@ export function LayoutTab({ embedded = false }: { embedded?: boolean } = {}): Re
                   type="button"
                   onClick={() => applyCameraPreset({ layoutPreset: preset.id })}
                 >
-                  <div>{preset.label}</div>
+                  <div>{switching ? 'Switching…' : preset.label}</div>
                   {!preset.enabled ? (
                     <Badge className="mt-1.5" variant="outline">
                       Soon
@@ -113,7 +118,9 @@ export function LayoutTab({ embedded = false }: { embedded?: boolean } = {}): Re
             })}
           </div>
           {isSessionActive ? (
-            <p className="text-xs text-muted-foreground">Stop the session to change the layout preset.</p>
+            <p className="text-xs text-muted-foreground">
+              Switching applies live — recording and streaming keep running.
+            </p>
           ) : !hasCamera ? (
             <p className="text-xs text-muted-foreground">
               Select a camera in Studio to enable Camera only and Side-by-side.

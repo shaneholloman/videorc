@@ -163,6 +163,15 @@ export interface LayoutSettings {
 export type SceneSourceKind = 'screen' | 'window' | 'camera' | 'test-pattern'
 export type SceneOutputKind = 'preview' | 'recording' | 'stream'
 
+// Response of `scene.layout.apply_live` (live layout switching, plan slice D1/D2).
+export interface LiveLayoutApplyStatus {
+  applied: boolean
+  mode: 'idle' | 'hot' | 'warm'
+  sceneRevision: number
+  scene: Scene
+  message?: string
+}
+
 export interface Scene {
   id: string
   name: string

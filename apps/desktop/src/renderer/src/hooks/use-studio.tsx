@@ -54,7 +54,9 @@ import type {
   GateStatus,
   GoLivePreflight,
   HealthEvent,
+  LayoutPreset,
   LayoutSettings,
+  LiveLayoutApplyStatus,
   LiveChatMessage,
   LiveChatProviderState,
   LiveChatSnapshot,
@@ -209,6 +211,9 @@ export type StudioContextValue = {
   setCaptureConfig: Dispatch<SetStateAction<CaptureConfig>>
   patchLayout: (patch: Partial<LayoutSettings>) => void
   applyCameraPreset: (patch: Partial<LayoutSettings>) => void
+  // The layout preset a live switch is currently starting sources for, if any
+  // (drives the "Switching…" pending state; plan slice D2).
+  layoutSwitchPending: LayoutPreset | null
   patchVideo: (patch: Partial<VideoSettings>) => void
   applyVideoPreset: (preset: VideoPreset) => void
   applyRtmpPreset: (preset: RtmpPreset) => void
@@ -1630,6 +1635,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     [applyScene, client, reportError, syncCameraTransformToLayout]
   )
 
+  const [layoutSwitchPending, setLayoutSwitchPending] = useState<LayoutPreset | null>(null)
+
   const applyCameraPreset = useCallback(
     (patch: Partial<LayoutSettings>) => {
       const layout: LayoutSettings = {
@@ -1638,6 +1645,44 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         cameraTransformMode: 'preset',
         cameraTransform: null
       }
+
+      // Live switching (plan slice D2): during a session the backend owns the swap —
+      // it starts missing sources and commits swap-on-ready. The local config only
+      // updates on success so a failed switch honestly stays on the old layout.
+      const isActive = isActiveRecordingState(recordingRef.current.state)
+      if (isActive) {
+        if (!client || wsStatus !== 'connected') {
+          toast.error('Backend socket is not connected — layout unchanged.')
+          return
+        }
+        if (layoutSwitchPending) {
+          return
+        }
+        setLayoutSwitchPending(layout.layoutPreset)
+        client
+          .request<LiveLayoutApplyStatus>('scene.layout.apply_live', {
+            sources: captureConfig.sources,
+            layout,
+            video: captureConfig.video
+          })
+          .then((status) => {
+            applyScene(status.scene)
+            setCaptureConfig((current) => ({
+              ...current,
+              layout: { ...current.layout, ...patch, cameraTransformMode: 'preset', cameraTransform: null }
+            }))
+            if (status.mode === 'warm' && status.message) {
+              toast.success(status.message)
+            }
+          })
+          .catch((error: unknown) => {
+            // The previous layout is still live; surface the exact backend reason.
+            reportError(error)
+          })
+          .finally(() => setLayoutSwitchPending(null))
+        return
+      }
+
       setCaptureConfig((current) => ({
         ...current,
         layout: { ...current.layout, ...patch, cameraTransformMode: 'preset', cameraTransform: null }
@@ -1646,7 +1691,18 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         void loadScene({ sources: captureConfig.sources, layout, video: captureConfig.video }).catch(reportError)
       }
     },
-    [captureConfig.layout, captureConfig.sources, captureConfig.video, loadScene, reportError, sceneEditMode]
+    [
+      applyScene,
+      captureConfig.layout,
+      captureConfig.sources,
+      captureConfig.video,
+      client,
+      layoutSwitchPending,
+      loadScene,
+      reportError,
+      sceneEditMode,
+      wsStatus
+    ]
   )
 
   const ensureNativePreviewCamera = useCallback(async () => {
@@ -3219,6 +3275,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     nudgeSceneSource,
     commitCameraTransform,
     applyCameraPreset,
+    layoutSwitchPending,
     setSceneSourceVisible,
     moveSceneSource,
     openSystemPermission,
