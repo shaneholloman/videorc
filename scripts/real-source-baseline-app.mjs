@@ -239,7 +239,10 @@ async function main() {
 
     if (config.screenMotionStimulus) {
       console.log('Launching visible screen motion stimulus for hard motion gates.')
-      motionStimulus = await launchScreenMotionStimulus()
+      motionStimulus = await launchScreenMotionStimulus({ screenSource: sources.screen })
+      console.log(
+        `Screen motion stimulus window ${motionStimulus.width}x${motionStimulus.height} @ ${motionStimulus.x},${motionStimulus.y}.`
+      )
     }
     if (config.avSyncStimulus) {
       console.log('Launching visible flash+click A/V sync stimulus.')
@@ -1186,7 +1189,10 @@ function writeBaselineReport(
   lines.push(`- Microphone: ${sources.microphone ? `${sources.microphone.name} \`${sources.microphone.id}\`` : 'none'}`)
   lines.push(`- testPattern: false (real capture)`)
   if (config.screenMotionStimulus) {
-    lines.push(`- screenMotionStimulus: true (${motionStimulus?.browserPath ?? 'browser'})`)
+    const stimulusWindow = motionStimulus
+      ? `${motionStimulus.width}x${motionStimulus.height} @ ${motionStimulus.x},${motionStimulus.y}`
+      : 'window unavailable'
+    lines.push(`- screenMotionStimulus: true (${motionStimulus?.browserPath ?? 'browser'}; ${stimulusWindow})`)
   }
   if (config.avSyncStimulus) {
     lines.push(`- avSyncStimulus: true (${avSyncStimulus?.browserPath ?? 'browser'})`)

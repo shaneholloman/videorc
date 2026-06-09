@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,14 +6,15 @@ import { pathToFileURL } from 'node:url'
 
 const DEFAULT_CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-export async function launchScreenMotionStimulus({
-  browserPath = process.env.VIDEORC_SCREEN_MOTION_BROWSER_PATH ?? DEFAULT_CHROME_PATH,
-  x = Number(process.env.VIDEORC_SCREEN_MOTION_X ?? 32),
-  y = Number(process.env.VIDEORC_SCREEN_MOTION_Y ?? 32),
-  width = Number(process.env.VIDEORC_SCREEN_MOTION_WIDTH ?? 1360),
-  height = Number(process.env.VIDEORC_SCREEN_MOTION_HEIGHT ?? 820),
-  settleMs = Number(process.env.VIDEORC_SCREEN_MOTION_SETTLE_MS ?? 1800),
-} = {}) {
+export async function launchScreenMotionStimulus(options = {}) {
+  const displayOptions = screenMotionStimulusOptionsForSource(options.screenSource) ?? {}
+  const browserPath = options.browserPath ?? process.env.VIDEORC_SCREEN_MOTION_BROWSER_PATH ?? DEFAULT_CHROME_PATH
+  const x = Number(options.x ?? process.env.VIDEORC_SCREEN_MOTION_X ?? displayOptions.x ?? 32)
+  const y = Number(options.y ?? process.env.VIDEORC_SCREEN_MOTION_Y ?? displayOptions.y ?? 32)
+  const width = Number(options.width ?? process.env.VIDEORC_SCREEN_MOTION_WIDTH ?? displayOptions.width ?? 1360)
+  const height = Number(options.height ?? process.env.VIDEORC_SCREEN_MOTION_HEIGHT ?? displayOptions.height ?? 820)
+  const settleMs = Number(options.settleMs ?? process.env.VIDEORC_SCREEN_MOTION_SETTLE_MS ?? 1800)
+
   if (!existsSync(browserPath)) {
     throw new Error(
       `Screen motion stimulus requires a Chromium-compatible browser. ` +
@@ -51,7 +52,51 @@ export async function launchScreenMotionStimulus({
     rmSync(dir, { recursive: true, force: true })
     throw new Error(`Screen motion stimulus browser exited early with code ${child.exitCode}.`)
   }
-  return { child, dir, htmlPath, browserPath }
+  return { child, dir, htmlPath, browserPath, x, y, width, height }
+}
+
+export function screenMotionStimulusOptionsForSource(source) {
+  const displayId = parseScreencaptureKitDisplayId(source?.id)
+  if (!displayId || process.platform !== 'darwin') return null
+  const bounds = queryMacDisplayBounds(displayId)
+  return bounds ? stimulusWindowOptionsFromDisplayBounds(bounds) : null
+}
+
+export function stimulusWindowOptionsFromDisplayBounds(bounds, margin = 16) {
+  if (!bounds || !Number.isFinite(bounds.width) || !Number.isFinite(bounds.height)) return null
+  return {
+    x: Math.round((bounds.x ?? 0) + margin),
+    y: Math.round((bounds.y ?? 0) + margin),
+    width: Math.max(640, Math.round(bounds.width - margin * 2)),
+    height: Math.max(480, Math.round(bounds.height - margin * 2)),
+  }
+}
+
+function parseScreencaptureKitDisplayId(id) {
+  const match = String(id ?? '').match(/^screen:screencapturekit:(\d+)$/)
+  return match ? Number(match[1]) : null
+}
+
+function queryMacDisplayBounds(displayId) {
+  const result = spawnSync(
+    'swift',
+    [
+      '-e',
+      `import CoreGraphics
+let id = CGDirectDisplayID(${displayId})
+let bounds = CGDisplayBounds(id)
+print("\\(bounds.origin.x),\\(bounds.origin.y),\\(bounds.width),\\(bounds.height)")`,
+    ],
+    { encoding: 'utf8', timeout: 5000 }
+  )
+  if (result.status !== 0) return null
+  const values = result.stdout
+    .trim()
+    .split(',')
+    .map((value) => Number(value))
+  if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) return null
+  const [x, y, width, height] = values
+  return { x, y, width, height }
 }
 
 export async function stopScreenMotionStimulus(stimulus) {
