@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
+    spawn_orphan_watchdog_thread();
     secrets::init_native_secret_store();
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -210,6 +211,27 @@ async fn shutdown_signal(state: AppState) {
         "Backend shutdown requested; stopping capture processes.",
     );
     shutdown_capture_processes(state).await;
+}
+
+/// A dedicated OS thread that kills this process when its parent dies. This MUST be
+/// a plain thread, not a tokio task: the async watchdog variant below failed in the
+/// field because a wedged runtime stops polling exactly when the process most needs
+/// to die. Orphaned backends hold the camera/microphone/ScreenCaptureKit and starve
+/// fresh app instances (screen layers fall to the synthetic pattern mid-session).
+fn spawn_orphan_watchdog_thread() {
+    #[cfg(unix)]
+    std::thread::spawn(|| {
+        loop {
+            if std::os::unix::process::parent_id() == 1 {
+                // Give the async graceful path a moment, then exit unconditionally;
+                // process teardown releases every capture device.
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                eprintln!("Parent process died; exiting so capture devices are released.");
+                std::process::exit(1);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
 }
 
 /// Resolves when this process is orphaned (its parent died and launchd adopted it).
