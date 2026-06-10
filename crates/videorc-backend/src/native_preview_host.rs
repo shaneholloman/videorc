@@ -443,10 +443,8 @@ mod macos {
                     self.window.setLevel(level);
                 }
                 if let Some(target) = self.bounds.order_above_window_id {
-                    unsafe {
-                        self.window
-                            .orderWindow_relativeTo(NSWindowOrderingMode::Above, target as isize);
-                    }
+                    self.window
+                        .orderWindow_relativeTo(NSWindowOrderingMode::Above, target as isize);
                 } else if !self.window.isVisible() {
                     self.window.orderFrontRegardless();
                 }
