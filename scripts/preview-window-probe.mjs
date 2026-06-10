@@ -153,7 +153,11 @@ async function waitForSurfaceAtContentRect(label, tolerance = 6, timeoutMsLocal 
         // the preview window as one app), so match by owner, not layer.
         const native = windowList().find((w) => w.owner === 'native_preview_host_helper' && match(w))
         if (native) {
-          assertProbe(true, `${label} [native-window]`, '')
+          assertProbe(
+            native.layer === 0,
+            `${label} [native-window at normal level]`,
+            `helper window layer ${native.layer} — floating level means it covers every app`
+          )
           return state
         }
       }

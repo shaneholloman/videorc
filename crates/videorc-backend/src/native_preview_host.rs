@@ -417,6 +417,14 @@ mod macos {
         }
 
         pub fn set_bounds(&mut self, bounds: NativePreviewHostBounds) {
+            // Stacking state is sticky: a push without the fields (legacy-shaped
+            // producers) must never downgrade an established normal-level pair
+            // back to the floating overlay.
+            let mut bounds = bounds;
+            bounds.order_above_window_id = bounds
+                .order_above_window_id
+                .or(self.bounds.order_above_window_id);
+            bounds.elevated = bounds.elevated.or(self.bounds.elevated);
             self.bounds = bounds;
             self.layer_host.set_bounds(bounds);
             self.window.setFrame_display(window_frame(bounds), true);

@@ -18,6 +18,15 @@ export function normalizePreviewSurfaceBounds(bounds: PreviewSurfaceBounds): Pre
   if (typeof bounds.visible === 'boolean') {
     normalized.visible = bounds.visible
   }
+  // Stacking fields must survive normalization: dropping them here silently
+  // flipped the native surface back to floating level (always-on-top over
+  // every app) because the helper treats their absence as legacy embedded mode.
+  if (typeof bounds.orderAboveWindowId === 'number') {
+    normalized.orderAboveWindowId = bounds.orderAboveWindowId
+  }
+  if (typeof bounds.elevated === 'boolean') {
+    normalized.elevated = bounds.elevated
+  }
   return normalized
 }
 
