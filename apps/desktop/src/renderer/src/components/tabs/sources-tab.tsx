@@ -27,14 +27,10 @@ const STATUS_TONE: Record<DeviceStatus, StatusTone> = {
   'permission-required': 'warn'
 }
 
-// Panel homes per the studio shell plan (decision 5): the Layouts panel embeds the
-// device pickers (`section="devices"`), the Audio panel embeds the microphone mixer
-// (`section="audio"`).
-export function SourcesTab({
-  section = 'all'
-}: {
-  section?: 'devices' | 'audio' | 'all'
-} = {}): ReactElement {
+// The single home for every capture device — screen/window, camera, and microphone
+// with its mixer — so changing what gets captured never spans pages (UI rewrite plan
+// V1/V2, 2026-06-10).
+export function SourcesTab(): ReactElement {
   const {
     deviceList,
     captureConfig,
@@ -86,12 +82,8 @@ export function SourcesTab({
     }))
   }
 
-  const showDevices = section !== 'audio'
-  const showAudio = section !== 'devices'
-
   return (
-    <div className={section === 'all' ? 'grid gap-4 lg:grid-cols-2' : 'flex flex-col gap-4'}>
-      {showDevices ? (
+    <div className="grid gap-4 lg:grid-cols-2">
       <PanelSection
         action={
           <Button size="sm" variant="outline" onClick={refreshBackend}>
@@ -99,7 +91,7 @@ export function SourcesTab({
             Refresh
           </Button>
         }
-        className={section === 'all' ? 'lg:col-span-2' : undefined}
+        className="lg:col-span-2"
         description="Pick what gets captured. Unavailable devices need permission or reconnection."
         icon={Monitor}
         title="Capture sources"
@@ -181,9 +173,7 @@ export function SourcesTab({
           </div>
         ) : null}
       </PanelSection>
-      ) : null}
 
-      {showAudio ? (
       <PanelSection
         description="Native CoreAudio meter with manual source gain. No automatic processing is applied."
         icon={Waveform}
@@ -326,9 +316,7 @@ export function SourcesTab({
           {audioMeterLoading ? 'Checking...' : 'Check mic'}
         </Button>
       </PanelSection>
-      ) : null}
 
-      {showDevices ? (
       <PanelSection
         description="All devices discovered by the backend and their permission state."
         icon={Monitor}
@@ -347,7 +335,6 @@ export function SourcesTab({
           </div>
         )}
       </PanelSection>
-      ) : null}
     </div>
   )
 }

@@ -2,7 +2,6 @@ import {
   Broadcast,
   FilmReel,
   GearSix,
-  Microphone,
   Monitor,
   Record,
   Sparkle,
@@ -17,7 +16,7 @@ import { createContext, useContext } from 'react'
 // 2026-06-09, overriding the earlier push-rail idea). Sources is the single home for
 // every capture device — screen/window, camera, AND microphone — so changing what
 // gets captured never requires hunting across pages (UI rewrite plan, 2026-06-10).
-export type StudioPanel = 'sources' | 'layouts' | 'live' | 'audio' | 'recording'
+export type StudioPanel = 'sources' | 'layouts' | 'live' | 'recording'
 
 // Full pages: they replace the workspace content area.
 export type WorkspaceTab = 'studio' | StudioPanel | 'library' | 'ai' | 'diagnostics' | 'settings'
@@ -48,11 +47,12 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 ]
 
 // Sidebar order mirrors the live workflow: pick sources, compose, go live, output.
+// There is no Audio page — the microphone and mixer live on Sources with every
+// other capture device.
 export const STUDIO_PANELS: StudioPanelMeta[] = [
   { id: 'sources', label: 'Sources', icon: Monitor, legacyTabId: 'sources' },
   { id: 'layouts', label: 'Layouts', icon: SquaresFour, legacyTabId: 'layout' },
   { id: 'live', label: 'Live', icon: Broadcast, legacyTabId: 'streaming' },
-  { id: 'audio', label: 'Audio', icon: Microphone, legacyTabId: 'audio' },
   { id: 'recording', label: 'Recording', icon: Record, legacyTabId: 'recording' }
 ]
 

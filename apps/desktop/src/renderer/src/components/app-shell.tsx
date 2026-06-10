@@ -107,16 +107,14 @@ export function AppShell(): ReactElement {
         <main className="flex h-screen flex-1 flex-col overflow-y-auto">
           <div className="mx-auto w-full max-w-[1600px] flex-1 px-8 py-6">
             {active === 'studio' ? <StudioTab /> : null}
-            {active === 'sources' ? <SourcesTab section="all" /> : null}
+            {active === 'sources' ? <SourcesTab /> : null}
             {active === 'layouts' ? (
               <div className="flex flex-col gap-4">
                 <LayoutTab />
-                <SourcesTab section="devices" />
                 <ScreensTab />
               </div>
             ) : null}
             {active === 'live' ? <StreamingTab /> : null}
-            {active === 'audio' ? <SourcesTab section="audio" /> : null}
             {active === 'recording' ? <RecordingTab /> : null}
             {active === 'library' ? <LibraryTab onOpenInAi={openInAi} /> : null}
             {active === 'ai' ? (
