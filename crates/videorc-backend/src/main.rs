@@ -216,10 +216,20 @@ async fn shutdown_signal(state: AppState) {
 /// The Electron app normally stops the backend on quit, but force-quits and crashes
 /// skip that path — an orphaned backend used to keep the camera/microphone/screen
 /// capture running indefinitely (the "camera light stays on" bug).
+///
+/// Before returning, arm a HARD exit: the graceful path (stop captures, drain axum)
+/// can itself wedge — orphans were observed alive minutes after triggering — and an
+/// orphan that lingers holds devices and confuses fresh app instances. Ten seconds
+/// of grace for cleanup, then the process is gone unconditionally.
 #[cfg(unix)]
 async fn orphaned_by_parent_exit() {
     loop {
         if std::os::unix::process::parent_id() == 1 {
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                eprintln!("Orphaned backend cleanup overran its grace period; exiting hard.");
+                std::process::exit(1);
+            });
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
