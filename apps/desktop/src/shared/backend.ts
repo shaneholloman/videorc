@@ -1579,6 +1579,7 @@ export interface RuntimeInfo {
 export interface PreviewWindowState {
   open: boolean
   visible: boolean
+  // The VIDEO region of the preview window: content minus the top drag bar.
   contentBounds: { x: number; y: number; width: number; height: number } | null
   scaleFactor: number
   screenHeight: number
@@ -1598,6 +1599,7 @@ export interface VideorcApi {
   closePreviewWindow: () => Promise<PreviewWindowState>
   getPreviewWindowState: () => Promise<PreviewWindowState>
   setPreviewWindowAlwaysOnTop: (alwaysOnTop: boolean) => Promise<PreviewWindowState>
+  setPreviewWindowAspectRatio: (width: number, height: number) => Promise<PreviewWindowState>
   onPreviewWindowState: (callback: (state: PreviewWindowState) => void) => () => void
   createNativePreviewSurface: (bounds: PreviewSurfaceBounds) => Promise<PreviewSurfaceStatus>
   updateNativePreviewSurfaceBounds: (bounds: PreviewSurfaceBounds) => Promise<PreviewSurfaceStatus>

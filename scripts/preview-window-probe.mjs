@@ -128,6 +128,10 @@ async function main() {
  * window when it owns placement) sits on the preview window's content rect.
  */
 async function waitForSurfaceAtContentRect(label, tolerance = 6, timeoutMsLocal = 15000) {
+  // The surface hides while the app is unfocused (by design); anything stealing
+  // focus from the headless app mid-probe (terminals, overlays) must not read as
+  // a placement failure. preview-window-open is idempotent and re-focuses.
+  await smokeCommand('preview-window-open')
   const deadline = Date.now() + timeoutMsLocal
   let state = null
   do {

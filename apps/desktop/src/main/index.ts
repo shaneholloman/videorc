@@ -189,6 +189,36 @@ function createWindow(): void {
 let previewWindow: BrowserWindow | null = null
 let previewWindowLastFrame: Electron.Rectangle | null = null
 let previewWindowAlwaysOnTop = false
+// The visible drag bar at the top of the preview window; the native video covers
+// the content BELOW it, and the aspect lock applies to that video region only.
+const PREVIEW_WINDOW_BAR_HEIGHT = 28
+// Output aspect ratio (from the renderer's video settings); the window is locked
+// to it so the preview can never be squeezed or stretched.
+let previewWindowAspect = { width: 16, height: 9 }
+
+function previewWindowAspectRatio(): number {
+  return previewWindowAspect.width / Math.max(1, previewWindowAspect.height)
+}
+
+// Lock user resizing to the output ratio (the bar is excluded via extraSize) and
+// conform the current frame so the video region matches the ratio exactly.
+function applyPreviewWindowAspect(window: BrowserWindow): void {
+  const ratio = previewWindowAspectRatio()
+  window.setAspectRatio(ratio, { width: 0, height: PREVIEW_WINDOW_BAR_HEIGHT })
+  window.setMinimumSize(320, Math.round(320 / ratio) + PREVIEW_WINDOW_BAR_HEIGHT)
+  const [width] = window.getContentSize()
+  window.setContentSize(width, Math.round(width / ratio) + PREVIEW_WINDOW_BAR_HEIGHT)
+}
+
+function previewWindowVideoBounds(window: BrowserWindow): Electron.Rectangle {
+  const contentBounds = window.getContentBounds()
+  return {
+    x: contentBounds.x,
+    y: contentBounds.y + PREVIEW_WINDOW_BAR_HEIGHT,
+    width: contentBounds.width,
+    height: Math.max(1, contentBounds.height - PREVIEW_WINDOW_BAR_HEIGHT)
+  }
+}
 
 // Window frame, open/closed choice, and always-on-top survive relaunches (U3).
 type PreviewWindowPrefs = {
@@ -286,7 +316,9 @@ type PreviewWindowState = {
 function previewWindowState(): PreviewWindowState {
   const window = previewWindow
   const open = Boolean(window && !window.isDestroyed())
-  const contentBounds = open ? window!.getContentBounds() : null
+  // The VIDEO region: window content minus the drag bar. Everything downstream
+  // (surface placement, probe asserts) glues to this rect.
+  const contentBounds = open ? previewWindowVideoBounds(window!) : null
   return {
     open,
     visible: open ? window!.isVisible() && !window!.isMinimized() : false,
@@ -339,23 +371,30 @@ function pushPreviewWindowPlacement(): void {
 }
 
 const PREVIEW_WINDOW_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
-  /* The whole window is a drag surface: the native video floats above this page
-     and ignores mouse events, so every grab lands here. There are no controls in
-     the page, and edge-resize is handled by the real window frame (hiddenInset). */
+  /* The whole window is a drag surface: the native video floats above the area
+     below the bar and ignores mouse events, so every grab lands here. The bar
+     stays visible above the video as the obvious handle. Edge-resize is handled
+     by the real window frame (hiddenInset) and is aspect-locked by main. */
   html, body { margin: 0; height: 100%; background: #09090b; color: #a1a1aa;
     font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; overflow: hidden;
     user-select: none; -webkit-user-select: none; -webkit-app-region: drag; }
-  .drag-strip { position: fixed; top: 0; left: 0; right: 0; height: 28px;
-    display: flex; align-items: center;
-    justify-content: center; color: #52525b; font-size: 11px; letter-spacing: 0.08em;
-    text-transform: uppercase; }
-  .hint { position: fixed; inset: 0; display: flex; align-items: center;
-    justify-content: center; flex-direction: column; gap: 6px; }
+  .drag-bar { position: fixed; top: 0; left: 0; right: 0; height: 28px;
+    display: flex; align-items: center; gap: 10px; cursor: grab;
+    padding: 0 12px 0 78px; /* traffic lights live in the left inset */
+    background: #18181b; border-bottom: 1px solid #27272a; box-sizing: border-box; }
+  .drag-bar:active { cursor: grabbing; }
+  .drag-bar .label { color: #71717a; font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; white-space: nowrap; }
+  .drag-bar .grip { flex: 1; height: 8px; background-image:
+    radial-gradient(circle, #3f3f46 1px, transparent 1.2px);
+    background-size: 6px 4px; background-position: center; }
+  .hint { position: fixed; top: 28px; left: 0; right: 0; bottom: 0; display: flex;
+    align-items: center; justify-content: center; flex-direction: column; gap: 6px; }
   .hint .title { color: #d4d4d8; font-size: 13px; }
 </style></head><body>
   <div class="hint"><div class="title">Waiting for preview</div>
   <div>The native surface appears here as soon as the compositor presents.</div></div>
-  <div class="drag-strip">Videorc Preview</div>
+  <div class="drag-bar"><span class="label">Videorc Preview</span><span class="grip"></span></div>
 </body></html>`
 
 async function openPreviewWindow(): Promise<PreviewWindowState> {
@@ -394,6 +433,7 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
   if (previewWindowAlwaysOnTop) {
     window.setAlwaysOnTop(true, 'floating')
   }
+  applyPreviewWindowAspect(window)
   savePreviewWindowPrefs({ open: true })
 
   // Every placement-affecting event re-feeds the bounds pipeline. macOS emits
@@ -3103,6 +3143,19 @@ app.whenReady().then(() => {
   ipcMain.handle('preview-window:set-always-on-top', (_event, alwaysOnTop: boolean) =>
     setPreviewWindowAlwaysOnTop(Boolean(alwaysOnTop))
   )
+  ipcMain.handle('preview-window:set-aspect-ratio', (_event, width: number, height: number) => {
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      const changed =
+        previewWindowAspect.width !== width || previewWindowAspect.height !== height
+      previewWindowAspect = { width, height }
+      if (changed && previewWindow && !previewWindow.isDestroyed()) {
+        applyPreviewWindowAspect(previewWindow)
+        pushPreviewWindowPlacement()
+        emitPreviewWindowState()
+      }
+    }
+    return previewWindowState()
+  })
   ipcMain.handle('preview-surface:create', (_event, bounds: PreviewSurfaceBounds) =>
     runNativePreviewSurfaceMutation(() => createNativePreviewSurface(bounds))
   )

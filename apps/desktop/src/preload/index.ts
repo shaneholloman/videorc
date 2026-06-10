@@ -66,6 +66,8 @@ const api: VideorcApi = {
   getPreviewWindowState: () => ipcRenderer.invoke('preview-window:get-state'),
   setPreviewWindowAlwaysOnTop: (alwaysOnTop) =>
     ipcRenderer.invoke('preview-window:set-always-on-top', alwaysOnTop),
+  setPreviewWindowAspectRatio: (width, height) =>
+    ipcRenderer.invoke('preview-window:set-aspect-ratio', width, height),
   onPreviewWindowState: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, state: PreviewWindowState): void => callback(state)
     ipcRenderer.on('preview-window:state', listener)

@@ -2157,6 +2157,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     await window.videorc?.setPreviewWindowAlwaysOnTop?.(alwaysOnTop)
   }, [])
 
+  // The preview window is locked to the OUTPUT aspect ratio — the user can never
+  // squeeze or stretch what they will record/stream.
+  useEffect(() => {
+    if (previewWindow.embeddedMode) {
+      return
+    }
+    void window.videorc?.setPreviewWindowAspectRatio?.(captureConfig.video.width, captureConfig.video.height)
+  }, [captureConfig.video.width, captureConfig.video.height, previewWindow.embeddedMode])
+
   const syncNativePreviewSurfaceScene = useCallback(async () => {
     if (!nativePreviewSurfaceEnabled || !window.videorc?.updateNativePreviewSurfaceScene) {
       return
