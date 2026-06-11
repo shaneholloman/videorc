@@ -308,12 +308,31 @@ class NativePreviewHelperProcessDriver implements NativePreviewRealSurfaceDriver
           reject(error)
         }
       })
+      const fail = (error: unknown): void => {
+        const entry = this.pending.get(id)
+        if (entry) {
+          this.pending.delete(id)
+          entry.reject(
+            new Error(`Native preview host helper write failed: ${errorMessage(error)}`)
+          )
+        }
+      }
+      // Writing to a dying helper fails ASYNCHRONOUSLY (EPIPE via the write
+      // callback / stream 'error'), not as a throw — at app quit the kill of the
+      // helper races the preview teardown's destroy command, so route every
+      // failure mode into this request's rejection instead of the process.
+      if (child.stdin.destroyed === true || child.stdin.writable === false) {
+        fail(new Error('helper stdin is not writable'))
+        return
+      }
       try {
-        child.stdin.write(message)
+        child.stdin.write(message, (error) => {
+          if (error) {
+            fail(error)
+          }
+        })
       } catch (error) {
-        clearTimeout(timer)
-        this.pending.delete(id)
-        reject(new Error(`Native preview host helper write failed: ${errorMessage(error)}`))
+        fail(error)
       }
     })
   }
@@ -349,6 +368,17 @@ class NativePreviewHelperProcessDriver implements NativePreviewRealSurfaceDriver
     }
     child.stdout.on('data', (chunk: Buffer | string) => this.handleStdout(String(chunk)))
     child.stderr.on('data', (chunk: Buffer | string) => this.handleStderr(String(chunk)))
+    // A killed helper's pipes error asynchronously; without listeners a single
+    // EPIPE is an uncaught exception that takes down the whole main process.
+    child.stdin.on('error', (error: Error) =>
+      this.rejectAll(`Native preview host helper stdin failed: ${error.message}`)
+    )
+    child.stdout.on('error', (error: Error) =>
+      this.options.onLog?.('warn', `Native preview host helper stdout failed: ${error.message}`)
+    )
+    child.stderr.on('error', (error: Error) =>
+      this.options.onLog?.('warn', `Native preview host helper stderr failed: ${error.message}`)
+    )
     child.on('error', (error: Error) =>
       this.rejectAll(`Native preview host helper error: ${error.message}`)
     )

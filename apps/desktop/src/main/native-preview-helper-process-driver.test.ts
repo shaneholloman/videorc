@@ -5,10 +5,26 @@ import { createNativePreviewHelperProcessDriver } from './native-preview-helper-
 
 class FakeStream extends EventEmitter {
   writes: string[] = []
+  writable?: boolean
 
-  write(chunk: string): boolean {
+  write(chunk: string, callback?: (error?: Error | null) => void): boolean {
+    void callback
     this.writes.push(chunk)
     return true
+  }
+}
+
+// Mimics writing to a killed helper: the EPIPE arrives asynchronously via the
+// write callback AND the stream 'error' event, never as a synchronous throw.
+class BrokenPipeStream extends FakeStream {
+  write(chunk: string, callback?: (error?: Error | null) => void): boolean {
+    this.writes.push(chunk)
+    const error = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })
+    setImmediate(() => {
+      callback?.(error)
+      this.emit('error', error)
+    })
+    return false
   }
 }
 
@@ -58,6 +74,34 @@ describe('native-preview-helper-process-driver', () => {
     child.respond({ hasOverlay: true })
 
     await expect(promise).resolves.toBeNull()
+  })
+
+  it('rejects the request instead of crashing when the helper pipe breaks at quit', async () => {
+    const child = new FakeChild()
+    child.stdin = new BrokenPipeStream()
+    const driver = createNativePreviewHelperProcessDriver({
+      command: 'helper',
+      spawnProcess: () => child as never
+    })
+
+    // Pre-fix this killed the process: the EPIPE 'error' event had no listener.
+    await expect(driver.applyHostCommands([{ kind: 'destroy' }])).rejects.toThrow(
+      /write failed: write EPIPE/
+    )
+  })
+
+  it('rejects immediately when the helper stdin is already unwritable', async () => {
+    const child = new FakeChild()
+    child.stdin.writable = false
+    const driver = createNativePreviewHelperProcessDriver({
+      command: 'helper',
+      spawnProcess: () => child as never
+    })
+
+    await expect(driver.applyHostCommands([{ kind: 'destroy' }])).rejects.toThrow(
+      /stdin is not writable/
+    )
+    expect(child.stdin.writes).toHaveLength(0)
   })
 
   it('reports helper process start and exit pids to the owner registry callbacks', async () => {
