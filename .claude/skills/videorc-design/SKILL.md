@@ -12,7 +12,7 @@ The single source of truth for how Videorc looks and feels. Every UI task follow
 ## Hard rules
 
 1. **shadcn/ui only.** Every interface element is a shadcn/ui component (or a composition of them), installed and customized per the `shadcn` skill (`.agents/skills/shadcn/`, with reference docs in `~/.claude/skills/shadcn/`). No other component libraries, no hand-rolled widgets when a shadcn primitive exists. Tailwind utilities + shadcn CSS variables carry the theming.
-2. **Dark glass first.** The app is dark-mode-native. Light mode is out of scope until the migration plan says otherwise.
+2. **Dark glass first, light glass supported.** Dark is the default and the reference expression of this language. Light mode STAYS as a first-class twin: identical structure, patterns, spacing, and rules, with the light token column below — never a separately-designed theme. Both themes remain reachable via the existing theme toggle.
 3. **Keyboard-first.** Every primary action has a visible shortcut, rendered as key chips (see Patterns). Footers advertise the current context's actions.
 4. **Color is information.** The chrome is monochrome (blacks, grays, white). Saturated color appears ONLY in app/source icons and small status accents (e.g. live/connected green, destructive red). Never tint panels, rows, or text decoratively.
 
@@ -20,19 +20,19 @@ The single source of truth for how Videorc looks and feels. Every UI task follow
 
 Express these as shadcn CSS variables (`--background`, `--foreground`, `--muted`, `--accent`, `--border`, `--radius`, …) in `globals.css`; values below are the design intent.
 
-Surfaces
-- Window/panel base: near-black charcoal, translucent: `rgba(24, 24, 27, 0.75)` over a `backdrop-blur(60px) saturate(1.4)`. Solid fallback `#1C1C1F` where blur is unavailable (e.g. nested popovers can use `0.92` opacity).
-- Panels float: rounded corners `16–20px` (panel), layered shadow (`0 16px 70px rgba(0,0,0,0.55)` + a tight `0 0 0 1px` hairline ring).
-- Hairlines and borders: white at 8% (`rgba(255,255,255,0.08)`); never solid gray borders.
+Surfaces (dark · light)
+- Window/panel base, translucent over `backdrop-blur(60px) saturate(1.4)`: dark `rgba(24,24,27,0.75)` · light `rgba(245,245,247,0.75)`. Solid fallback where blur is unavailable (nested popovers at `0.92`): dark `#1C1C1F` · light `#F5F5F7`.
+- Panels float: rounded corners `16–20px` (panel), layered shadow (`0 16px 70px rgba(0,0,0,0.55)` dark · `rgba(0,0,0,0.25)` light) + a tight `0 0 0 1px` hairline ring.
+- Hairlines and borders: dark white-8% (`rgba(255,255,255,0.08)`) · light black-8% (`rgba(0,0,0,0.08)`); never solid gray borders.
 
-Text (three tiers, nothing else)
-- Primary: near-white `#F4F4F5`, weight 500 for titles/labels.
-- Secondary: muted gray `#A1A1AA`, weight 400 — inline context after a title, right-aligned metadata, placeholders.
-- Tertiary: `#71717A` — section headers, footer hints, disabled.
+Text (three tiers, nothing else; dark · light)
+- Primary: `#F4F4F5` · `#1C1C1E`, weight 500 for titles/labels.
+- Secondary: `#A1A1AA` · `#6E6E73`, weight 400 — inline context after a title, right-aligned metadata, placeholders.
+- Tertiary: `#71717A` · `#98989D` — section headers, footer hints, disabled.
 
-Selection & interaction
-- Selected/hovered row: white 8% overlay (`rgba(255,255,255,0.08)`), radius `8–10px`, full-row block; no outlines, no color fills.
-- Pressed: white 12%. Focus-visible: 2px ring of white 25% (keyboard only).
+Selection & interaction (dark · light)
+- Selected/hovered row: white-8% · black-6% overlay, radius `8–10px`, full-row block; no outlines, no color fills.
+- Pressed: white-12% · black-10%. Focus-visible: 2px ring at 25% of the theme's hairline color (keyboard only).
 
 Geometry & rhythm
 - Radii: panel 16–20, rows/cards 8–10, key chips & small controls 6.

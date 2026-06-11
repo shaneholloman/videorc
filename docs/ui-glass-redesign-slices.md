@@ -4,7 +4,7 @@ Cut from [ui-glass-redesign-plan.md](./ui-glass-redesign-plan.md). Design author
 
 ## Battle order
 
-1. **Dark-native tokens + system font** — none
+1. **Glass tokens (dark + light) + system font** — none
 2. **Electron vibrancy shell** — depends on 1
 3. **Shared primitives + shadcn variant retune** — depends on 1
 4. **App shell, sidebar, navigation** — depends on 3
@@ -29,17 +29,19 @@ Cut from [ui-glass-redesign-plan.md](./ui-glass-redesign-plan.md). Design author
 
 ---
 
-## Slice 1 — Dark-native tokens + system font
-**Goal:** The whole app renders on the glass-dark token set in the reference font; light mode and the green action accent cease to exist.
+## Slice 1 — Glass tokens (dark + light) + system font
+**Goal:** Both themes render on the glass token columns in the reference font; the green action accent ceases to exist; dark becomes the default theme. Light mode STAYS (owner decision) — same language, light column.
 **Depends on:** none
-**Touches:** `apps/desktop/src/renderer/src/styles.css`, `apps/desktop/src/renderer/src/components/theme-toggle.tsx` (delete), its render sites (grep `ThemeToggle` — settings/app-shell), the theme provider wiring (grep `useTheme|ThemeProvider|next-themes` under `apps/desktop/src/renderer/src/`), `apps/desktop/package.json`.
+**Touches:** `apps/desktop/src/renderer/src/styles.css`, the theme default (grep `useTheme|ThemeProvider|defaultTheme` under `apps/desktop/src/renderer/src/` — `components/theme-toggle.tsx` stays), `apps/desktop/package.json`.
 **Steps:**
 1. In `styles.css`: delete the `@fontsource-variable/geist` and `geist-mono` imports (lines ~3–4). Set `--font-sans`/`--font-heading` to `-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif` and `--font-mono` to `ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace`.
-2. Replace the `:root` token block with the dark glass values from the skill (Foundation §3 of the plan): `--background: rgba(24,24,27,0.75)`-equivalent (oklch with alpha is fine), `--foreground #F4F4F5`, `--muted-foreground #A1A1AA`, `--border`/`--input` white-8%, `--ring` white-25%, `--accent` white-8%, `--primary` near-white monochrome, `--popover`/`--card` solid `#1C1C1F` at 0.92 alpha. Keep `--live` red; keep `--success/--warning/--info` values (status-only usage is enforced in Slice 10). Delete the `.dark { ... }` block entirely; tokens live in `:root`.
-3. Remove the theme toggle component and all its render sites; remove the theme provider package wiring if `next-themes` (or equivalent) is a dependency; `pnpm remove @fontsource-variable/geist @fontsource-variable/geist-mono` (and the theme package if now unused) from `apps/desktop`.
-4. Ensure the document root always carries dark tokens (no `class="dark"` dependency remains).
-**Done when:** gates pass; `grep -rn "fontsource\|Geist" apps/desktop/src` returns nothing; `grep -rn "next-themes\|ThemeToggle" apps/desktop/src` returns nothing; screenshots of `studio` and `streaming` tabs show dark surfaces and SF Pro (compare a title's glyphs against the reference image — Geist's single-story `g` is the tell).
-**Out of scope:** layout/markup changes, Electron window settings, component variants.
+2. Replace the `:root` token block with the skill's LIGHT glass column: `--background` `rgba(245,245,247,0.75)`-equivalent (oklch with alpha is fine), `--foreground #1C1C1E`, `--muted-foreground #6E6E73`, `--border`/`--input` black-8%, `--ring` black-25%, `--accent` black-6%, `--primary` near-black monochrome, `--popover`/`--card` solid `#F5F5F7` at 0.92 alpha.
+3. Replace the `.dark` block with the DARK glass column: `--background` `rgba(24,24,27,0.75)`-equivalent, `--foreground #F4F4F5`, `--muted-foreground #A1A1AA`, `--border`/`--input` white-8%, `--ring` white-25%, `--accent` white-8%, `--primary` near-white, `--popover`/`--card` solid `#1C1C1F` at 0.92.
+4. In BOTH columns: keep `--live` red and `--success/--warning/--info` (status-only usage is enforced in Slice 10); delete the green `--primary` action accent and the green sidebar/chart-1 values.
+5. Keep the theme toggle and provider exactly as wired; change only the DEFAULT theme to dark.
+6. `pnpm remove @fontsource-variable/geist @fontsource-variable/geist-mono` from `apps/desktop`.
+**Done when:** gates pass; `grep -rn "fontsource\|Geist" apps/desktop/src` returns nothing; the theme toggle still switches themes (toggle once in the isolated instance); screenshots of `studio` and `streaming` in BOTH themes show glass tokens, no green accents, and SF Pro (Geist's single-story `g` is the tell); a fresh profile starts in dark.
+**Out of scope:** layout/markup changes, Electron window settings, component variants, removing any theme machinery.
 
 ## Slice 2 — Electron vibrancy shell
 **Goal:** The main window is genuinely translucent over the desktop (Raycast-style behind-window blur); the detached preview window chrome matches the glass language.
@@ -48,9 +50,10 @@ Cut from [ui-glass-redesign-plan.md](./ui-glass-redesign-plan.md). Design author
 **Steps:**
 1. mainWindow options: drop `backgroundColor: '#ffffff'`; add `vibrancy: 'under-window'`, `visualEffectState: 'active'`, `transparent: true` (or `backgroundColor: '#00000000'`), `titleBarStyle: 'hiddenInset'`, and a `trafficLightPosition` that clears the app shell's header.
 2. In `styles.css`, make `html, body` background transparent so the vibrancy shows through; the app container applies the translucent `--background` glass layer + hairline ring + `rounded-none` (the OS window provides the outer shape).
-3. Restyle `PREVIEW_WINDOW_HTML`'s drag bar to the tokens: charcoal at 0.75 over its existing surface, white-8% hairline bottom border, tertiary-gray label — no other preview-window behavior changes.
+3. Sync the OS material with the app theme: set `nativeTheme.themeSource` from the renderer's theme (IPC on toggle; default `'dark'`) so the vibrancy tint always matches the in-app theme instead of the system appearance.
+4. Restyle `PREVIEW_WINDOW_HTML`'s drag bar to the tokens: charcoal at 0.75 over its existing surface, white-8% hairline bottom border, tertiary-gray label — no other preview-window behavior changes (the preview window stays dark in both themes; it frames video).
 4. Run `node scripts/perf-idle-probe.mjs` (repo root) before and after the change; record both outputs.
-**Done when:** gates pass; a screenshot shows the desktop blurring through the main window; `perf-idle-probe` still prints `probe PASSED` with presents ≈60/s and per-process CPU within 5 percentage points of the pre-change run; a record→stop smoke (start/stop via the app or `VIDEORC_PROBE_RECORD=1 node scripts/diag-probe.mjs` with the dev app closed) completes.
+**Done when:** gates pass; screenshots in BOTH themes show the desktop blurring through the main window with matching vibrancy tint; `perf-idle-probe` still prints `probe PASSED` with presents ≈60/s and per-process CPU within 5 percentage points of the pre-change run; a record→stop smoke (start/stop via the app or `VIDEORC_PROBE_RECORD=1 node scripts/diag-probe.mjs` with the dev app closed) completes.
 **Out of scope:** any preview/present pipeline code, window sizing/aspect logic, in-app component styling.
 
 ## Slice 3 — Shared primitives + shadcn variant retune
@@ -126,7 +129,7 @@ Cut from [ui-glass-redesign-plan.md](./ui-glass-redesign-plan.md). Design author
 **Out of scope:** data shape, polling, chat behavior.
 
 ## Slice 10 — Color purge + dead-style cleanup
-**Goal:** Nothing outside source icons and status dots is colored; dead theme machinery is gone.
+**Goal:** Nothing outside source icons and status dots is colored, in either theme; dead tokens are gone (the theme toggle and both themes STAY).
 **Depends on:** Slices 4–9
 **Touches:** `styles.css`, any stragglers the audits find.
 **Steps:**
@@ -145,7 +148,7 @@ Cut from [ui-glass-redesign-plan.md](./ui-glass-redesign-plan.md). Design author
 **Steps:**
 1. Full gates: `pnpm typecheck`, `pnpm exec vitest run`, `cargo test -p videorc-backend`, eslint + `pnpm format:check` (all exit 0, captured directly).
 2. `node scripts/perf-idle-probe.mjs` → `probe PASSED`, presents ≈60/s, CPU per process within 5 points of the documented pre-migration baseline; `node scripts/perf-memory-probe.mjs` → allocator growth not worse than its pre-migration run.
-3. Screenshot sweep of every tab + palette + two dialogs; review side by side with the reference image against the skill checklist (tokens, row anatomy, footer bars, kbd chips).
+3. Screenshot sweep of every tab + palette + two dialogs, in BOTH themes; review the dark set side by side with the reference image and the light set against the skill's light column (tokens, row anatomy, footer bars, kbd chips).
 4. Perceptual pass: watch the live preview while recording for a minute — smoothness judged by eye per the project rule.
 **Done when:** every check above passes and the results (probe outputs + screenshot list) are pasted into the final commit message or a short `docs/ui-glass-redesign-acceptance.md`.
 **Out of scope:** new features; any regression found becomes its own task.
