@@ -21,13 +21,16 @@ export function emptyLiveChatSnapshot(updatedAt: string): LiveChatSnapshot {
   return { providers: [], messages: [], unreadCount: 0, updatedAt }
 }
 
+/** Chronological comparator: by `receivedAt`, then `id` as a tie-break (oldest first). */
+function compareMessagesChronological(a: LiveChatMessage, b: LiveChatMessage): number {
+  if (a.receivedAt !== b.receivedAt) return a.receivedAt < b.receivedAt ? -1 : 1
+  if (a.id === b.id) return 0
+  return a.id < b.id ? -1 : 1
+}
+
 /** Stable chronological order: by `receivedAt`, then `id` as a tie-break (oldest first). */
 export function sortMessagesChronological(messages: LiveChatMessage[]): LiveChatMessage[] {
-  return [...messages].sort((a, b) => {
-    if (a.receivedAt !== b.receivedAt) return a.receivedAt < b.receivedAt ? -1 : 1
-    if (a.id === b.id) return 0
-    return a.id < b.id ? -1 : 1
-  })
+  return [...messages].sort(compareMessagesChronological)
 }
 
 function boundMessages(messages: LiveChatMessage[]): LiveChatMessage[] {
@@ -52,8 +55,16 @@ export function applyLiveChatMessage(
   if (snapshot.messages.some((existing) => existing.id === message.id)) {
     return snapshot
   }
-  const messages = boundMessages(sortMessagesChronological([...snapshot.messages, message]))
-  return { ...snapshot, messages, updatedAt: message.receivedAt }
+  // The buffer is sorted by construction and messages almost always arrive in
+  // order, so scan back from the tail for the insertion point instead of
+  // re-sorting the whole buffer for every message (O(n log n) at chat rates).
+  const messages = snapshot.messages.slice()
+  let insertAt = messages.length
+  while (insertAt > 0 && compareMessagesChronological(message, messages[insertAt - 1]) < 0) {
+    insertAt -= 1
+  }
+  messages.splice(insertAt, 0, message)
+  return { ...snapshot, messages: boundMessages(messages), updatedAt: message.receivedAt }
 }
 
 /** Update (or append) one provider's status row. */

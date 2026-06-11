@@ -2051,10 +2051,37 @@ function recordNativePreviewTimingSample(samples: number[], value: number): void
   }
 }
 
+// Percentiles are consumed at the 250ms report cadence, but their inputs mutate
+// per present; recomputing (copy + sort of up-to-900 samples, several ranks)
+// for every present added up to hundreds of sorts per second. Cache per
+// (samples array, rank) for the report interval; arrays are replaced wholesale
+// on reset, so WeakMap entries fall away with them.
+const NATIVE_PREVIEW_PERCENTILE_CACHE_TTL_MS = 250
+const nativePreviewPercentileCache = new WeakMap<
+  number[],
+  Map<number, { value: number | undefined; computedAtMs: number }>
+>()
+
 function nativePreviewTimingPercentile(
   values: number[],
   percentileRank: number
 ): number | undefined {
+  const nowMs = Date.now()
+  let perRank = nativePreviewPercentileCache.get(values)
+  const cached = perRank?.get(percentileRank)
+  if (cached && nowMs - cached.computedAtMs < NATIVE_PREVIEW_PERCENTILE_CACHE_TTL_MS) {
+    return cached.value
+  }
+  const value = computeTimingPercentile(values, percentileRank)
+  if (!perRank) {
+    perRank = new Map()
+    nativePreviewPercentileCache.set(values, perRank)
+  }
+  perRank.set(percentileRank, { value, computedAtMs: nowMs })
+  return value
+}
+
+function computeTimingPercentile(values: number[], percentileRank: number): number | undefined {
   if (values.length === 0) {
     return undefined
   }

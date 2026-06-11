@@ -77,6 +77,9 @@ interface NativePresentMetrics {
 }
 
 const NATIVE_PRESENT_SAMPLE_LIMIT = 900
+// Present-metric percentiles are consumed by 250ms-cadence reports; computing
+// them per present would sort the sample arrays ~60x/s for nothing.
+const PERCENTILE_METRICS_CACHE_TTL_MS = 250
 // A wedged helper must never freeze the surface mutation queue: every placement AND
 // hide for both surface windows serializes behind these requests.
 const HELPER_REQUEST_TIMEOUT_MS = 4000
@@ -105,6 +108,8 @@ class NativePreviewHelperProcessDriver implements NativePreviewRealSurfaceDriver
   private presentIntervalsMs: number[] = []
   private inputToPresentLatenciesMs: number[] = []
   private helperRoundTripMs: number[] = []
+  private percentileMetricsCache: { computedAtMs: number; fields: NativePresentMetrics } | null =
+    null
 
   constructor(private readonly options: NativePreviewHelperProcessDriverOptions) {
     this.spawnProcess =
@@ -145,6 +150,7 @@ class NativePreviewHelperProcessDriver implements NativePreviewRealSurfaceDriver
     this.presentIntervalsMs = []
     this.inputToPresentLatenciesMs = []
     this.helperRoundTripMs = []
+    this.percentileMetricsCache = null
   }
 
   async presentCompositorHandoff(
@@ -255,17 +261,34 @@ class NativePreviewHelperProcessDriver implements NativePreviewRealSurfaceDriver
         this.inputToPresentLatenciesMs.shift()
       }
     }
+    // Percentiles feed the 250ms-cadence reports; sorting four sample arrays
+    // for every 60Hz present recomputed them far past their consumption rate.
+    const cache = this.percentileMetricsCache
+    const percentileFields =
+      cache && nowMs - cache.computedAtMs < PERCENTILE_METRICS_CACHE_TTL_MS
+        ? cache.fields
+        : (this.percentileMetricsCache = {
+            computedAtMs: nowMs,
+            fields: {
+              inputToPresentLatencyP50Ms: percentile(this.inputToPresentLatenciesMs, 0.5),
+              inputToPresentLatencyP95Ms: percentile(this.inputToPresentLatenciesMs, 0.95),
+              inputToPresentLatencyP99Ms: percentile(this.inputToPresentLatenciesMs, 0.99),
+              nativePreviewHelperRoundTripP95Ms: percentile(this.helperRoundTripMs, 0.95),
+              intervalP95Ms: percentile(this.presentIntervalsMs, 0.95),
+              intervalP99Ms: percentile(this.presentIntervalsMs, 0.99)
+            }
+          }).fields
     const latencyMetrics =
       inputToPresentLatencyMs === undefined
         ? {}
         : {
             inputToPresentLatencyMs,
-            inputToPresentLatencyP50Ms: percentile(this.inputToPresentLatenciesMs, 0.5),
-            inputToPresentLatencyP95Ms: percentile(this.inputToPresentLatenciesMs, 0.95),
-            inputToPresentLatencyP99Ms: percentile(this.inputToPresentLatenciesMs, 0.99)
+            inputToPresentLatencyP50Ms: percentileFields.inputToPresentLatencyP50Ms,
+            inputToPresentLatencyP95Ms: percentileFields.inputToPresentLatencyP95Ms,
+            inputToPresentLatencyP99Ms: percentileFields.inputToPresentLatencyP99Ms
           }
     const helperMetrics = {
-      nativePreviewHelperRoundTripP95Ms: percentile(this.helperRoundTripMs, 0.95)
+      nativePreviewHelperRoundTripP95Ms: percentileFields.nativePreviewHelperRoundTripP95Ms
     }
     if (this.presentTimestampsMs.length < 2) {
       return {
@@ -277,8 +300,8 @@ class NativePreviewHelperProcessDriver implements NativePreviewRealSurfaceDriver
     return {
       presentFps:
         elapsedMs > 0 ? ((this.presentTimestampsMs.length - 1) * 1000) / elapsedMs : undefined,
-      intervalP95Ms: percentile(this.presentIntervalsMs, 0.95),
-      intervalP99Ms: percentile(this.presentIntervalsMs, 0.99),
+      intervalP95Ms: percentileFields.intervalP95Ms,
+      intervalP99Ms: percentileFields.intervalP99Ms,
       ...helperMetrics,
       ...latencyMetrics
     }
