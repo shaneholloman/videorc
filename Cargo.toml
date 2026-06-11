@@ -13,3 +13,9 @@ incremental = false
 # the shipped build; its hot paths are otherwise GPU/hardware so this is cheap at runtime.
 [profile.dev.package.videorc-backend]
 opt-level = 2
+
+# The per-frame heavy lifting also runs inside dependencies (serde event
+# serialization, objc2/Metal bindings, image encode, tokio); at opt-level 0
+# they multiply dev CPU several-fold. Optimizing them costs one cached rebuild.
+[profile.dev.package."*"]
+opt-level = 2
