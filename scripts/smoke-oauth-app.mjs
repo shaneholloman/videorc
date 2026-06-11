@@ -25,8 +25,11 @@ try {
     if (!started.state || !started.authUrl || !started.redirectUri) {
       throw new Error(`OAuth start did not return a usable payload: ${JSON.stringify(started)}`)
     }
-    if (!started.redirectUri.startsWith(`http://${connection.host}:${connection.port}/oauth/callback`)) {
-      throw new Error(`OAuth redirect URI did not point at the dev backend: ${started.redirectUri}`)
+    // The redirect must be a loopback callback; the backend prefers its FIXED
+    // OAuth ports (17995/27995/37995, registrable with exact-match providers
+    // like X) and only falls back to the dynamic main port when all are busy.
+    if (!/^http:\/\/127\.0\.0\.1:\d+\/oauth\/callback$/.test(started.redirectUri)) {
+      throw new Error(`OAuth redirect URI was not a loopback callback: ${started.redirectUri}`)
     }
     if (!started.authUrl.includes(`state=${started.state}`) || !started.authUrl.includes('scope=account.read%20videos.write')) {
       throw new Error(`OAuth auth URL is missing state or normalized scope: ${started.authUrl}`)

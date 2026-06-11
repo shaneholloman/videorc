@@ -137,10 +137,19 @@ async fn main() -> Result<()> {
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
+    // OAuth callbacks need a DETERMINISTIC loopback URI: providers like X match
+    // redirect URIs exactly (port included), which the random main port can
+    // never satisfy. Bind a dedicated well-known port for them.
+    let oauth_listener = bind_oauth_callback_listener().await;
+    let oauth_callback_port = oauth_listener
+        .as_ref()
+        .and_then(|listener| listener.local_addr().ok())
+        .map(|addr| addr.port());
     let token = Uuid::new_v4().to_string();
     let (events, _) = broadcast::channel(256);
     let database = Database::open_default()?;
-    let state = AppState::new(token.clone(), port, events, database);
+    let mut state = AppState::new(token.clone(), port, events, database);
+    state.oauth_callback_port = oauth_callback_port;
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/preview/live.mjpeg", get(live_preview_handler))
@@ -162,6 +171,32 @@ async fn main() -> Result<()> {
     std::io::stdout().flush()?;
 
     state.emit_log("info", "Videorc backend ready.");
+    match (oauth_listener, oauth_callback_port) {
+        (Some(oauth_listener), Some(oauth_port)) => {
+            let oauth_app = Router::new()
+                .route("/oauth/callback", get(oauth_callback_handler))
+                .with_state(state.clone());
+            state.emit_log(
+                "info",
+                format!("OAuth callback listener bound on 127.0.0.1:{oauth_port}."),
+            );
+            tokio::spawn(async move {
+                if let Err(error) = axum::serve(oauth_listener, oauth_app).await {
+                    tracing::warn!("OAuth callback listener failed: {error}");
+                }
+            });
+        }
+        _ => {
+            state.emit_log(
+                "warn",
+                format!(
+                    "All OAuth callback ports {OAUTH_CALLBACK_PORT_CANDIDATES:?} are busy; \
+                     OAuth redirects fall back to the dynamic main port, which exact-match \
+                     providers (X) will reject."
+                ),
+            );
+        }
+    }
     // Resume interrupted repair jobs through the idle-only maintenance queue.
     tokio::spawn(resume_pending_repair_jobs(state.clone()));
     axum::serve(listener, app)
@@ -977,6 +1012,21 @@ async fn spawn_session_live_chat(
     }
 }
 
+/// Well-known loopback ports for the OAuth callback listener, tried in order.
+/// These are part of the provider-app contract: register ALL of them as
+/// `http://127.0.0.1:<port>/oauth/callback` callback URLs in each provider's
+/// developer portal so one busy port cannot break OAuth.
+const OAUTH_CALLBACK_PORT_CANDIDATES: [u16; 3] = [17995, 27995, 37995];
+
+async fn bind_oauth_callback_listener() -> Option<TcpListener> {
+    for candidate in OAUTH_CALLBACK_PORT_CANDIDATES {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)).await {
+            return Some(listener);
+        }
+    }
+    None
+}
+
 /// Reads both manual-key slots for a target (current, previous).
 fn manual_stream_key_slots(target_id: &str) -> Result<(Option<String>, Option<String>)> {
     let secret_ref = manual_stream_key_secret_ref(target_id)?;
@@ -1747,7 +1797,7 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
         }
         "platformAccounts.oauth.start" => {
             match serde_json::from_value::<OAuthStartParams>(command.params) {
-                Ok(params) => match state.oauth.start(params, state.port).await {
+                Ok(params) => match state.oauth.start(params, state.oauth_redirect_port()).await {
                     Ok(result) => ServerResponse::ok(command.id, result),
                     Err(error) => ServerResponse::error(
                         command.id,
@@ -1762,7 +1812,11 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
         }
         "platformAccounts.oauth.startProvider" => {
             match serde_json::from_value::<OAuthStartProviderParams>(command.params) {
-                Ok(params) => match state.oauth.start_provider(params, state.port).await {
+                Ok(params) => match state
+                    .oauth
+                    .start_provider(params, state.oauth_redirect_port())
+                    .await
+                {
                     Ok(result) => ServerResponse::ok(command.id, result),
                     Err(error) => ServerResponse::error(
                         command.id,
@@ -2461,6 +2515,22 @@ mod tests {
         assert_eq!(value["id"], "abc");
         assert_eq!(value["ok"], true);
         assert!(value.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_listener_skips_busy_candidate_ports() {
+        // Hold whichever candidate binds first, then confirm a second bind
+        // falls through to a DIFFERENT candidate instead of failing. Tolerates
+        // external processes already holding some candidates.
+        let first = bind_oauth_callback_listener().await;
+        let second = bind_oauth_callback_listener().await;
+        if let (Some(first), Some(second)) = (&first, &second) {
+            let first_port = first.local_addr().unwrap().port();
+            let second_port = second.local_addr().unwrap().port();
+            assert_ne!(first_port, second_port);
+            assert!(OAUTH_CALLBACK_PORT_CANDIDATES.contains(&first_port));
+            assert!(OAUTH_CALLBACK_PORT_CANDIDATES.contains(&second_port));
+        }
     }
 
     fn test_state() -> AppState {

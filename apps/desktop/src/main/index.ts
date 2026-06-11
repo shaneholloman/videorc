@@ -2295,11 +2295,17 @@ function registerOAuthCallbackProtocol(): void {
 }
 
 function oauthCallbackRedirectUri(platform?: string): string | null {
-  // Callback transport is a per-provider contract, never a global mode: the bundled
-  // X app validates against its registered videorc://oauth/callback, while Google
-  // rejects custom schemes for desktop clients (only loopback redirects comply with
-  // its OAuth policy — sending app-protocol produced "Error 400: invalid_request").
-  return platform === 'x' ? OAUTH_APP_PROTOCOL_REDIRECT_URI : null
+  // null = the backend's loopback callback on its fixed OAuth port — the
+  // default for EVERY provider. Google rejects custom schemes outright, and
+  // X's consent page hangs on an infinite spinner when re-authorization
+  // auto-approves and tries to launch videorc:// without a user gesture
+  // (browsers block gestureless custom-protocol navigation). The app-protocol
+  // path survives only as an explicit escape hatch for X portal registrations
+  // that still lack the loopback callback URLs.
+  if (platform === 'x' && process.env.VIDEORC_OAUTH_X_CALLBACK === 'app-protocol') {
+    return OAUTH_APP_PROTOCOL_REDIRECT_URI
+  }
+  return null
 }
 
 function sendOAuthCallbackUrl(callbackUrl: string): void {

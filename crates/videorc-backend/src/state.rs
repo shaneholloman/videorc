@@ -41,6 +41,11 @@ pub struct PreviewMetricsState {
 pub struct AppState {
     pub token: String,
     pub port: u16,
+    /// Fixed-port loopback listener for OAuth callbacks. Providers like X match
+    /// redirect URIs EXACTLY (port included), so callbacks cannot ride the
+    /// randomly-bound main port; None means the candidate ports were all busy
+    /// and redirects fall back to the main port.
+    pub oauth_callback_port: Option<u16>,
     pub events: broadcast::Sender<ServerEvent>,
     pub recording: RecordingSlot,
     pub live_preview: LivePreviewSlot,
@@ -70,6 +75,7 @@ impl AppState {
         Self {
             token,
             port,
+            oauth_callback_port: None,
             events,
             recording: Arc::new(tokio::sync::Mutex::new(None)),
             live_preview: Arc::new(tokio::sync::Mutex::new(initial_live_preview_state())),
@@ -88,6 +94,13 @@ impl AppState {
             ffmpeg_work: Arc::new(FfmpegWorkCoordinator::new()),
             live_chat: Arc::new(tokio::sync::Mutex::new(LiveChatCoordinator::default())),
         }
+    }
+
+    /// The port OAuth redirect URIs must use: the fixed callback listener when
+    /// it bound, else the dynamic main port (still fine for providers that
+    /// accept any loopback port, like Google).
+    pub fn oauth_redirect_port(&self) -> u16 {
+        self.oauth_callback_port.unwrap_or(self.port)
     }
 
     pub fn emit_event<T: serde::Serialize>(&self, event: impl Into<String>, payload: T) {

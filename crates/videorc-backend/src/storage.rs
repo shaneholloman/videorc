@@ -1166,6 +1166,12 @@ fn normalized_scopes(scopes: Vec<String>) -> Vec<String> {
 }
 
 pub fn default_database_path() -> PathBuf {
+    // Smokes and probes run alongside the owner's real instance; an isolated
+    // database (secrets and preview dirs derive from its parent) keeps their
+    // assertions away from real accounts and keys.
+    if let Some(custom) = std::env::var_os("VIDEORC_DATABASE_PATH") {
+        return PathBuf::from(custom);
+    }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));

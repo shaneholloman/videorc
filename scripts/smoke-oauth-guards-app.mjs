@@ -63,7 +63,10 @@ function assertProviderCredentials(credentials) {
   const byPlatform = new Map(credentials.map((credential) => [credential.platform, credential]))
 
   const youtube = requireCredential(byPlatform, 'youtube')
-  if (!youtube.ready || !youtube.pkce || !youtube.clientIdPresent || youtube.clientSecretPresent) {
+  // YouTube bundles a Google Desktop OAuth client, which ships a
+  // non-confidential client secret alongside PKCE (Google requires it at the
+  // token endpoint for installed apps), so the secret is expected present.
+  if (!youtube.ready || !youtube.pkce || !youtube.clientIdPresent || !youtube.clientSecretPresent) {
     throw new Error(`YouTube PKCE readiness mismatch: ${JSON.stringify(youtube)}`)
   }
 

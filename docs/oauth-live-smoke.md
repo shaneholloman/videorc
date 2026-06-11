@@ -55,14 +55,25 @@ pnpm smoke:provider-readiness:evidence
 
 Set the OAuth credentials in the environment used to launch the app or build the backend.
 
-By default, OAuth uses the backend loopback callback at `http://127.0.0.1:<port>/oauth/callback`.
-If a provider app registration supports desktop custom-scheme callbacks, launch Videorc with:
+OAuth uses the backend's dedicated loopback callback listener, bound to the first free
+port of `17995`, `27995`, `37995`. Register ALL THREE callback URLs in every provider's
+developer portal so one busy port cannot break OAuth:
 
-```sh
-VIDEORC_OAUTH_CALLBACK_MODE=app-protocol
+```text
+http://127.0.0.1:17995/oauth/callback
+http://127.0.0.1:27995/oauth/callback
+http://127.0.0.1:37995/oauth/callback
 ```
 
-Then register `videorc://oauth/callback` as an allowed redirect URI for the provider app. The app-protocol path is opt-in so existing loopback provider registrations keep working.
+Exact-match providers (X, Twitch) reject unregistered ports; Google accepts any
+loopback port. If all three candidates are busy the backend logs a warning and falls
+back to its dynamic main port (Google keeps working, X/Twitch will not).
+
+For X only, `VIDEORC_OAUTH_X_CALLBACK=app-protocol` restores the legacy
+`videorc://oauth/callback` redirect. Avoid it: X auto-approves re-authorization
+without a user gesture and browsers block gestureless custom-scheme navigation,
+leaving x.com's consent page on an infinite spinner while the app never receives the
+callback.
 
 YouTube:
 
@@ -100,7 +111,9 @@ VIDEORC_BUNDLED_X_CLIENT_ID=...
 VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS=1
 ```
 
-X uses PKCE in Videorc, so `VIDEORC_X_CLIENT_SECRET` is optional. The X native live check should only be marked ready when the release account has a validated partner/API path for native live source or broadcast creation. If that path is not available, leave the flag unset and keep X OAuth/native blocked in the app with explicit manual RTMP fallback.
+The X developer app must register the three fixed loopback callback URLs listed above
+(X matches redirect URIs exactly, port included). X uses PKCE in Videorc, so
+`VIDEORC_X_CLIENT_SECRET` is optional. The X native live check should only be marked ready when the release account has a validated partner/API path for native live source or broadcast creation. If that path is not available, leave the flag unset and keep X OAuth/native blocked in the app with explicit manual RTMP fallback.
 
 ## YouTube Acceptance
 

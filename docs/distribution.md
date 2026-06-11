@@ -126,12 +126,23 @@ VIDEORC_TWITCH_CLIENT_SECRET=...
 VIDEORC_X_CLIENT_SECRET=...
 ```
 
+OAuth callback URLs (all providers):
+
+- The backend binds a dedicated loopback listener for OAuth callbacks on the first free
+  port of `17995`, `27995`, `37995`. Register ALL THREE as callback URLs in each
+  provider's developer portal: `http://127.0.0.1:17995/oauth/callback`,
+  `http://127.0.0.1:27995/oauth/callback`, `http://127.0.0.1:37995/oauth/callback`.
+  Exact-match providers (X, Twitch) reject anything else; Google accepts any loopback
+  port but registering the fixed set keeps one contract everywhere.
+- `videorc://oauth/callback` is a legacy escape hatch for X only
+  (`VIDEORC_OAUTH_X_CALLBACK=app-protocol`). Do not use it by default: X auto-approves
+  re-authorization without a user gesture, and browsers block gestureless custom-scheme
+  navigation, leaving the consent page on an infinite spinner.
+
 Twitch release blocker:
 
 - Register a Videogre-owned Twitch developer app before a production release candidate.
-- Register the OAuth callback mode used by the release. The default app flow uses
-  `http://127.0.0.1:<port>/oauth/callback`; `videorc://oauth/callback` is opt-in and
-  should be registered only if that callback mode is selected and verified.
+- Register the three fixed loopback callback URLs listed above.
 - Bundle the public app client ID with `VIDEORC_BUNDLED_TWITCH_CLIENT_ID` when building
   the backend.
 - Provide `VIDEORC_TWITCH_CLIENT_SECRET` only in the runtime or release-smoke
