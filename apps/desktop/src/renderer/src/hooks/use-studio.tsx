@@ -563,6 +563,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const previewRequestPending = useRef(false)
   const previewRefreshQueued = useRef(false)
   const previewSurfaceStatusRef = useRef<PreviewSurfaceStatus>(idlePreviewSurfaceStatus())
+  const previewSurfaceStatusCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const previewSurfaceStatusLastCommitAtRef = useRef(0)
+  const nativePreviewRendererTimingFieldsCacheRef = useRef<{
+    fields: NativePreviewRendererTimingFields
+    computedAtMs: number
+  } | null>(null)
   const previewCameraStatusRef = useRef<PreviewCameraStatus>(idlePreviewCameraStatus())
   const previewScreenStatusRef = useRef<PreviewScreenStatus>(idlePreviewScreenStatus())
   const recordingRef = useRef<RecordingStatus>({ state: 'idle', message: 'Ready.' })
@@ -676,6 +682,55 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     setPreviewSurfaceStatus(status)
   }, [])
 
+  // Present results arrive per frame (~60/s); committing each one to React
+  // state re-rendered every StudioContext consumer per frame and dominated the
+  // renderer's CPU profile. The ref stays per-frame fresh for logic, the state
+  // commit happens at report cadence, and a flip of any field that drives UI
+  // state machines (transport badges, suppression) commits immediately.
+  const applyPreviewSurfaceStatusThrottled = useCallback(
+    (status: PreviewSurfaceStatus) => {
+      const previous = previewSurfaceStatusRef.current
+      previewSurfaceStatusRef.current = status
+      const significantChange =
+        previous.state !== status.state ||
+        previous.transport !== status.transport ||
+        previous.backing !== status.backing ||
+        previous.source !== status.source ||
+        previous.framePollingSuppressed !== status.framePollingSuppressed ||
+        previous.sourcePixelsPresent !== status.sourcePixelsPresent
+      if (significantChange) {
+        if (previewSurfaceStatusCommitTimerRef.current) {
+          clearTimeout(previewSurfaceStatusCommitTimerRef.current)
+          previewSurfaceStatusCommitTimerRef.current = null
+        }
+        previewSurfaceStatusLastCommitAtRef.current = Date.now()
+        setPreviewSurfaceStatus(status)
+        return
+      }
+      if (previewSurfaceStatusCommitTimerRef.current) {
+        return
+      }
+      const elapsedMs = Date.now() - previewSurfaceStatusLastCommitAtRef.current
+      const delayMs = Math.max(0, NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS - elapsedMs)
+      previewSurfaceStatusCommitTimerRef.current = setTimeout(() => {
+        previewSurfaceStatusCommitTimerRef.current = null
+        previewSurfaceStatusLastCommitAtRef.current = Date.now()
+        setPreviewSurfaceStatus(previewSurfaceStatusRef.current)
+      }, delayMs)
+    },
+    [setPreviewSurfaceStatus]
+  )
+
+  useEffect(
+    () => () => {
+      if (previewSurfaceStatusCommitTimerRef.current) {
+        clearTimeout(previewSurfaceStatusCommitTimerRef.current)
+        previewSurfaceStatusCommitTimerRef.current = null
+      }
+    },
+    []
+  )
+
   const applyRecordingStatus = useCallback((status: RecordingStatus) => {
     recordingRef.current = status
     setRecording(status)
@@ -733,26 +788,39 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     nativePreviewCompositorPresentRoundTripSamplesRef.current = []
     nativePreviewCompositorLastPollStartedAtRef.current = 0
     nativePreviewCompositorPollInFlightSkipsRef.current = 0
+    nativePreviewRendererTimingFieldsCacheRef.current = null
   }, [])
 
-  const nativePreviewRendererTimingStatusFields = useCallback(
-    (): NativePreviewRendererTimingFields => ({
-      nativePreviewRendererPollIntervalP95Ms: nativePreviewTimingPercentile(
-        nativePreviewCompositorPollIntervalSamplesRef.current,
-        0.95
-      ),
-      nativePreviewRendererPollRoundTripP95Ms: nativePreviewTimingPercentile(
-        nativePreviewCompositorPollRoundTripSamplesRef.current,
-        0.95
-      ),
-      nativePreviewRendererPresentRoundTripP95Ms: nativePreviewTimingPercentile(
-        nativePreviewCompositorPresentRoundTripSamplesRef.current,
-        0.95
-      ),
-      nativePreviewRendererPollInFlightSkips: nativePreviewCompositorPollInFlightSkipsRef.current
-    }),
-    []
-  )
+  // These p95s feed the 250ms present reports; recomputing them (three array
+  // sorts) for every 60Hz present burned measurable CPU for no extra signal.
+  const nativePreviewRendererTimingStatusFields =
+    useCallback((): NativePreviewRendererTimingFields => {
+      const cached = nativePreviewRendererTimingFieldsCacheRef.current
+      const nowMs = Date.now()
+      if (
+        cached &&
+        nowMs - cached.computedAtMs < NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS
+      ) {
+        return cached.fields
+      }
+      const fields: NativePreviewRendererTimingFields = {
+        nativePreviewRendererPollIntervalP95Ms: nativePreviewTimingPercentile(
+          nativePreviewCompositorPollIntervalSamplesRef.current,
+          0.95
+        ),
+        nativePreviewRendererPollRoundTripP95Ms: nativePreviewTimingPercentile(
+          nativePreviewCompositorPollRoundTripSamplesRef.current,
+          0.95
+        ),
+        nativePreviewRendererPresentRoundTripP95Ms: nativePreviewTimingPercentile(
+          nativePreviewCompositorPresentRoundTripSamplesRef.current,
+          0.95
+        ),
+        nativePreviewRendererPollInFlightSkips: nativePreviewCompositorPollInFlightSkipsRef.current
+      }
+      nativePreviewRendererTimingFieldsCacheRef.current = { fields, computedAtMs: nowMs }
+      return fields
+    }, [])
 
   const queueNativePreviewCompositorPresent = useCallback(
     (activeClient: BackendClient, status: CompositorStatus) => {
@@ -814,7 +882,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
               framesRendered: Math.max(surfaceStatus.framesRendered, nextStatus.framesRendered),
               droppedFrames
             }
-            applyPreviewSurfaceStatus(nextSurfaceStatus)
+            applyPreviewSurfaceStatusThrottled(nextSurfaceStatus)
             const presentParams: PreviewSurfacePresentParams = {
               transport: surfaceStatus.transport,
               backing: surfaceStatus.backing,
@@ -871,7 +939,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       })()
     },
     [
-      applyPreviewSurfaceStatus,
+      applyPreviewSurfaceStatusThrottled,
       nativePreviewRendererTimingStatusFields,
       nativePreviewSurfaceEnabled,
       queueNativePreviewSurfacePresentReport

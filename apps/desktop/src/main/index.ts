@@ -87,6 +87,12 @@ const userDataDirOverride = process.env.VIDEORC_USER_DATA_DIR?.trim()
 if (userDataDirOverride) {
   app.setPath('userData', userDataDirOverride)
 }
+// Perf harnesses attach CDP profilers to the renderer through this switch
+// (0 = pick a free port; Chromium prints "DevTools listening on ws://...").
+const remoteDebugPortOverride = process.env.VIDEORC_REMOTE_DEBUG_PORT?.trim()
+if (remoteDebugPortOverride) {
+  app.commandLine.appendSwitch('remote-debugging-port', remoteDebugPortOverride)
+}
 const smokeCommandServerEnabled =
   process.env.VIDEORC_SMOKE_PREVIEW_MOTION === '1' ||
   process.env.VIDEORC_SMOKE_COMMAND_SERVER === '1'
