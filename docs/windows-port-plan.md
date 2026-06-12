@@ -247,7 +247,12 @@ work. Two slices run entirely on the Mac and should come first:
 2. Extract the per-platform ffmpeg input-builder seam from
    `recording.rs`/`preview_*.rs` with behavior pinned by the existing
    smokes — so the Windows branch lands in a prepared socket instead of a
-   4,000-line file.
+   4,000-line file. **DONE 2026-06-12:** new `capture_input.rs` owns the
+   `VideoInput`/`MicrophoneInput` enums and the avfoundation/native-FIFO
+   input builders (session + live-render arms); `recording.rs` and
+   `live_render.rs` call through it. Behavior-neutral — 577 backend tests
+   unchanged, Windows cross-check still green. The Windows ddagrab/dshow
+   arms slot into this module in Phase 2.
 
 ## Grill resolutions (auto-grill, 2026-06-12)
 

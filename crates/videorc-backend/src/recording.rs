@@ -17,12 +17,16 @@ use tokio::time::{Duration, sleep, timeout};
 use uuid::Uuid;
 
 use crate::audio::{
-    AudioCaptureStats, AudioProcessingSettings, NATIVE_AUDIO_CHANNELS,
-    NATIVE_AUDIO_FFMPEG_QUEUE_SIZE, NATIVE_AUDIO_SAMPLE_RATE, NativeAudioCaptureSession,
-    NativeAudioSource, attach_fifo_writer, audio_capture_coverage, create_native_audio_fifo,
-    native_audio_fifo_path, parse_coreaudio_microphone_id, start_native_audio_source,
+    AudioCaptureStats, AudioProcessingSettings, NATIVE_AUDIO_CHANNELS, NATIVE_AUDIO_SAMPLE_RATE,
+    NativeAudioCaptureSession, NativeAudioSource, attach_fifo_writer, audio_capture_coverage,
+    create_native_audio_fifo, native_audio_fifo_path, parse_coreaudio_microphone_id,
+    start_native_audio_source,
 };
 use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
+use crate::capture_input::{
+    MicrophoneInput, VideoInput, append_avfoundation_video_input, append_microphone_input,
+    microphone_channels,
+};
 use crate::compositor::{
     CompositorStartParams, CompositorStartupBarrierParams, CompositorStartupBarrierResult,
     CompositorStartupSourceRequirements, compositor_frame_store, start_synthetic_compositor,
@@ -94,7 +98,6 @@ const CAPTURE_AUDIO_FILTER: &str = "aresample=async=1:first_pts=0";
 const MONO_TO_STEREO_FILTER: &str = "pan=stereo|c0=c0|c1=c0";
 const MICROPHONE_SYNC_OFFSET_MIN_MS: i32 = -1000;
 const MICROPHONE_SYNC_OFFSET_MAX_MS: i32 = 1000;
-const AVFOUNDATION_VIDEO_PIXEL_FORMAT: &str = "nv12";
 const MJPEG_BOUNDARY: &[u8] = b"--videorc";
 const MJPEG_HEADER_END: &[u8] = b"\r\n\r\n";
 const PREVIEW_READ_BUFFER_BYTES: usize = 64 * 1024;
@@ -2647,24 +2650,6 @@ struct CaptureInputs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum VideoInput {
-    MacScreen { index: usize },
-    MacCamera { index: usize },
-    TestPattern,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum MicrophoneInput {
-    CoreAudio {
-        device_id: u32,
-        fifo_path: Option<PathBuf>,
-    },
-    AvFoundation {
-        index: usize,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct StreamTarget {
     url: String,
     redacted_url: String,
@@ -4058,91 +4043,6 @@ fn append_input_args(
     }
 }
 
-fn append_microphone_input(
-    args: &mut Vec<String>,
-    microphone: Option<&MicrophoneInput>,
-    next_input_index: &mut usize,
-) -> bool {
-    let Some(microphone) = microphone else {
-        return false;
-    };
-
-    match microphone {
-        MicrophoneInput::CoreAudio {
-            fifo_path: Some(fifo_path),
-            ..
-        } => {
-            args.extend([
-                "-f".to_string(),
-                "f32le".to_string(),
-                "-ar".to_string(),
-                NATIVE_AUDIO_SAMPLE_RATE.to_string(),
-                "-ac".to_string(),
-                NATIVE_AUDIO_CHANNELS.to_string(),
-                "-thread_queue_size".to_string(),
-                NATIVE_AUDIO_FFMPEG_QUEUE_SIZE.to_string(),
-                "-i".to_string(),
-                fifo_path.display().to_string(),
-            ]);
-            *next_input_index += 1;
-            true
-        }
-        MicrophoneInput::CoreAudio {
-            fifo_path: None, ..
-        } => false,
-        MicrophoneInput::AvFoundation { index } => {
-            args.extend([
-                "-f".to_string(),
-                "avfoundation".to_string(),
-                "-thread_queue_size".to_string(),
-                "512".to_string(),
-                "-i".to_string(),
-                format!(":{index}"),
-            ]);
-            *next_input_index += 1;
-            true
-        }
-    }
-}
-
-fn microphone_channels(microphone: Option<&MicrophoneInput>) -> u16 {
-    match microphone {
-        Some(MicrophoneInput::CoreAudio { .. }) => NATIVE_AUDIO_CHANNELS,
-        Some(MicrophoneInput::AvFoundation { .. }) => 1,
-        None => 0,
-    }
-}
-
-fn append_avfoundation_video_input(
-    args: &mut Vec<String>,
-    device_index: usize,
-    fps: u32,
-    capture_cursor: bool,
-) {
-    args.extend([
-        "-fflags".to_string(),
-        "nobuffer".to_string(),
-        "-flags".to_string(),
-        "low_delay".to_string(),
-        "-probesize".to_string(),
-        "32".to_string(),
-        "-analyzeduration".to_string(),
-        "0".to_string(),
-        "-thread_queue_size".to_string(),
-        "16".to_string(),
-        "-f".to_string(),
-        "avfoundation".to_string(),
-        "-pixel_format".to_string(),
-        AVFOUNDATION_VIDEO_PIXEL_FORMAT.to_string(),
-        "-framerate".to_string(),
-        fps.to_string(),
-    ]);
-    if capture_cursor {
-        args.extend(["-capture_cursor".to_string(), "1".to_string()]);
-    }
-    args.extend(["-i".to_string(), format!("{device_index}:none")]);
-}
-
 fn append_screen_overlay_input(args: &mut Vec<String>, overlay: &ScreenOverlayInput) {
     args.extend([
         "-thread_queue_size".to_string(),
@@ -5434,6 +5334,7 @@ pub type LivePreviewSlot = Arc<Mutex<LivePreviewState>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture_input::AVFOUNDATION_VIDEO_PIXEL_FORMAT;
     use crate::protocol::PreviewSurfaceState;
     use crate::protocol::{
         CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransform, LayoutPreset,

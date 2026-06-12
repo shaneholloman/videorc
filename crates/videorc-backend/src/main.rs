@@ -1,6 +1,7 @@
 mod ai;
 mod audio;
 mod camera_capture;
+mod capture_input;
 mod color;
 mod compositor;
 mod compositor_synthetic;

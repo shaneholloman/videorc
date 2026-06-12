@@ -323,14 +323,7 @@ pub fn capture_ffmpeg_args(
             ]);
         }
         CaptureInput::AvFoundationVideo(index) => {
-            args.extend([
-                "-f".to_string(),
-                "avfoundation".to_string(),
-                "-framerate".to_string(),
-                fps.to_string(),
-                "-i".to_string(),
-                format!("{index}:none"),
-            ]);
+            crate::capture_input::append_live_avfoundation_video_input(&mut args, *index, fps);
         }
     }
     args.extend([
