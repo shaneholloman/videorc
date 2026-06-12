@@ -321,7 +321,7 @@ function SetupStepView({
         </Button>
         <Button size="sm" variant="outline" onClick={() => onOpenTab('live')}>
           <Broadcast data-icon="inline-start" />
-          Streaming
+          Destinations
         </Button>
         <Button size="sm" variant="outline" onClick={() => onOpenTab('settings')}>
           <GearSix data-icon="inline-start" />

@@ -1,4 +1,4 @@
-import { ArrowsClockwise, MagnifyingGlass } from '@phosphor-icons/react'
+import { ArrowsClockwise, MagnifyingGlass, type Icon } from '@phosphor-icons/react'
 import type { ReactElement } from 'react'
 
 import logoUrl from '@/assets/videorc-logo.png'
@@ -8,12 +8,58 @@ import { Button } from '@/components/ui/button'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import {
   STUDIO_PANELS,
-  WORKSPACE_GROUPS,
   WORKSPACE_TABS,
+  shortcutDigitFor,
   type StudioPanel,
   type WorkspaceTab
 } from '@/components/workspace-nav'
 import { cn } from '@/lib/utils'
+
+function NavRow({
+  icon: RowIcon,
+  label,
+  isActive,
+  triggerId,
+  shortcutDigit,
+  onClick
+}: {
+  icon: Icon
+  label: string
+  isActive: boolean
+  triggerId: string
+  shortcutDigit?: string
+  onClick: () => void
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      aria-current={isActive ? 'page' : undefined}
+      data-videorc-tab-trigger={triggerId}
+      onClick={onClick}
+      className={cn(
+        'group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors',
+        isActive
+          ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
+          : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground'
+      )}
+    >
+      <RowIcon
+        weight={isActive ? 'fill' : 'regular'}
+        className={cn('size-4 shrink-0', isActive && 'text-primary')}
+      />
+      <span className="flex-1 truncate text-left">{label}</span>
+      {shortcutDigit ? <Kbd>⌘{shortcutDigit}</Kbd> : null}
+    </button>
+  )
+}
+
+function GroupLabel({ children }: { children: string }): ReactElement {
+  return (
+    <span className="px-2.5 pb-1.5 text-[12.5px] leading-none font-medium text-subtle">
+      {children}
+    </span>
+  )
+}
 
 export function Sidebar({
   active,
@@ -36,6 +82,9 @@ export function Sidebar({
   onRefresh: () => void
   onOpenCommand: () => void
 }): ReactElement {
+  const tabsIn = (group: string): typeof WORKSPACE_TABS =>
+    WORKSPACE_TABS.filter((tab) => tab.group === group)
+
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">
       <div className="flex select-none items-center gap-3 px-4 py-4">
@@ -58,6 +107,7 @@ export function Sidebar({
         className="mx-4 mb-1 h-px shrink-0 bg-gradient-to-r from-border via-border/50 to-transparent"
       />
 
+      {/* Four zones (ux-ia-refactor-plan): stage row, SETUP, LIBRARY, SYSTEM. */}
       <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-3 py-2">
         <button
           type="button"
@@ -71,78 +121,78 @@ export function Sidebar({
             <Kbd>K</Kbd>
           </KbdGroup>
         </button>
-        {WORKSPACE_GROUPS.map((group) => {
-          const items = WORKSPACE_TABS.filter((tab) => tab.group === group.id)
-          if (!items.length) return null
-          return (
-            <div key={group.id} className="flex flex-col gap-0.5">
-              {group.label ? (
-                <span className="px-2.5 pb-1.5 text-[12.5px] leading-none font-medium text-subtle">
-                  {group.label}
-                </span>
-              ) : null}
-              {items.map((tab) => {
-                const isActive = active === tab.id
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    aria-current={isActive ? 'page' : undefined}
-                    data-videorc-tab-trigger={tab.id}
-                    onClick={() => onSelect(tab.id)}
-                    className={cn(
-                      'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors',
-                      isActive
-                        ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
-                        : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground'
-                    )}
-                  >
-                    <tab.icon
-                      weight={isActive ? 'fill' : 'regular'}
-                      className={cn('size-4 shrink-0', isActive && 'text-primary')}
-                    />
-                    {tab.label}
-                  </button>
-                )
-              })}
-              {group.id === 'primary' ? (
-                <div className="mt-4 flex flex-col gap-0.5">
-                  <span className="px-2.5 pb-1.5 text-[12.5px] leading-none font-medium text-subtle">
-                    Studio
-                  </span>
-                  {STUDIO_PANELS.map((panel) => {
-                    const isOpen = activeStudioPanel === panel.id
-                    return (
-                      <button
-                        key={panel.id}
-                        type="button"
-                        aria-current={isOpen ? 'page' : undefined}
-                        data-videorc-tab-trigger={panel.legacyTabId}
-                        onClick={() => onSelectStudioPanel(panel.id)}
-                        className={cn(
-                          'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors',
-                          isOpen
-                            ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
-                            : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground'
-                        )}
-                      >
-                        <panel.icon
-                          weight={isOpen ? 'fill' : 'regular'}
-                          className={cn('size-4 shrink-0', isOpen && 'text-primary')}
-                        />
-                        {panel.label}
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : null}
-            </div>
-          )
-        })}
+
+        <div className="flex flex-col gap-0.5">
+          {tabsIn('stage').map((tab) => (
+            <NavRow
+              key={tab.id}
+              icon={tab.icon}
+              label={tab.label}
+              isActive={active === tab.id}
+              triggerId={tab.id}
+              shortcutDigit={shortcutDigitFor(tab.id)}
+              onClick={() => onSelect(tab.id)}
+            />
+          ))}
+        </div>
+
+        <div className="flex flex-col gap-0.5">
+          <GroupLabel>Setup</GroupLabel>
+          {STUDIO_PANELS.map((panel) => (
+            <NavRow
+              key={panel.id}
+              icon={panel.icon}
+              label={panel.label}
+              isActive={activeStudioPanel === panel.id}
+              triggerId={panel.legacyTabId}
+              shortcutDigit={shortcutDigitFor(panel.id)}
+              onClick={() => onSelectStudioPanel(panel.id)}
+            />
+          ))}
+        </div>
+
+        <div className="flex flex-col gap-0.5">
+          <GroupLabel>Library</GroupLabel>
+          {tabsIn('library').map((tab) => (
+            <NavRow
+              key={tab.id}
+              icon={tab.icon}
+              label={tab.label}
+              isActive={active === tab.id}
+              triggerId={tab.id}
+              shortcutDigit={shortcutDigitFor(tab.id)}
+              onClick={() => onSelect(tab.id)}
+            />
+          ))}
+        </div>
+
+        <div className="flex flex-col gap-0.5">
+          <GroupLabel>System</GroupLabel>
+          {tabsIn('system').map((tab) => (
+            <NavRow
+              key={tab.id}
+              icon={tab.icon}
+              label={tab.label}
+              isActive={active === tab.id}
+              triggerId={tab.id}
+              shortcutDigit={shortcutDigitFor(tab.id)}
+              onClick={() => onSelect(tab.id)}
+            />
+          ))}
+        </div>
       </nav>
 
       <div className="flex items-center justify-between gap-2 border-t px-3 py-2.5">
-        <StatusDot tone={statusTone} label={statusLabel} pulse={live} />
+        {/* The status dot deep-links to Health: the place that explains it. */}
+        <button
+          type="button"
+          aria-label="Open Health"
+          title="Open Health"
+          onClick={() => onSelect('diagnostics')}
+          className="rounded-md px-1 py-0.5 transition-colors hover:bg-sidebar-accent/60"
+        >
+          <StatusDot tone={statusTone} label={statusLabel} pulse={live} />
+        </button>
         <div className="flex items-center gap-0.5">
           <Button
             aria-label="Refresh backend"

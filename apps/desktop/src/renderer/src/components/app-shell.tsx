@@ -18,8 +18,10 @@ import { SourcesTab } from '@/components/tabs/sources-tab'
 import { StreamingTab } from '@/components/tabs/streaming-tab'
 import { StudioTab } from '@/components/tabs/studio-tab'
 import {
+  WORKSPACE_SHORTCUTS,
   WorkspaceNavContext,
   isStudioPanel,
+  workspaceTabLabel,
   type StudioPanel,
   type WorkspaceTab
 } from '@/components/workspace-nav'
@@ -82,6 +84,19 @@ export function AppShell(): ReactElement {
           void closePreviewWindow()
         } else {
           void openPreviewWindow()
+        }
+      }
+      // ⌘1–⌘9 jump to pages in sidebar order; ⌘, is the macOS settings idiom.
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+        if (event.key === ',') {
+          event.preventDefault()
+          setActive('settings')
+          return
+        }
+        const shortcut = WORKSPACE_SHORTCUTS.find((entry) => entry.digit === event.key)
+        if (shortcut) {
+          event.preventDefault()
+          setActive(shortcut.tab)
         }
       }
     }
@@ -154,7 +169,7 @@ export function AppShell(): ReactElement {
           {/* Global footer action bar: the shell's real shortcuts, always
               advertised (videorc-design keyboard-first rule). */}
           <FooterActionBar
-            leading={<span className="capitalize">{active}</span>}
+            leading={<span>{workspaceTabLabel(active)}</span>}
             className="bg-background/60"
           >
             <Button size="sm" variant="ghost" onClick={() => setCommandOpen(true)}>

@@ -3,6 +3,7 @@ import {
   FilmReel,
   GearSix,
   Monitor,
+  Pulse,
   Record,
   Sparkle,
   SquaresFour,
@@ -21,7 +22,9 @@ export type StudioPanel = 'sources' | 'layouts' | 'live' | 'recording'
 // Full pages: they replace the workspace content area.
 export type WorkspaceTab = 'studio' | StudioPanel | 'library' | 'ai' | 'diagnostics' | 'settings'
 
-export type WorkspaceTabGroup = 'primary' | 'system'
+// Sidebar zones (ux-ia-refactor-plan): the stage row, then SETUP (the studio
+// panels), then LIBRARY, then SYSTEM. 'setup' rows come from STUDIO_PANELS.
+export type WorkspaceTabGroup = 'stage' | 'library' | 'system'
 
 export type WorkspaceTabMeta = {
   id: WorkspaceTab
@@ -40,26 +43,48 @@ export type StudioPanelMeta = {
 }
 
 export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
-  { id: 'studio', label: 'Studio', icon: VideoCamera, group: 'primary' },
-  { id: 'library', label: 'Library', icon: FilmReel, group: 'primary' },
-  { id: 'ai', label: 'AI', icon: Sparkle, group: 'primary' },
-  { id: 'settings', label: 'Settings', icon: GearSix, group: 'system' }
+  { id: 'studio', label: 'Studio', icon: VideoCamera, group: 'stage' },
+  { id: 'library', label: 'Library', icon: FilmReel, group: 'library' },
+  { id: 'ai', label: 'AI', icon: Sparkle, group: 'library' },
+  { id: 'settings', label: 'Settings', icon: GearSix, group: 'system' },
+  { id: 'diagnostics', label: 'Health', icon: Pulse, group: 'system' }
 ]
 
 // Sidebar order mirrors the live workflow: pick sources, compose, go live, output.
 // There is no Audio page — the microphone and mixer live on Sources with every
-// other capture device.
+// other capture device. Labels renamed 2026-06-13 (ux-ia-refactor-plan); ids and
+// legacyTabId stay so smokes and deep links keep working.
 export const STUDIO_PANELS: StudioPanelMeta[] = [
   { id: 'sources', label: 'Sources', icon: Monitor, legacyTabId: 'sources' },
-  { id: 'layouts', label: 'Layouts', icon: SquaresFour, legacyTabId: 'layout' },
-  { id: 'live', label: 'Live', icon: Broadcast, legacyTabId: 'streaming' },
-  { id: 'recording', label: 'Recording', icon: Record, legacyTabId: 'recording' }
+  { id: 'layouts', label: 'Scene', icon: SquaresFour, legacyTabId: 'layout' },
+  { id: 'live', label: 'Destinations', icon: Broadcast, legacyTabId: 'streaming' },
+  { id: 'recording', label: 'Output', icon: Record, legacyTabId: 'recording' }
 ]
 
-export const WORKSPACE_GROUPS: { id: WorkspaceTabGroup; label?: string }[] = [
-  { id: 'primary' },
-  { id: 'system' }
+// ⌘1–⌘9 page shortcuts, in sidebar order (stage → setup → library → system).
+export const WORKSPACE_SHORTCUTS: { digit: string; tab: WorkspaceTab }[] = [
+  { digit: '1', tab: 'studio' },
+  { digit: '2', tab: 'sources' },
+  { digit: '3', tab: 'layouts' },
+  { digit: '4', tab: 'live' },
+  { digit: '5', tab: 'recording' },
+  { digit: '6', tab: 'library' },
+  { digit: '7', tab: 'ai' },
+  { digit: '8', tab: 'settings' },
+  { digit: '9', tab: 'diagnostics' }
 ]
+
+export function shortcutDigitFor(tab: WorkspaceTab): string | undefined {
+  return WORKSPACE_SHORTCUTS.find((entry) => entry.tab === tab)?.digit
+}
+
+export function workspaceTabLabel(tab: WorkspaceTab): string {
+  return (
+    WORKSPACE_TABS.find((entry) => entry.id === tab)?.label ??
+    STUDIO_PANELS.find((entry) => entry.id === tab)?.label ??
+    tab
+  )
+}
 
 export function isStudioPanel(value: unknown): value is StudioPanel {
   return STUDIO_PANELS.some((panel) => panel.id === value)
