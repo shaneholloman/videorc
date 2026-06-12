@@ -2,6 +2,11 @@
 @import 'tw-animate-css';
 
 @custom-variant dark (&:is(.dark *));
+/* The radix-rhea registry components style by orientation through these
+   variants; without them Tailwind matches a literal data-horizontal
+   attribute that radix never sets, and e.g. slider tracks get zero height. */
+@custom-variant data-horizontal (&[data-orientation='horizontal']);
+@custom-variant data-vertical (&[data-orientation='vertical']);
 
 /*
  * Videorc design tokens — the glass language (.claude/skills/videorc-design).

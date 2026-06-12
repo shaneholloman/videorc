@@ -31,9 +31,7 @@ function Slider({
     >
       <SliderPrimitive.Track
         data-slot="slider-track"
-        // Stock track is bg-input/90 — an 8%-alpha hairline token, invisible
-        // as a thin bar on the glass. Same monochrome idea, readable weight.
-        className="relative grow overflow-hidden rounded-2xl bg-foreground/15 data-horizontal:h-1.5 data-horizontal:w-full data-vertical:h-full data-vertical:w-1.5"
+        className="relative grow overflow-hidden rounded-2xl bg-input/90 data-horizontal:h-1 data-horizontal:w-full data-vertical:h-full data-vertical:w-1"
       >
         <SliderPrimitive.Range
           data-slot="slider-range"
