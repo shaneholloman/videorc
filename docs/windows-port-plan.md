@@ -77,16 +77,27 @@ connects over loopback, device lists are empty but nothing crashes.
 
 Backend:
 - Add Windows clauses to `storage.rs` paths (`%APPDATA%\Videorc`,
-  `%USERPROFILE%\Videos\Videorc\Recordings`) and `secrets.rs`
-  (Windows Credential Manager; `keyring`-style abstraction).
+  `%USERPROFILE%\Videos\Videorc\Recordings`) and `secrets.rs`. **DONE
+  2026-06-12:** database under `%APPDATA%\Videorc`, recordings under
+  `~/Videos\Videorc\Recordings`, shared `home_dir()` helper keyed on
+  `USERPROFILE`/`HOME`. `secrets.rs` needed no logic change — it was
+  already a plain-JSON per-user store (the keychain was abandoned); the
+  0600 hardening stays `cfg(unix)` and Windows leans on the `%APPDATA%`
+  ACL. The recordings-dir test now asserts per-platform.
 - Replace Unix signal handling/orphan watchdog in `main.rs` with
   `tokio::signal::ctrl_c` + a Job Object ("kill on job close") so the
   backend and its ffmpeg children die with the app — this is *better* than
-  the PID-ledger semantics and worth doing first, not as polish.
+  the PID-ledger semantics and worth doing first, not as polish. **Backend
+  side DONE 2026-06-12:** `shutdown_signal` already had a `cfg(not(unix))`
+  ctrl_c arm and the watchdog was already `cfg(unix)`-gated (no-op on
+  Windows), so the crate compiles and shuts down cleanly today; doc note
+  added pointing at the Job Object. The Job Object itself is Electron-side
+  (next slice) and is the actual kill-on-death guarantee on Windows.
 - Gate the FIFO helpers (`audio.rs`, `recording.rs`) behind
   `cfg(unix)` so the crate compiles; Windows replacements come in Phase 2/3.
+  **DONE in slice 1** (the `fifo.rs` seam).
 - Gate: `cargo check --target x86_64-pc-windows-msvc` (cross-check runs on
-  the Mac — catches type errors without the Windows box).
+  the Mac — catches type errors without the Windows box). **Green.**
 
 Electron:
 - `.exe` suffixes in backend/ffmpeg resolution (`main/index.ts:2313-2554`),

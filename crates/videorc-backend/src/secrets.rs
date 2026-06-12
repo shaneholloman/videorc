@@ -7,6 +7,11 @@
 //! the keychain at all (service configs are plain files); we adopt the same
 //! model: a single-user desktop machine where owner-only file permissions are
 //! the protection boundary.
+//!
+//! Cross-platform by construction: the store is plain JSON under the per-user
+//! app-data dir, so it works unchanged on Windows. The 0600 hardening is
+//! `cfg(unix)`; on Windows the file inherits the per-user `%APPDATA%` ACL,
+//! which is the equivalent boundary.
 
 use anyhow::{Context, Result, anyhow};
 use std::collections::BTreeMap;

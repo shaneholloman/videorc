@@ -257,6 +257,11 @@ async fn shutdown_signal(state: AppState) {
 /// field because a wedged runtime stops polling exactly when the process most needs
 /// to die. Orphaned backends hold the camera/microphone/ScreenCaptureKit and starve
 /// fresh app instances (screen layers fall to the synthetic pattern mid-session).
+///
+/// Unix-only by design. On Windows the supervisor assigns the backend to a Job
+/// Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the OS tears the backend
+/// (and its ffmpeg children) down when Electron exits — a stronger guarantee than
+/// PID polling. See docs/windows-port-plan.md, Phase 1.
 fn spawn_orphan_watchdog_thread() {
     #[cfg(unix)]
     {

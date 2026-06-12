@@ -240,10 +240,17 @@ pub fn initial_live_preview_state() -> LivePreviewState {
 }
 
 pub fn default_recordings_dir() -> PathBuf {
-    std::env::var_os("HOME")
+    // macOS keeps captures under ~/Movies; Windows uses ~/Videos (the
+    // platform's Known Folder for the same content).
+    #[cfg(target_os = "windows")]
+    let (home_var, media_dir) = ("USERPROFILE", "Videos");
+    #[cfg(not(target_os = "windows"))]
+    let (home_var, media_dir) = ("HOME", "Movies");
+
+    std::env::var_os(home_var)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("Movies")
+        .join(media_dir)
         .join("Videorc")
         .join("Recordings")
 }
@@ -6907,12 +6914,16 @@ mod tests {
     }
 
     #[test]
-    fn default_recordings_dir_uses_videorc_movies_folder() {
+    fn default_recordings_dir_uses_videorc_media_folder() {
         let path = default_recordings_dir();
-        let rendered = path.display().to_string();
+        let media_component = if cfg!(target_os = "windows") {
+            "Videos"
+        } else {
+            "Movies"
+        };
 
-        assert!(rendered.contains("Movies"));
-        assert!(rendered.ends_with("Videorc/Recordings"));
+        assert!(path.iter().any(|c| c == media_component));
+        assert!(path.ends_with(PathBuf::from("Videorc").join("Recordings")));
     }
 
     #[test]

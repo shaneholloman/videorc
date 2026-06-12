@@ -1172,18 +1172,39 @@ pub fn default_database_path() -> PathBuf {
     if let Some(custom) = std::env::var_os("VIDEORC_DATABASE_PATH") {
         return PathBuf::from(custom);
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
 
-    if cfg!(target_os = "macos") {
-        home.join("Library")
+    #[cfg(target_os = "macos")]
+    {
+        home_dir()
+            .join("Library")
             .join("Application Support")
             .join("Videorc")
             .join("videorc.sqlite3")
-    } else {
-        home.join(".videorc").join("videorc.sqlite3")
     }
+    #[cfg(target_os = "windows")]
+    {
+        // %APPDATA% (roaming) is the conventional per-user app data root.
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join("AppData").join("Roaming"))
+            .join("Videorc")
+            .join("videorc.sqlite3")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        home_dir().join(".videorc").join("videorc.sqlite3")
+    }
+}
+
+fn home_dir() -> PathBuf {
+    let var = if cfg!(target_os = "windows") {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 pub fn default_preview_dir() -> PathBuf {
