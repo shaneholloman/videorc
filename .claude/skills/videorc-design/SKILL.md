@@ -21,7 +21,8 @@ The single source of truth for how Videorc looks and feels. Every UI task follow
 Express these as shadcn CSS variables (`--background`, `--foreground`, `--muted`, `--accent`, `--border`, `--radius`, …) in `globals.css`; values below are the design intent.
 
 Surfaces (dark · light)
-- Window/panel base, translucent over `backdrop-blur(60px) saturate(1.4)`: dark `rgba(24,24,27,0.75)` · light `rgba(245,245,247,0.75)`. Solid fallback where blur is unavailable (nested popovers at `0.92`): dark `#1C1C1F` · light `#F5F5F7`.
+- Window/panel base, translucent over the OS blur material: dark `rgba(24,24,27,0.65)` · light `rgba(245,245,247,0.70)`. Solid fallback where blur is unavailable (nested popovers at `0.92`): dark `#1C1C1F` · light `#F5F5F7`.
+- Electron implementation note: the desktop shows through ONLY with the full window stack — `vibrancy: 'under-window'` + `transparent: true` + `backgroundColor: '#00000000'` (alpha in backgroundColor is ignored without `transparent`). CSS `backdrop-filter` cannot blur the desktop; the OS material does the blurring, the tokens only tint it. Exactly ONE element paints `--background` (the body) — a second coat stacks the alpha to near-opaque.
 - Panels float: rounded corners `16–20px` (panel), layered shadow (`0 16px 70px rgba(0,0,0,0.55)` dark · `rgba(0,0,0,0.25)` light) + a tight `0 0 0 1px` hairline ring.
 - Hairlines and borders: dark white-8% (`rgba(255,255,255,0.08)`) · light black-8% (`rgba(0,0,0,0.08)`); never solid gray borders.
 

@@ -84,8 +84,15 @@ const nativePreviewFramePollingEnabled = process.env.VIDEORC_SMOKE_PREVIEW_MOTIO
 app.setName('Videorc')
 // Dark glass is the default theme; the renderer re-syncs this on toggle.
 nativeTheme.themeSource = 'dark'
-// True under-window vibrancy is the default glass; =0 is the opt-out.
+// True vibrancy is the default glass; =0 opts out, and any other value picks
+// the macOS material by name (e.g. hud, popover, menu, under-window).
+type GlassVibrancyMaterial = NonNullable<Parameters<BrowserWindow['setVibrancy']>[0]>
 const glassVibrancyEnabled = process.env.VIDEORC_GLASS_VIBRANCY !== '0'
+const glassVibrancyRaw = process.env.VIDEORC_GLASS_VIBRANCY
+const glassVibrancyMaterial: GlassVibrancyMaterial =
+  glassVibrancyRaw && glassVibrancyRaw !== '0' && glassVibrancyRaw !== '1'
+    ? (glassVibrancyRaw as GlassVibrancyMaterial)
+    : 'under-window'
 // Probes and perf harnesses run ALONGSIDE the owner's dev app: an isolated
 // userData gives them their own single-instance lock and preferences instead
 // of dying on the real instance's lock or clobbering its saved state.
@@ -177,8 +184,17 @@ function createWindow(): void {
     // transparent backgroundColor on reload (left unset here) — not the
     // material itself. The opt-out paints a theme-matched opaque base so the
     // 75%-alpha glass tokens don't composite over default white.
+    // A transparent backing is REQUIRED for vibrancy: without it Chromium
+    // paints an opaque layer in front of the material and no alpha in the CSS
+    // can show the desktop through (verified with a material matrix probe).
+    // And alpha in backgroundColor is only honored when the window is created
+    // `transparent` — '#00000000' alone is silently opaque (Electron docs).
     ...(glassVibrancyEnabled
-      ? { vibrancy: 'under-window' as const }
+      ? {
+          vibrancy: glassVibrancyMaterial,
+          transparent: true,
+          backgroundColor: '#00000000'
+        }
       : { backgroundColor: nativeTheme.shouldUseDarkColors ? '#1C1C1F' : '#F5F5F7' }),
     visualEffectState: 'active',
     titleBarStyle: 'hiddenInset',
@@ -3025,6 +3041,42 @@ async function runSmokePreviewMotionCommand(
   if (command === 'main-window-id') {
     const match = /^window:(\d+):/.exec(mainWindow.getMediaSourceId())
     return { windowId: match ? Number(match[1]) : null, bounds: mainWindow.getBounds() }
+  }
+
+  // Glass tuning: swap the macOS vibrancy material live so a probe can shoot
+  // a composited material × token-alpha matrix without relaunching per cell.
+  if (command === 'set-vibrancy') {
+    const material = typeof params.material === 'string' ? params.material : null
+    mainWindow.setVibrancy((material as Parameters<BrowserWindow['setVibrancy']>[0]) ?? null)
+    return { material }
+  }
+
+  // Wedge research: candidate levers for recovering frame production after a
+  // reload wedges the transparent-backed window. The probe tries each and
+  // shoots the result; the winning lever gets wired into the reload path.
+  if (command === 'heal-main-window') {
+    const lever = typeof params.lever === 'string' ? params.lever : 'invalidate'
+    if (lever === 'invalidate') {
+      mainWindow.webContents.invalidate()
+    } else if (lever === 'background-jiggle') {
+      mainWindow.setBackgroundColor('#01000000')
+      mainWindow.setBackgroundColor('#00000000')
+    } else if (lever === 'hide-show') {
+      mainWindow.hide()
+      mainWindow.show()
+    } else if (lever === 'hide') {
+      mainWindow.hide()
+    } else if (lever === 'show') {
+      mainWindow.show()
+    } else if (lever === 'resize-jiggle') {
+      const bounds = mainWindow.getBounds()
+      mainWindow.setBounds({ ...bounds, width: bounds.width + 1 })
+      mainWindow.setBounds(bounds)
+    } else if (lever === 'revibrancy') {
+      mainWindow.setVibrancy(null)
+      mainWindow.setVibrancy(glassVibrancyMaterial)
+    }
+    return { lever }
   }
 
   // Leak bisection: replace the main window's content with about:blank (the

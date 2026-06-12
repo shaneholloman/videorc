@@ -15,8 +15,8 @@
 :root {
   --radius: 0.625rem;
 
-  /* Light glass: rgba(245,245,247,0.75) over vibrancy. */
-  --background: oklch(0.97 0.002 286 / 75%);
+  /* Light glass: rgba(245,245,247,0.70) over vibrancy. */
+  --background: oklch(0.97 0.002 286 / 70%);
   --foreground: oklch(0.24 0.004 286);
   --card: oklch(0.97 0.002 286 / 92%);
   --card-foreground: oklch(0.24 0.004 286);
@@ -70,8 +70,9 @@
 }
 
 .dark {
-  /* Dark glass: rgba(24,24,27,0.75) over vibrancy — the reference column. */
-  --background: oklch(0.21 0.006 286 / 75%);
+  /* Dark glass: rgba(24,24,27,0.65) over vibrancy — the reference column.
+     Thin enough that the desktop visibly breathes through the material. */
+  --background: oklch(0.21 0.006 286 / 65%);
   --foreground: oklch(0.97 0.001 286);
   --card: oklch(0.235 0.006 286 / 92%);
   --card-foreground: oklch(0.97 0.001 286);
