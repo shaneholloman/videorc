@@ -119,6 +119,14 @@ import {
 
 const NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS = 250
 
+// Steady-state telemetry (surface counters, diagnostics stats) commits to
+// React state at most once a second. Every commit re-renders the entire
+// StudioContext tree, and in dev each of those renders also feeds React's
+// per-component performance instrumentation — at the backend's 4Hz event
+// cadence that alone kept the renderer permanently busy. State-machine flips
+// still commit immediately via the significant-change fast path.
+const TELEMETRY_UI_COMMIT_INTERVAL_MS = 1000
+
 // One target patch, with the derived streaming fields (enabled flag, mode,
 // enabled ids) recomputed — shared by the settings editor and the Go Live
 // blocker resolutions so a patched snapshot can also be validated immediately.
@@ -601,6 +609,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [mainPumpActive, setMainPumpActive] = useState(false)
   const previewSurfaceStatusCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const previewSurfaceStatusLastCommitAtRef = useRef(0)
+  const diagnosticStatsPendingRef = useRef<DiagnosticStats | null>(null)
+  const diagnosticStatsCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const diagnosticStatsLastCommitAtRef = useRef(0)
   const nativePreviewRendererTimingFieldsCacheRef = useRef<{
     fields: NativePreviewRendererTimingFields
     computedAtMs: number
@@ -721,8 +732,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   // Present results arrive per frame (~60/s); committing each one to React
   // state re-rendered every StudioContext consumer per frame and dominated the
   // renderer's CPU profile. The ref stays per-frame fresh for logic, the state
-  // commit happens at report cadence, and a flip of any field that drives UI
-  // state machines (transport badges, suppression) commits immediately.
+  // commit happens at telemetry cadence, and a flip of any field that drives
+  // UI state machines (transport badges, suppression) commits immediately.
   const applyPreviewSurfaceStatusThrottled = useCallback(
     (status: PreviewSurfaceStatus) => {
       const previous = previewSurfaceStatusRef.current
@@ -747,7 +758,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         return
       }
       const elapsedMs = Date.now() - previewSurfaceStatusLastCommitAtRef.current
-      const delayMs = Math.max(0, NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS - elapsedMs)
+      const delayMs = Math.max(0, TELEMETRY_UI_COMMIT_INTERVAL_MS - elapsedMs)
       previewSurfaceStatusCommitTimerRef.current = setTimeout(() => {
         previewSurfaceStatusCommitTimerRef.current = null
         previewSurfaceStatusLastCommitAtRef.current = Date.now()
@@ -762,6 +773,34 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       if (previewSurfaceStatusCommitTimerRef.current) {
         clearTimeout(previewSurfaceStatusCommitTimerRef.current)
         previewSurfaceStatusCommitTimerRef.current = null
+      }
+    },
+    []
+  )
+
+  // diagnostics.stats streams at the backend's 4Hz cadence; the UI only needs
+  // the latest snapshot once a second (latest wins, trailing commit).
+  const commitDiagnosticStatsThrottled = useCallback((stats: DiagnosticStats) => {
+    diagnosticStatsPendingRef.current = stats
+    if (diagnosticStatsCommitTimerRef.current) {
+      return
+    }
+    const elapsedMs = Date.now() - diagnosticStatsLastCommitAtRef.current
+    const delayMs = Math.max(0, TELEMETRY_UI_COMMIT_INTERVAL_MS - elapsedMs)
+    diagnosticStatsCommitTimerRef.current = setTimeout(() => {
+      diagnosticStatsCommitTimerRef.current = null
+      diagnosticStatsLastCommitAtRef.current = Date.now()
+      if (diagnosticStatsPendingRef.current) {
+        setDiagnosticStats(diagnosticStatsPendingRef.current)
+      }
+    }, delayMs)
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (diagnosticStatsCommitTimerRef.current) {
+        clearTimeout(diagnosticStatsCommitTimerRef.current)
+        diagnosticStatsCommitTimerRef.current = null
       }
     },
     []
@@ -1534,13 +1573,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         setStreamTargets((payload as StreamTargetsSnapshot).targets)
       }),
       nextClient.on('diagnostics.stats', (payload) => {
-        setDiagnosticStats(payload as DiagnosticStats)
+        commitDiagnosticStatsThrottled(payload as DiagnosticStats)
       }),
       nextClient.on('preview.live.status', (payload) => {
         applyPreviewLiveStatus(payload as PreviewLiveStatus)
       }),
       nextClient.on('preview.surface.status', (payload) => {
-        applyPreviewSurfaceStatus(payload as PreviewSurfaceStatus)
+        applyPreviewSurfaceStatusThrottled(payload as PreviewSurfaceStatus)
       }),
       nextClient.on('compositor.status', (payload) => {
         const status = payload as CompositorStatus
@@ -1699,7 +1738,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     applyPreviewCameraStatus,
     applyPreviewScreenStatus,
     applyPreviewSurfaceStatus,
+    applyPreviewSurfaceStatusThrottled,
     applyRecordingStatus,
+    commitDiagnosticStatsThrottled,
     connection,
     nativePreviewSurfaceEnabled,
     queueNativePreviewCompositorPresent,
