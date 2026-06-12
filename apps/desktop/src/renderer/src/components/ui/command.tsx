@@ -39,15 +39,18 @@ function CommandDialog({
 }) {
   return (
     <Dialog {...props}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
       <DialogContent
         className={cn('top-1/3 translate-y-0 overflow-hidden rounded-2xl! p-0', className)}
         showCloseButton={showCloseButton}
       >
-        {children}
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        {/* Every cmdk part (Input, List, Item...) reads the store this root
+            provides — children OUTSIDE it crash cmdk on first render, and an
+            uncaught render error unmounts the whole React root. */}
+        <Command>{children}</Command>
       </DialogContent>
     </Dialog>
   )
