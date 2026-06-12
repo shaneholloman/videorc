@@ -2,6 +2,7 @@ import {
   ArrowCounterClockwise,
   CheckCircle,
   CircleNotch,
+  DotsThree,
   FileVideo,
   Sparkle,
   WarningCircle,
@@ -13,6 +14,13 @@ import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Empty, EmptyDescription, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useStudio } from '@/hooks/use-studio'
@@ -99,21 +107,37 @@ function SessionRow({
       <p className="truncate rounded-lg bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
         {session.mp4Path ?? session.outputPath ?? session.streamPreset ?? 'No local file'}
       </p>
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="secondary" onClick={onOpenInAi}>
-          <Sparkle data-icon="inline-start" weight="fill" />
-          Open in AI
-        </Button>
-      </div>
-      {filePath ? <RepairControls filePath={filePath} /> : null}
+      {filePath ? (
+        <SessionActions filePath={filePath} session={session} onOpenInAi={onOpenInAi} />
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" onClick={onOpenInAi}>
+            <Sparkle data-icon="inline-start" weight="fill" />
+            Open in AI
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
 
 type RepairPhase = 'idle' | 'checking' | 'assessed' | 'repairing' | 'done'
 
-function RepairControls({ filePath }: { filePath: string }): ReactElement {
-  const { assessRecording, repairRecording, restoreRecording, recording, wsStatus } = useStudio()
+// One actions surface per session: Open-in-AI stays the visible primary,
+// everything file-shaped (export, quality check, repair, restore) lives in
+// the row menu. Library is the single home of session artifacts (ux-ia plan
+// slice 3 — Export MP4 moved here from the old Recording artifacts grid).
+function SessionActions({
+  filePath,
+  session,
+  onOpenInAi
+}: {
+  filePath: string
+  session: SessionSummary
+  onOpenInAi: () => void
+}): ReactElement {
+  const { assessRecording, repairRecording, restoreRecording, recording, wsStatus, remuxSession } =
+    useStudio()
   const [phase, setPhase] = useState<RepairPhase>('idle')
   const [assessment, setAssessment] = useState<FileAssessment | null>(null)
   const [result, setResult] = useState<GateStatus | null>(null)
@@ -123,6 +147,9 @@ function RepairControls({ filePath }: { filePath: string }): ReactElement {
   const disconnected = wsStatus !== 'connected'
   const captureProtected = isActiveRecordingState(recording.state)
   const canRepair = assessment?.repairable ?? false
+  const canExportMp4 = Boolean(
+    session.status === 'completed' && session.outputPath?.endsWith('.mkv') && !session.mp4Path
+  )
 
   const runCheck = async (): Promise<void> => {
     setPhase('checking')
@@ -182,44 +209,65 @@ function RepairControls({ filePath }: { filePath: string }): ReactElement {
   const reasons = repairReasons(result, assessment)
 
   return (
-    <div className="flex flex-col gap-2 border-t pt-2">
+    <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          disabled={busy || disconnected || captureProtected}
-          size="sm"
-          variant="outline"
-          onClick={runCheck}
-        >
-          {phase === 'checking' ? (
-            <CircleNotch className="animate-spin" data-icon="inline-start" />
-          ) : (
-            <CheckCircle data-icon="inline-start" />
-          )}
-          {phase === 'checking' ? 'Checking…' : 'Check quality'}
+        <Button size="sm" variant="secondary" onClick={onOpenInAi}>
+          <Sparkle data-icon="inline-start" weight="fill" />
+          Open in AI
         </Button>
-        {canRepair ? (
-          <Button disabled={busy || disconnected || captureProtected} size="sm" onClick={runRepair}>
-            {phase === 'repairing' ? (
-              <CircleNotch className="animate-spin" data-icon="inline-start" />
-            ) : (
-              <Wrench data-icon="inline-start" />
-            )}
-            {phase === 'repairing' ? 'Repairing…' : 'Repair & fix'}
-          </Button>
-        ) : null}
-        {hasBackup ? (
-          <Button
-            disabled={busy || disconnected || captureProtected}
-            size="sm"
-            variant="ghost"
-            onClick={runRestore}
-          >
-            <ArrowCounterClockwise data-icon="inline-start" />
-            Restore original
-          </Button>
-        ) : null}
-        {captureProtected ? <Badge variant="outline">Deferred while recording</Badge> : null}
-        <RepairBadge assessment={assessment} result={result} />
+        <div className="ml-auto flex items-center gap-2">
+          {captureProtected ? <Badge variant="outline">Deferred while recording</Badge> : null}
+          <RepairBadge assessment={assessment} result={result} />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                aria-label="Session actions"
+                className="size-8"
+                disabled={disconnected}
+                size="icon"
+                variant="ghost"
+              >
+                {busy ? (
+                  <CircleNotch className="size-4 animate-spin" />
+                ) : (
+                  <DotsThree className="size-4" weight="bold" />
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                disabled={!canExportMp4 || busy}
+                onClick={() => void remuxSession(session.id)}
+              >
+                <FileVideo />
+                Export MP4
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem disabled={busy || captureProtected} onClick={() => void runCheck()}>
+                <CheckCircle />
+                {phase === 'checking' ? 'Checking…' : 'Check quality'}
+              </DropdownMenuItem>
+              {canRepair ? (
+                <DropdownMenuItem
+                  disabled={busy || captureProtected}
+                  onClick={() => void runRepair()}
+                >
+                  <Wrench />
+                  {phase === 'repairing' ? 'Repairing…' : 'Repair & fix'}
+                </DropdownMenuItem>
+              ) : null}
+              {hasBackup ? (
+                <DropdownMenuItem
+                  disabled={busy || captureProtected}
+                  onClick={() => void runRestore()}
+                >
+                  <ArrowCounterClockwise />
+                  Restore original
+                </DropdownMenuItem>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
       {reasons.length > 0 ? (
         <Alert variant={result?.status === 'failed' ? 'destructive' : 'warning'}>

@@ -3,8 +3,6 @@ import type { ReactElement } from 'react'
 
 import { PanelSection } from '@/components/panel-section'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
@@ -19,7 +17,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useStudio } from '@/hooks/use-studio'
-import type { SessionSummary, VideoPreset } from '@/lib/backend'
+import type { VideoPreset } from '@/lib/backend'
 import {
   customVideoPresetOption,
   legacyVideoPresetOptions,
@@ -27,7 +25,6 @@ import {
   streamingVideoPresetOptions,
   videoProfileCompatibility
 } from '@/lib/capture'
-import { dayLabel, durationMsLabel } from '@/lib/format'
 
 // One-click resolutions so nobody has to remember pixel counts; picking one patches
 // width/height (switching the preset to Custom), and the number fields below stay
@@ -40,19 +37,11 @@ const RESOLUTION_PRESETS = [
 ] as const
 
 export function RecordingTab(): ReactElement {
-  const {
-    captureConfig,
-    setCaptureConfig,
-    patchVideo,
-    applyVideoPreset,
-    sessions,
-    remuxSession,
-    isSessionActive
-  } = useStudio()
+  const { captureConfig, setCaptureConfig, patchVideo, applyVideoPreset, isSessionActive } =
+    useStudio()
   const { video } = captureConfig
   const compatibility = videoProfileCompatibility(captureConfig)
   const compatibilityMessage = compatibility.blockingReason ?? compatibility.warning
-  const outputSessions = sessions.filter((session) => session.outputPath || session.streamPreset)
 
   return (
     <div className="grid gap-4">
@@ -67,9 +56,9 @@ export function RecordingTab(): ReactElement {
             }
           />
         }
-        description="Local recording exports MP4 into the recordings folder after capture finalizes."
+        description="Local recording exports MP4 into the recordings folder after capture finalizes. Completed files live in the Library."
         icon={FileVideo}
-        title="Recording"
+        title="Output"
       >
         {isSessionActive ? (
           <p className="text-sm text-muted-foreground">
@@ -191,68 +180,6 @@ export function RecordingTab(): ReactElement {
           </div>
         </FieldGroup>
       </PanelSection>
-
-      <PanelSection
-        description="Completed local recording artifacts live here."
-        icon={FileVideo}
-        title="Recording artifacts"
-      >
-        {outputSessions.length ? (
-          <div className="grid gap-2 lg:grid-cols-2">
-            {outputSessions.map((session) => (
-              <OutputSessionRow
-                key={session.id}
-                session={session}
-                onRemux={() => remuxSession(session.id)}
-              />
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Completed local recordings will appear here.
-          </p>
-        )}
-      </PanelSection>
-    </div>
-  )
-}
-
-function OutputSessionRow({
-  session,
-  onRemux
-}: {
-  session: SessionSummary
-  onRemux: () => void
-}): ReactElement {
-  const canRemux = Boolean(
-    session.status === 'completed' && session.outputPath?.endsWith('.mkv') && !session.mp4Path
-  )
-
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2">
-      <div className="min-w-0">
-        <div className="truncate text-sm font-semibold">{session.title}</div>
-        <div className="truncate text-xs text-muted-foreground">
-          {dayLabel(session.startedAt)} · {session.status} ·{' '}
-          {session.mp4Path ?? session.outputPath ?? session.streamPreset}
-        </div>
-        <div className="mt-1 flex flex-wrap gap-1.5">
-          {session.container ? (
-            <Badge variant="outline">{session.container.toUpperCase()}</Badge>
-          ) : null}
-          {typeof session.durationMs === 'number' ? (
-            <Badge variant="secondary">{durationMsLabel(session.durationMs)}</Badge>
-          ) : null}
-          {session.mp4Path ? (
-            <Badge variant="success">MP4</Badge>
-          ) : (
-            <Badge variant="outline">MKV</Badge>
-          )}
-        </div>
-      </div>
-      <Button disabled={!canRemux} size="sm" variant="outline" onClick={onRemux}>
-        Export MP4
-      </Button>
     </div>
   )
 }
