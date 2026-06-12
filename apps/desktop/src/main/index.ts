@@ -633,7 +633,10 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
     minWidth: 320,
     minHeight: 208,
     title: 'Videorc Preview',
-    titleBarStyle: 'hiddenInset',
+    // hiddenInset is macOS-only; off macOS the standard frame keeps the
+    // preview window draggable without renderer drag regions (Phase 4 owns
+    // the frameless Windows chrome).
+    ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
     backgroundColor: '#09090b',
     show: true,
     ...appWindowIconOptions(),
@@ -3842,8 +3845,9 @@ app.whenReady().then(() => {
   // the blur material always matches the in-app theme (videorc-design).
   ipcMain.handle('app:set-native-theme', (_event, theme: string) => {
     nativeTheme.themeSource = theme === 'light' ? 'light' : 'dark'
-    // The solid-fallback base must follow the theme too (vibrancy ignores it).
-    if (!glassVibrancyEnabled) {
+    // The solid base must follow the theme wherever a solid base is painted:
+    // always off macOS, and on macOS when vibrancy is opted out.
+    if (!isMac || !glassVibrancyEnabled) {
       mainWindow?.setBackgroundColor(theme === 'light' ? '#F5F5F7' : '#1C1C1F')
     }
   })

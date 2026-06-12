@@ -11,7 +11,7 @@ your row when done.
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 001 | Make `pnpm package` work on a Windows box (electron-builder resources, backend path, ffmpeg fetch) | P1 | M | — | TODO |
-| 002 | Fix the two Windows window-chrome bugs (preview window frame, theme-toggle base color) | P1 | S | — | TODO |
+| 002 | Fix the two Windows window-chrome bugs (preview window frame, theme-toggle base color) | P1 | S | — | DONE (2026-06-12; verify preview drag + theme toggle on the Windows box) |
 | 003 | Pin the new platform seams (fifo.rs, capture_input.rs) with unit tests | P2 | S-M | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
