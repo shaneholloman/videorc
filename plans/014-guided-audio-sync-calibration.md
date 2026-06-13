@@ -24,7 +24,9 @@
   thresholds, pass/fail, and sample counts. Step 2 renderer helpers now format
   measured lag, decide apply/reset state, and preserve explicit user-set sync
   offsets. Step 3 added the Sources-tab import/apply/reset flow for measurement
-  JSON without auto-recording. Long-session drift evidence remains pending.
+  JSON without auto-recording. Step 4 evidence shaping now records stream sync
+  classification plus MKV/FLV drift slopes and 30-minute estimates. Real
+  long-session media gate evidence remains pending.
 
 ## Why this matters
 
@@ -204,7 +206,7 @@ Update `docs/obs-acceptance-checklist.md` with the guided calibration flow:
 - [x] `measure-av-sync` emits a stable machine-readable recommendation.
 - [x] UI can apply/reset measured sync offsets without crashing or disappearing.
 - [x] Calibration never changes the default offset unless the user applies it.
-- [ ] Stream A/V evidence reports fixed offset vs drift vs stream divergence.
+- [x] Stream A/V evidence reports fixed offset vs drift vs stream divergence.
 - [x] Docs explain the operator flow.
 - [ ] TS, script, and relevant Rust gates pass.
 - [ ] `plans/README.md` status row updated.

@@ -42,6 +42,7 @@ import {
   DEFAULT_STREAM_AV_SYNC_GATES,
   evaluateStreamAvSync,
   fitOffsetDrift,
+  summarizeStreamAvSyncEvidence
 } from './lib/stream-av-sync.mjs'
 
 const argv = process.argv.slice(2).filter((arg) => arg !== '--')
@@ -55,7 +56,7 @@ const config = {
   sinkDrainTimeoutMs: 30000,
   outputRoot: resolve(
     process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-stream-av-sync-${Date.now()}`)
-  ),
+  )
 }
 const STREAM_KEY = 'avsync-baseline' // local dummy key, not a secret
 const serverUrl = `rtmp://127.0.0.1:${config.streamPort}/live`
@@ -86,20 +87,24 @@ async function main() {
   if (config.skipRecordOnly) {
     console.log('Skipping record-only baseline session (--skip-record-only).')
   } else {
-    console.log(`\n=== Session 1/2: record-only av-sync baseline (${config.recordingMs / 1000}s) ===`)
+    console.log(
+      `\n=== Session 1/2: record-only av-sync baseline (${config.recordingMs / 1000}s) ===`
+    )
     await runBaselineSession({
       outputDir: recordOnlyDir,
       env: {
         VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT:
-          process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'videotoolbox-h264-mpegts',
-      },
+          process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'videotoolbox-h264-mpegts'
+      }
     })
     recordOnlyEvidence = evidenceFromManifest(recordOnlyDir, 'record-only')
     recordOnlyRecording = recordingFromEvidence(recordOnlyEvidence, 'record-only')
   }
 
   // --- Session 2: record+stream against the local RTMP sink ---------------------
-  console.log(`\n=== Session 2/2: record+stream av-sync against local RTMP sink (${config.recordingMs / 1000}s) ===`)
+  console.log(
+    `\n=== Session 2/2: record+stream av-sync against local RTMP sink (${config.recordingMs / 1000}s) ===`
+  )
   if (process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT) {
     console.log(
       `NOTE: ignoring VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT=${process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT} ` +
@@ -121,24 +126,29 @@ async function main() {
       VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: null, // backend default selector decides
       VIDEORC_BASELINE_STREAM: '1',
       VIDEORC_BASELINE_STREAM_SERVER_URL: serverUrl,
-      VIDEORC_BASELINE_STREAM_KEY: STREAM_KEY,
-    },
+      VIDEORC_BASELINE_STREAM_KEY: STREAM_KEY
+    }
   })
   const recordStreamEvidence = evidenceFromManifest(recordStreamDir, 'record+stream')
   const recordStreamRecording = recordingFromEvidence(recordStreamEvidence, 'record+stream')
   await drainSink()
-  const receivedFlv = existsSync(receivedFlvPath) && statSync(receivedFlvPath).size > 0 ? receivedFlvPath : null
+  const receivedFlv =
+    existsSync(receivedFlvPath) && statSync(receivedFlvPath).size > 0 ? receivedFlvPath : null
   if (!receivedFlv) {
     console.error('RTMP sink produced no received FLV — the stream leg never delivered data.')
   } else {
-    console.log(`Received FLV: ${receivedFlv} (${(statSync(receivedFlv).size / (1024 * 1024)).toFixed(1)} MiB)`)
+    console.log(
+      `Received FLV: ${receivedFlv} (${(statSync(receivedFlv).size / (1024 * 1024)).toFixed(1)} MiB)`
+    )
   }
 
   // --- Measure all three outputs -------------------------------------------------
   console.log('\nMeasuring flash/click A/V offsets…')
   const currentMicrophoneSyncOffsetMs = Number(process.env.VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS ?? 0)
   const measureOptions = { ffmpegPath: config.ffmpegPath, currentMicrophoneSyncOffsetMs }
-  const recordOnly = config.skipRecordOnly ? undefined : await measureOrNull(recordOnlyRecording, measureOptions)
+  const recordOnly = config.skipRecordOnly
+    ? undefined
+    : await measureOrNull(recordOnlyRecording, measureOptions)
   const recordStreamMkv = await measureOrNull(recordStreamRecording, measureOptions)
   const recordStreamFlv = await measureOrNull(receivedFlv, measureOptions)
   const flvDrift = fitOffsetDrift(recordStreamFlv?.pairs ?? [])
@@ -150,7 +160,13 @@ async function main() {
     recordStreamFlv,
     flvDrift,
     mkvDrift,
-    durationSec: config.recordingMs / 1000,
+    durationSec: config.recordingMs / 1000
+  })
+  const driftEvidence = summarizeStreamAvSyncEvidence({
+    recordStreamMkv,
+    recordStreamFlv,
+    flvDrift,
+    mkvDrift
   })
 
   const evidencePath = join(config.outputRoot, 'stream-av-sync-evidence.json')
@@ -166,7 +182,7 @@ async function main() {
           streamPort: config.streamPort,
           streamServerUrlRedacted: redactedStreamUrl,
           skipRecordOnly: config.skipRecordOnly,
-          gates: DEFAULT_STREAM_AV_SYNC_GATES,
+          gates: DEFAULT_STREAM_AV_SYNC_GATES
         },
         sessions: {
           recordOnly: config.skipRecordOnly
@@ -176,7 +192,7 @@ async function main() {
                 recording: recordOnlyRecording,
                 mediaQualityMode: recordOnlyEvidence?.result?.mediaQualityMode ?? null,
                 splitOutputProof: splitOutputProof(recordOnlyEvidence),
-                measurement: summarize(recordOnly),
+                measurement: summarize(recordOnly)
               },
           recordStream: {
             directory: recordStreamDir,
@@ -188,16 +204,27 @@ async function main() {
             measurementFlv: summarize(recordStreamFlv),
             mkvDrift,
             flvDrift,
-          },
+            driftEvidence
+          }
         },
-        verdict,
+        driftEvidence,
+        verdict
       },
       null,
       2
     )}\n`
   )
 
-  printSummary({ recordOnly, recordStreamMkv, recordStreamFlv, flvDrift, mkvDrift, verdict, evidencePath })
+  printSummary({
+    recordOnly,
+    recordStreamMkv,
+    recordStreamFlv,
+    flvDrift,
+    mkvDrift,
+    driftEvidence,
+    verdict,
+    evidencePath
+  })
   return config.gate && !verdict.pass ? 1 : 0
 }
 
@@ -218,7 +245,7 @@ function runBaselineSession({ outputDir, env }) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(process.execPath, [join('scripts', 'real-source-baseline-app.mjs')], {
       env: childEnv,
-      stdio: 'inherit',
+      stdio: 'inherit'
     })
     child.on('error', rejectRun)
     child.on('close', (code) => {
@@ -269,12 +296,9 @@ function splitOutputProof(manifest) {
       diagnostics.encoderBridgeRecordingVideoToolboxOutputFrames ?? 0,
     recordingVideoToolboxOutputBytes:
       diagnostics.encoderBridgeRecordingVideoToolboxOutputBytes ?? 0,
-    streamVideoToolboxOutputFrames:
-      diagnostics.encoderBridgeStreamVideoToolboxOutputFrames ?? 0,
-    streamVideoToolboxOutputBytes:
-      diagnostics.encoderBridgeStreamVideoToolboxOutputBytes ?? 0,
-    separateOutputEncodersActive:
-      diagnostics.encoderBridgeSeparateOutputEncodersActive === true,
+    streamVideoToolboxOutputFrames: diagnostics.encoderBridgeStreamVideoToolboxOutputFrames ?? 0,
+    streamVideoToolboxOutputBytes: diagnostics.encoderBridgeStreamVideoToolboxOutputBytes ?? 0,
+    separateOutputEncodersActive: diagnostics.encoderBridgeSeparateOutputEncodersActive === true
   }
 }
 
@@ -298,7 +322,7 @@ function spawnRtmpSink(receivedFlvPath) {
       'copy',
       '-f',
       'flv',
-      receivedFlvPath,
+      receivedFlvPath
     ],
     { stdio: ['ignore', 'inherit', 'inherit'] }
   )
@@ -356,18 +380,32 @@ function summarize(measurement) {
   return { ...rest, pairCount: pairs?.length ?? 0 }
 }
 
-function printSummary({ recordOnly, recordStreamMkv, recordStreamFlv, flvDrift, mkvDrift, verdict, evidencePath }) {
+function printSummary({
+  recordOnly,
+  recordStreamMkv,
+  recordStreamFlv,
+  flvDrift,
+  mkvDrift,
+  driftEvidence,
+  verdict,
+  evidencePath
+}) {
   console.log('\n=== Stream A/V sync summary ===')
   printMeasurement('record-only MKV       ', recordOnly)
   printMeasurement('record+stream MKV leg ', recordStreamMkv)
   printMeasurement('RTMP-received FLV     ', recordStreamFlv)
   printDrift('MKV leg drift         ', mkvDrift)
   printDrift('received FLV drift    ', flvDrift)
+  console.log(`classification         ${driftEvidence.classification}`)
   for (const finding of verdict.hypotheses) console.log(`HYPOTHESIS: ${finding}`)
   for (const warning of verdict.warnings) console.log(`WARN: ${warning}`)
   for (const failure of verdict.failures) console.log(`FAIL: ${failure}`)
   console.log(`Evidence: ${evidencePath}`)
-  console.log(verdict.pass ? 'PASS — stream A/V sync inside the plan gate.' : 'FAIL — stream A/V sync outside the plan gate.')
+  console.log(
+    verdict.pass
+      ? 'PASS — stream A/V sync inside the plan gate.'
+      : 'FAIL — stream A/V sync outside the plan gate.'
+  )
 }
 
 function printMeasurement(label, measurement) {
@@ -380,7 +418,9 @@ function printMeasurement(label, measurement) {
     return
   }
   const median = measurement.medianOffsetMs
-  const medianText = Number.isFinite(median) ? `${median >= 0 ? '+' : ''}${median.toFixed(0)}ms median` : 'no pairs'
+  const medianText = Number.isFinite(median)
+    ? `${median >= 0 ? '+' : ''}${median.toFixed(0)}ms median`
+    : 'no pairs'
   console.log(
     `${label} ${medianText} (${measurement.flashCount} flashes, ${measurement.clickCount} clicks, ` +
       `maxAbs ${Number.isFinite(measurement.maxAbsOffsetMs) ? measurement.maxAbsOffsetMs.toFixed(0) : '—'}ms)`

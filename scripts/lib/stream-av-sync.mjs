@@ -23,7 +23,7 @@ export const DEFAULT_STREAM_AV_SYNC_GATES = Object.freeze({
   driftMaxMsPer30Min: 20,
   driftMinDurationSec: 600,
   // Below this many flash/click pairs a drift fit is noise, not evidence.
-  driftMinPairs: 5,
+  driftMinPairs: 5
 })
 
 /**
@@ -32,7 +32,10 @@ export const DEFAULT_STREAM_AV_SYNC_GATES = Object.freeze({
  * @param {{flash:number, offsetMs:number}[]} pairs
  * @returns {{slopeMsPerMinute:number, interceptMs:number, samples:number, spanSec:number}|null}
  */
-export function fitOffsetDrift(pairs, { minPairs = DEFAULT_STREAM_AV_SYNC_GATES.driftMinPairs, minSpanSec = 30 } = {}) {
+export function fitOffsetDrift(
+  pairs,
+  { minPairs = DEFAULT_STREAM_AV_SYNC_GATES.driftMinPairs, minSpanSec = 30 } = {}
+) {
   const usable = (pairs ?? []).filter(
     (pair) => Number.isFinite(pair?.flash) && Number.isFinite(pair?.offsetMs)
   )
@@ -55,7 +58,7 @@ export function fitOffsetDrift(pairs, { minPairs = DEFAULT_STREAM_AV_SYNC_GATES.
     slopeMsPerMinute: slopeMsPerSec * 60,
     interceptMs: meanY - slopeMsPerSec * meanT,
     samples: n,
-    spanSec,
+    spanSec
   }
 }
 
@@ -63,6 +66,53 @@ export function fitOffsetDrift(pairs, { minPairs = DEFAULT_STREAM_AV_SYNC_GATES.
 export function driftMsPer30Min(drift) {
   if (!drift || !Number.isFinite(drift.slopeMsPerMinute)) return null
   return drift.slopeMsPerMinute * 30
+}
+
+export function summarizeOffsetDrift(drift) {
+  const estimatedDriftMsPer30Min = driftMsPer30Min(drift)
+  if (!drift || estimatedDriftMsPer30Min === null) return null
+  return {
+    slopeMsPerMinute: drift.slopeMsPerMinute,
+    estimatedDriftMsPer30Min,
+    samples: drift.samples,
+    spanSec: drift.spanSec
+  }
+}
+
+export function classifyStreamAvSyncShape(
+  { recordStreamMkv, recordStreamFlv, flvDrift, mkvDrift },
+  gates = DEFAULT_STREAM_AV_SYNC_GATES
+) {
+  const mkvMedian = recordStreamMkv?.medianOffsetMs
+  const flvMedian = recordStreamFlv?.medianOffsetMs
+  if (!isFiniteNumber(mkvMedian) || !isFiniteNumber(flvMedian)) {
+    return 'unmeasured'
+  }
+
+  if (Math.abs(flvMedian - mkvMedian) > gates.legDivergenceMs) {
+    return 'stream-leg-divergence'
+  }
+
+  const drift30s = [driftMsPer30Min(flvDrift), driftMsPer30Min(mkvDrift)].filter(isFiniteNumber)
+  if (drift30s.some((drift30) => Math.abs(drift30) > gates.driftMaxMsPer30Min)) {
+    return 'drift'
+  }
+
+  return 'fixed-offset'
+}
+
+export function summarizeStreamAvSyncEvidence(
+  { recordStreamMkv, recordStreamFlv, flvDrift, mkvDrift },
+  gates = DEFAULT_STREAM_AV_SYNC_GATES
+) {
+  return {
+    classification: classifyStreamAvSyncShape(
+      { recordStreamMkv, recordStreamFlv, flvDrift, mkvDrift },
+      gates
+    ),
+    recordStreamMkvDrift: summarizeOffsetDrift(mkvDrift),
+    receivedFlvDrift: summarizeOffsetDrift(flvDrift)
+  }
 }
 
 /**
@@ -131,21 +181,25 @@ export function evaluateStreamAvSync(
 
   for (const [label, measurement] of [
     ['record+stream MKV leg', recordStreamMkv],
-    ['RTMP-received FLV', recordStreamFlv],
+    ['RTMP-received FLV', recordStreamFlv]
   ]) {
     const median = measurement?.medianOffsetMs
     if (!isFiniteNumber(median)) continue
     if (Math.abs(median) > gates.hardFailMs) {
-      failures.push(`${label} A/V offset ${formatMs(median)} exceeds hard-fail ${gates.hardFailMs}ms`)
+      failures.push(
+        `${label} A/V offset ${formatMs(median)} exceeds hard-fail ${gates.hardFailMs}ms`
+      )
     } else if (Math.abs(median) > gates.medianTargetMs) {
-      failures.push(`${label} A/V offset ${formatMs(median)} exceeds plan gate ${gates.medianTargetMs}ms`)
+      failures.push(
+        `${label} A/V offset ${formatMs(median)} exceeds plan gate ${gates.medianTargetMs}ms`
+      )
     }
   }
 
   const driftBinding = isFiniteNumber(durationSec) && durationSec >= gates.driftMinDurationSec
   for (const [label, drift] of [
     ['RTMP-received FLV', flvDrift],
-    ['record+stream MKV leg', mkvDrift],
+    ['record+stream MKV leg', mkvDrift]
   ]) {
     const drift30 = driftMsPer30Min(drift)
     if (drift30 === null) continue
@@ -161,7 +215,10 @@ export function evaluateStreamAvSync(
     }
   }
 
-  const hypotheses = classifySyncHypotheses({ recordOnly, recordStreamMkv, recordStreamFlv, flvDrift }, gates)
+  const hypotheses = classifySyncHypotheses(
+    { recordOnly, recordStreamMkv, recordStreamFlv, flvDrift },
+    gates
+  )
   return { pass: failures.length === 0, failures, warnings, hypotheses }
 }
 
