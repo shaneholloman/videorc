@@ -110,6 +110,35 @@ A distributable macOS build still needs:
 
 Electron Builder's [macOS docs](https://www.electron.build/docs/mac) describe hardened runtime, entitlements, and notarization requirements. Electron's [code signing guide](https://www.electronjs.org/docs/latest/tutorial/code-signing) explains why distributed macOS apps need signing and notarization.
 
+## Open-Core Capability Boundary
+
+Videorc's product boundary is open core: the local recording studio remains a
+first-class free product, while distribution and cloud-assisted workflows are
+premium capabilities. This repository enforces the capability boundary; pricing
+and purchase flows belong to the product/website layer.
+
+| Capability | Free/core | Premium |
+| --- | --- | --- |
+| Local recording | Included: local MKV/MP4 recording remains first-class. | Included. |
+| Native preview | Included: production preview uses the detached CAMetalLayer path when available. | Included. |
+| Source and layout controls | Included: source selection, camera placement, presets, and local layout controls. | Included. |
+| Local library | Included: session metadata, local files, remux, repair, and export helpers stay local. | Included. |
+| Local audio extraction | Included when no cloud upload is requested. | Included. |
+| Livestreaming destinations | Not included in free/core. | Included: manual RTMP, provider destinations, and multistreaming. |
+| Cloud AI workflow | Not included in free/core. | Included when the user grants cloud AI consent and required API credentials are present. |
+
+Developer and self-hosted validation can opt into premium-only code paths with
+an explicit environment override:
+
+```sh
+VIDEORC_PREMIUM_FEATURES=1
+```
+
+Smokes that start livestreaming or cloud AI should set this override explicitly.
+Local recording, native preview, source/layout controls, the library, local
+repair/remux, and local audio extraction without upload must not require premium
+entitlement.
+
 ## OAuth Client IDs
 
 Production builds should inject Videogre-owned OAuth client IDs at backend compile time. Development and self-hosted builds can override those IDs at runtime.

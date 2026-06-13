@@ -31,7 +31,7 @@ row when done.
 | 013 | Close OBS parity acceptance with evidence and triage | P0 | M | 006 | TODO |
 | 014 | Add guided audio sync calibration and drift gates | P1 | M | 006, 007 | TODO |
 | 015 | Prove real provider livestreaming end to end | P1 | M | 006, 009, 012 | TODO |
-| 016 | Add the open-core entitlement boundary for premium features | P1 | M | 007, 009 | TODO |
+| 016 | Add the open-core entitlement boundary for premium features | P1 | M | 007, 009 | IN PROGRESS (Slice A1 capability docs) |
 | 017 | Add native system audio capture and a mixed audio graph | P1 | L | 006, 007, 014 | TODO |
 | 018 | Add a redacted support bundle and diagnostics export | P1 | M | 007 | TODO |
 | 019 | Finish Windows v1 capture and package acceptance | P2 | L | 001, 002, 003, 006, 012 | TODO |
