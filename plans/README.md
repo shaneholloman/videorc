@@ -180,6 +180,9 @@ preview, and 1080p livestream output without raw-video fallback.
   `screen:screencapturekit:1` but blocked before encoding because the selected
   display was `3024x1964`, below the required `3840x2160`. Evidence:
   `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1781376334685/latest-real-source-evidence.json`.
+  `system_profiler SPDisplaysDataType` confirms the only online display on this
+  machine is the built-in `3024 x 1964 Retina` panel, so the 4K gate cannot pass
+  here until a real 3840x2160-or-larger display is connected/selected.
   `pnpm baseline:stream:av-sync -- --gate` first blocked before encoding
   because ScreenCaptureKit source discovery timed out and the fallback screen
   reached session start as `source-missing`. A forced rerun with
@@ -188,6 +191,12 @@ preview, and 1080p livestream output without raw-video fallback.
   ScreenCaptureKit stream start timed out after 30s while the camera stayed
   healthy. Evidence:
   `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-stream-av-sync-1781376411913/record-only/latest-real-source-evidence.json`.
+  A follow-up preflight slice added `CGPreflightScreenCaptureAccess()` checks
+  before ScreenCaptureKit discovery/start. A short forced screen-only rerun still
+  timed out after the permission preflight passed, so the remaining local screen
+  blocker is post-permission ScreenCaptureKit start/discovery, not missing TCC
+  permission. Evidence:
+  `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1781377036578/latest-real-source-evidence.json`.
   Re-run these gates only after the machine presents a detected 3840x2160 or
   larger ScreenCaptureKit display and ScreenCaptureKit can start live screen
   frames before recording.

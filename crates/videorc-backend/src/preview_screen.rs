@@ -1113,7 +1113,9 @@ mod macos {
     use objc2::rc::{Retained, autoreleasepool};
     use objc2::runtime::ProtocolObject;
     use objc2::{AnyThread, DefinedClass, define_class, msg_send};
-    use objc2_core_graphics::{CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayMode};
+    use objc2_core_graphics::{
+        CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayMode, CGPreflightScreenCaptureAccess,
+    };
     use objc2_core_media::{CMSampleBuffer, CMTime};
     use objc2_core_video::{
         CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
@@ -1234,6 +1236,12 @@ mod macos {
         config: NativeScreenPreviewConfig,
         shared: Arc<StdMutex<PreviewScreenShared>>,
     ) -> Result<ScreenSession, NativeScreenStartup> {
+        if !CGPreflightScreenCaptureAccess() {
+            return Err(NativeScreenStartup::PermissionNeeded(
+                "macOS Screen Recording permission is not granted for the process launching Videorc. Grant Screen Recording permission, then quit and relaunch Videorc before running native ScreenCaptureKit gates.".to_string(),
+            ));
+        }
+
         let content = load_shareable_content()?;
         let selected = select_content(&content, &config)?;
         let capture_request = select_preview_screen_capture_request(
@@ -1440,7 +1448,7 @@ mod macos {
                 }
             }
             Err(_) => Err(NativeScreenStartup::Failed(
-                "ScreenCaptureKit source discovery timed out.".to_string(),
+                "ScreenCaptureKit source discovery timed out after Screen Recording permission preflight passed.".to_string(),
             )),
         }
     }
@@ -1487,7 +1495,7 @@ mod macos {
                 "ScreenCaptureKit stream failed to start: {error}"
             ))),
             Err(_) => Err(NativeScreenStartup::Failed(format!(
-                "ScreenCaptureKit stream start timed out after {:.0}s.",
+                "ScreenCaptureKit stream start timed out after {:.0}s after Screen Recording permission preflight passed.",
                 SCREEN_CAPTUREKIT_STREAM_START_TIMEOUT.as_secs_f64()
             ))),
         }

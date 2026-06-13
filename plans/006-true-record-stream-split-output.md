@@ -17,7 +17,7 @@
 - **Depends on**: Plan 005
 - **Category**: perf, direction, tests
 - **Planned at**: commit `3d217933`, 2026-06-13
-- **Status**: BLOCKED (2026-06-13; implementation slices landed, latest gates still block before encoding because the detected display is 3024x1964 and forced ScreenCaptureKit start times out after 30s)
+- **Status**: BLOCKED (2026-06-13; implementation slices landed, latest gates still block before encoding because the only online display is 3024x1964 and ScreenCaptureKit start/discovery times out after permission preflight passes)
 
 ## Why this matters
 

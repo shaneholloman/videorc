@@ -51,7 +51,9 @@ fn permission_or_unavailable(error: &str) -> DeviceStatus {
 mod macos {
     use super::*;
     use block2::RcBlock;
-    use objc2_core_graphics::{CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayMode};
+    use objc2_core_graphics::{
+        CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayMode, CGPreflightScreenCaptureAccess,
+    };
     use objc2_foundation::{NSError, NSString};
     use objc2_screen_capture_kit::{SCShareableContent, SCWindow};
 
@@ -61,6 +63,32 @@ mod macos {
     }
 
     pub fn list_native_capture_sources() -> NativeCaptureSources {
+        if !CGPreflightScreenCaptureAccess() {
+            return NativeCaptureSources {
+                devices: vec![
+                    Device {
+                        id: "screen:screencapturekit-permission".to_string(),
+                        name: "Primary Display".to_string(),
+                        kind: DeviceKind::Screen,
+                        status: DeviceStatus::PermissionRequired,
+                        detail: Some(screen_capture_permission_message()),
+                        width: None,
+                        height: None,
+                    },
+                    Device {
+                        id: "window:screencapturekit-permission".to_string(),
+                        name: "Window Capture".to_string(),
+                        kind: DeviceKind::Window,
+                        status: DeviceStatus::PermissionRequired,
+                        detail: Some(screen_capture_permission_message()),
+                        width: None,
+                        height: None,
+                    },
+                ],
+                warnings: vec![screen_capture_permission_message()],
+            };
+        }
+
         let (tx, rx) = mpsc::channel();
         let handler = RcBlock::new(
             move |content: *mut SCShareableContent, error: *mut NSError| {
@@ -130,7 +158,10 @@ mod macos {
                         name: "Primary Display".to_string(),
                         kind: DeviceKind::Screen,
                         status: DeviceStatus::Unavailable,
-                        detail: Some("ScreenCaptureKit display discovery timed out.".to_string()),
+                        detail: Some(
+                            "ScreenCaptureKit display discovery timed out after Screen Recording permission preflight passed."
+                                .to_string(),
+                        ),
                         width: None,
                         height: None,
                     },
@@ -139,14 +170,24 @@ mod macos {
                         name: "Window Capture".to_string(),
                         kind: DeviceKind::Window,
                         status: DeviceStatus::Unavailable,
-                        detail: Some("ScreenCaptureKit window discovery timed out.".to_string()),
+                        detail: Some(
+                            "ScreenCaptureKit window discovery timed out after Screen Recording permission preflight passed."
+                                .to_string(),
+                        ),
                         width: None,
                         height: None,
                     },
                 ],
-                warnings: vec!["ScreenCaptureKit source discovery timed out.".to_string()],
+                warnings: vec![
+                    "ScreenCaptureKit source discovery timed out after Screen Recording permission preflight passed."
+                        .to_string(),
+                ],
             },
         }
+    }
+
+    fn screen_capture_permission_message() -> String {
+        "macOS Screen Recording permission is not granted for the process launching Videorc. Grant Screen Recording permission, then quit and relaunch Videorc before running native ScreenCaptureKit gates.".to_string()
     }
 
     unsafe fn devices_from_shareable_content(content: &SCShareableContent) -> Vec<Device> {
