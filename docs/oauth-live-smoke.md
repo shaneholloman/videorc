@@ -92,6 +92,16 @@ Exact-match providers (X, Twitch) reject unregistered ports; Google accepts any
 loopback port. If all three candidates are busy the backend logs a warning and falls
 back to its dynamic main port (Google keeps working, X/Twitch will not).
 
+After the fixed callback URLs are registered or otherwise verified for the
+release provider apps, set this smoke flag:
+
+```sh
+VIDEORC_SMOKE_PROVIDER_CALLBACKS_READY=1
+```
+
+The readiness report prints the required callback URLs and the confirmation flag
+only; it does not inspect provider portals or print private account details.
+
 For X only, `VIDEORC_OAUTH_X_CALLBACK=app-protocol` restores the legacy
 `videorc://oauth/callback` redirect. Avoid it: X auto-approves re-authorization
 without a user gesture and browsers block gestureless custom-scheme navigation,
@@ -215,6 +225,7 @@ If native access is not available:
 - Build: packaged macOS release candidate
 - Commit:
 - Runner:
+- Run context: dev/packaged
 - Provider readiness: pass/fail, redacted output attached
 - Provider readiness evidence: paste `pnpm smoke:provider-readiness:evidence` output
 - YouTube: pass/fail, channel, broadcast ID/URL, notes

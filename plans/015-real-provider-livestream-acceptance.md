@@ -18,9 +18,12 @@
 - **Depends on**: Plans 006, 009, and 012
 - **Category**: tests, direction, docs
 - **Planned at**: commit `0ea3c66c`, 2026-06-13
-- **Execution**: IN PROGRESS - Step 1 provider assumptions refreshed from
-  official docs on 2026-06-13. Release readiness and live tests remain blocked
-  on Plans 006/012 and production provider credentials/accounts.
+- **Execution**: IN PROGRESS - Steps 1 and 2 landed on 2026-06-13.
+  Provider assumptions are refreshed, and readiness evidence now reports
+  credential source, required env var names, callback coverage, account flags,
+  X native access, and run context without printing values. Packaged readiness
+  and live tests remain blocked on Plans 006/012 and production provider
+  credentials/accounts.
 
 ## Why this matters
 
@@ -207,7 +210,7 @@ pnpm smoke:provider-readiness
 ## Done criteria
 
 - [x] Provider-doc assumptions are refreshed with a date.
-- [ ] Readiness evidence is redacted and release-grade.
+- [x] Readiness evidence is redacted and release-grade.
 - [ ] Packaged release candidate passes provider readiness or records exact
       blockers.
 - [ ] YouTube and Twitch live tests pass or have explicit non-code blockers.

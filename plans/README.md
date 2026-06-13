@@ -30,7 +30,7 @@ row when done.
 | 012 | Validate a signed macOS release candidate on a clean machine | P0 | L | 004, 006, 008, 009, 011 | IN PROGRESS (2026-06-13; release preflight, signed-artifact validator, workflow validation, and clean-machine checklist/template landed; clean-machine evidence pending) |
 | 013 | Close OBS parity acceptance with evidence and triage | P0 | M | 006 | IN PROGRESS (2026-06-13; side-by-side harness manifest and acceptance-note template landed; automated gates and human visual evidence pending) |
 | 014 | Add guided audio sync calibration and drift gates | P1 | M | 006, 007 | IN PROGRESS (2026-06-13; JSON recommendation, Sources-tab import/apply/reset flow, and drift classification evidence landed; real long-session gate evidence pending) |
-| 015 | Prove real provider livestreaming end to end | P1 | M | 006, 009, 012 | IN PROGRESS (2026-06-13; provider-doc assumptions refreshed, release credentials/packaged provider proof pending) |
+| 015 | Prove real provider livestreaming end to end | P1 | M | 006, 009, 012 | IN PROGRESS (2026-06-13; provider docs and release-grade readiness evidence landed, release credentials/packaged provider proof pending) |
 | 016 | Add the open-core entitlement boundary for premium features | P1 | M | 007, 009 | DONE (2026-06-13; free/premium capability model enforced, renderer wired, premium smokes opt in explicitly) |
 | 017 | Add native system audio capture and a mixed audio graph | P1 | L | 006, 007, 014 | TODO |
 | 018 | Add a redacted support bundle and diagnostics export | P1 | M | 007 | DONE (2026-06-13; backend export, Diagnostics action, verifier, docs, and required gates passed) |
@@ -147,6 +147,9 @@ This track is for public launch confidence, not local dev confidence.
 2. **Plan 015 - real provider livestreaming**
    - Step 1 is done: provider assumptions were refreshed from official
      YouTube, Twitch, and X docs on 2026-06-13.
+   - Step 2 is done: readiness evidence reports credential source, callback
+     coverage, account flags, X native access, and run context without printing
+     secret values.
    - Continue after Plans 006, 009, and 012.
    - Must prove YouTube/Twitch/X eligibility or record exact non-code blockers.
    - Manual RTMP must not masquerade as native provider success.
@@ -307,9 +310,9 @@ AI in backend-enforced code.
   AI are rejected server-side without entitlement; local recording stays free.
 - **P5-S4 Renderer states and smokes - DONE**: Plan 016 Steps 4 and 5. UI reads
   the backend model; streaming smokes opt into developer premium explicitly.
-- **P5-S5 Provider live acceptance - IN PROGRESS**: Plan 015 Step 1 is done.
-  Continue after Plans 006, 009, and 012. Prove YouTube/Twitch and any eligible
-  X native path in a packaged app, or record exact non-code blockers.
+- **P5-S5 Provider live acceptance - IN PROGRESS**: Plan 015 Steps 1 and 2 are
+  done. Continue after Plans 006, 009, and 012. Prove YouTube/Twitch and any
+  eligible X native path in a packaged app, or record exact non-code blockers.
 
 Do not build payment/licensing infrastructure in this phase. The boundary must
 exist first; billing can replace the local entitlement provider later.
