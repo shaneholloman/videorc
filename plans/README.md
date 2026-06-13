@@ -34,7 +34,7 @@ row when done.
 | 016 | Add the open-core entitlement boundary for premium features | P1 | M | 007, 009 | DONE (2026-06-13; free/premium capability model enforced, renderer wired, premium smokes opt in explicitly) |
 | 017 | Add native system audio capture and a mixed audio graph | P1 | L | 006, 007, 014 | TODO |
 | 018 | Add a redacted support bundle and diagnostics export | P1 | M | 007 | DONE (2026-06-13; backend export, Diagnostics action, verifier, docs, and required gates passed) |
-| 019 | Finish Windows v1 capture and package acceptance | P2 | L | 001, 002, 003, 006, 012 | TODO |
+| 019 | Finish Windows v1 capture and package acceptance | P2 | L | 001, 002, 003, 006, 012 | IN PROGRESS (2026-06-13; Windows status reconciled, real Windows gate/capture/signing evidence pending) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).
@@ -154,6 +154,9 @@ This track is for public launch confidence, not local dev confidence.
 Run after macOS v1 stabilization unless business priority changes.
 
 1. **Plan 019 - Windows v1 capture/package acceptance**
+   - Step 1 is done: `docs/windows-port-plan.md` now separates completed
+     packaging/chrome/seam work from missing Windows capture/package/signing
+     acceptance.
    - Packaging scaffolds are done; capture parity is not.
    - Needs a Windows 11 x64 box and dated recording evidence.
 
@@ -329,8 +332,9 @@ the sync story is measured and stable.
 Goal: avoid confusing "packages on Windows" with "works like a product on
 Windows."
 
-- **P7-S1 Reconcile Windows docs**: Execute Plan 019 Step 1. Mark completed
-  Windows package/seam slices and leave capture acceptance explicit.
+- **P7-S1 Reconcile Windows docs - DONE**: Plan 019 Step 1. Completed
+  Windows package/seam slices are marked, and missing capture/package/signing
+  acceptance remains explicit.
 - **P7-S2 Windows gate script**: Execute Plan 019 Step 2. Add a Windows-local
   gate separate from macOS gates.
 - **P7-S3 Windows capture MVP**: Execute Plan 019 Step 3. Implement source,

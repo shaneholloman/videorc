@@ -18,6 +18,8 @@
 - **Depends on**: Plans 001, 002, 003, 006, and 012
 - **Category**: migration, tests, direction
 - **Planned at**: commit `0ea3c66c`, 2026-06-13
+- **Execution**: IN PROGRESS - Step 1 status reconciliation landed on
+  2026-06-13; Windows box gates and capture acceptance remain pending.
 
 ## Why this matters
 
@@ -193,7 +195,7 @@ Do not implement paid signing in this plan unless credentials are available.
 
 ## Done criteria
 
-- [ ] Windows plan status is current.
+- [x] Windows plan status is current.
 - [ ] `smoke:local-gates:windows` exists.
 - [ ] Windows package builds on a Windows 11 box.
 - [ ] Packaged Windows app records test pattern and at least one real source

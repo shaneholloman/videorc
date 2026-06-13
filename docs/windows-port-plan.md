@@ -4,6 +4,35 @@ Goal: ship a Windows version of Videorc that hits the project's real bar — a
 smooth preview and a correct recording (docs/, memory: OBS parity is dropped).
 Dark-glass UI carries over; macOS-only niceties degrade gracefully.
 
+## Current status (reconciled 2026-06-13)
+
+This plan is still a follow-through track, not a claim that Windows is ready.
+The completed work is packaging and platform-seam preparation:
+
+- **Packaging scaffold is landed.** `package:desktop:windows`,
+  `dist:desktop:windows`, `ffmpeg:fetch:windows`, and
+  `package:preflight:windows` exist; electron-builder has a Windows target,
+  Windows-specific resources, and the generated `.ico` app icon. Evidence:
+  commits `e9383bae` and `f0b88e5c`. The remaining gate is an on-box
+  `pnpm package:desktop:windows` run on Windows 11 x64.
+- **Window chrome is platform-gated.** macOS vibrancy, traffic lights, hidden
+  inset titlebar, and wallpaper fetch stay mac-only; Windows currently uses a
+  normal native frame and themed base. Evidence: commit `c2cc42b9`. Dragging
+  the preview window and toggling theme still need Windows-box verification.
+- **Capture-input and FIFO seams are tested.** `capture_input.rs` and
+  `fifo.rs` now isolate the platform arms before Windows ddagrab/dshow/named
+  pipe work lands. Evidence: commits `4f0c82e6`, `d5a478d5`, and `a8417a1c`.
+- **Windows capture is not done.** There is no dated Windows recording
+  artifact for display, camera, microphone, streaming, or packaged cleanup.
+  Phase 2 remains the product proof.
+- **Windows release is not done.** Signing is undecided
+  (internal unsigned vs Azure Trusted Signing vs Authenticode), and no
+  clean-machine Windows acceptance note exists.
+- **Mac media stabilization still constrains this track.** Plan 006 remains
+  blocked locally by source/hardware and ScreenCaptureKit start evidence, so
+  Windows v1 capture should not be marketed as parity work until the accepted
+  macOS split-output path is stable or the priority is explicitly changed.
+
 ## Where we stand (audited 2026-06-12)
 
 The codebase is in better shape for this than expected. The platform seams
