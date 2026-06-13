@@ -1188,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn entitlement_guard_blocks_cloud_ai_in_free_mode() {
+    fn entitlement_guard_blocks_cloud_ai_in_basic_mode() {
         let snapshot = entitlements::entitlements_from_env_value(None);
         let error = validate_cloud_ai_entitlement(&snapshot)
             .expect_err("cloud AI should require premium entitlement");

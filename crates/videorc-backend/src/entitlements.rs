@@ -1,13 +1,29 @@
 use anyhow::{Result, bail};
 
 use crate::protocol::{
-    EntitlementCapability, EntitlementSource, EntitlementState, EntitlementTier,
-    EntitlementsSnapshot, FeatureId,
+    EntitlementCapability, EntitlementLimits, EntitlementSource, EntitlementState, EntitlementTier,
+    EntitlementsSnapshot, FeatureId, RecordingEntitlementLimits, StreamingEntitlementLimits,
 };
 
 pub const PREMIUM_FEATURES_ENV_VAR: &str = "VIDEORC_PREMIUM_FEATURES";
 
-const LIVESTREAMING_DISABLED_REASON: &str = "Livestreaming is a Videorc Premium feature. Set VIDEORC_PREMIUM_FEATURES=1 for local developer testing.";
+const ENTITLEMENT_SCHEMA_VERSION: u32 = 1;
+const BASIC_MAX_WIDTH: u32 = 1920;
+const BASIC_MAX_HEIGHT: u32 = 1080;
+const BASIC_MAX_FPS: u32 = 30;
+const BASIC_STREAMING_MAX_BITRATE_KBPS: u32 = 6000;
+const BASIC_STREAMING_MAX_DESTINATIONS: u32 = 1;
+const PREMIUM_RECORDING_MAX_WIDTH: u32 = 3840;
+const PREMIUM_RECORDING_MAX_HEIGHT: u32 = 2160;
+const PREMIUM_RECORDING_MAX_FPS: u32 = 30;
+const PREMIUM_STREAMING_MAX_WIDTH: u32 = 1920;
+const PREMIUM_STREAMING_MAX_HEIGHT: u32 = 1080;
+const PREMIUM_STREAMING_MAX_FPS: u32 = 30;
+const PREMIUM_STREAMING_MAX_BITRATE_KBPS: u32 = 6000;
+const PREMIUM_STREAMING_MAX_DESTINATIONS: u32 = 3;
+
+const MULTISTREAMING_DISABLED_REASON: &str =
+    "Multistreaming requires Videorc Premium. Basic can stream to one destination at HD.";
 const CLOUD_AI_DISABLED_REASON: &str = "Cloud AI is a Videorc Premium feature. Set VIDEORC_PREMIUM_FEATURES=1 for local developer testing.";
 const DEVELOPER_OVERRIDE_REASON: &str = "Enabled by VIDEORC_PREMIUM_FEATURES=1.";
 
@@ -18,31 +34,16 @@ pub fn current_entitlements() -> EntitlementsSnapshot {
 
 pub fn entitlements_from_env_value(value: Option<&str>) -> EntitlementsSnapshot {
     if premium_override_enabled(value) {
-        return EntitlementsSnapshot {
-            tier: EntitlementTier::Developer,
-            source: EntitlementSource::EnvOverride,
-            capabilities: vec![
-                EntitlementCapability {
-                    feature_id: FeatureId::LocalRecording,
-                    state: EntitlementState::Enabled,
-                    reason: None,
-                },
-                EntitlementCapability {
-                    feature_id: FeatureId::Livestreaming,
-                    state: EntitlementState::DeveloperOverride,
-                    reason: Some(DEVELOPER_OVERRIDE_REASON.to_string()),
-                },
-                EntitlementCapability {
-                    feature_id: FeatureId::CloudAi,
-                    state: EntitlementState::DeveloperOverride,
-                    reason: Some(DEVELOPER_OVERRIDE_REASON.to_string()),
-                },
-            ],
-        };
+        return developer_entitlements();
     }
 
+    basic_entitlements()
+}
+
+pub fn basic_entitlements() -> EntitlementsSnapshot {
     EntitlementsSnapshot {
-        tier: EntitlementTier::Free,
+        schema_version: ENTITLEMENT_SCHEMA_VERSION,
+        tier: EntitlementTier::Basic,
         source: EntitlementSource::LocalDefault,
         capabilities: vec![
             EntitlementCapability {
@@ -52,8 +53,13 @@ pub fn entitlements_from_env_value(value: Option<&str>) -> EntitlementsSnapshot 
             },
             EntitlementCapability {
                 feature_id: FeatureId::Livestreaming,
+                state: EntitlementState::Enabled,
+                reason: None,
+            },
+            EntitlementCapability {
+                feature_id: FeatureId::Multistreaming,
                 state: EntitlementState::Disabled,
-                reason: Some(LIVESTREAMING_DISABLED_REASON.to_string()),
+                reason: Some(MULTISTREAMING_DISABLED_REASON.to_string()),
             },
             EntitlementCapability {
                 feature_id: FeatureId::CloudAi,
@@ -61,6 +67,86 @@ pub fn entitlements_from_env_value(value: Option<&str>) -> EntitlementsSnapshot 
                 reason: Some(CLOUD_AI_DISABLED_REASON.to_string()),
             },
         ],
+        limits: basic_limits(),
+        checked_at: None,
+        expires_at: None,
+    }
+}
+
+pub fn premium_entitlements(source: EntitlementSource) -> EntitlementsSnapshot {
+    EntitlementsSnapshot {
+        schema_version: ENTITLEMENT_SCHEMA_VERSION,
+        tier: EntitlementTier::Premium,
+        source,
+        capabilities: enabled_capabilities(EntitlementState::Enabled, None),
+        limits: premium_limits(),
+        checked_at: None,
+        expires_at: None,
+    }
+}
+
+fn developer_entitlements() -> EntitlementsSnapshot {
+    let mut snapshot = premium_entitlements(EntitlementSource::EnvOverride);
+    snapshot.tier = EntitlementTier::Developer;
+    for capability in &mut snapshot.capabilities {
+        capability.state = EntitlementState::DeveloperOverride;
+        capability.reason = Some(DEVELOPER_OVERRIDE_REASON.to_string());
+    }
+    snapshot
+}
+
+fn enabled_capabilities(
+    state: EntitlementState,
+    reason: Option<&str>,
+) -> Vec<EntitlementCapability> {
+    [
+        FeatureId::LocalRecording,
+        FeatureId::Livestreaming,
+        FeatureId::Multistreaming,
+        FeatureId::CloudAi,
+    ]
+    .into_iter()
+    .map(|feature_id| EntitlementCapability {
+        feature_id,
+        state,
+        reason: reason.map(str::to_string),
+    })
+    .collect()
+}
+
+fn basic_limits() -> EntitlementLimits {
+    EntitlementLimits {
+        recording: RecordingEntitlementLimits {
+            max_width: BASIC_MAX_WIDTH,
+            max_height: BASIC_MAX_HEIGHT,
+            max_fps: BASIC_MAX_FPS,
+            max_bitrate_kbps: None,
+        },
+        streaming: StreamingEntitlementLimits {
+            max_width: BASIC_MAX_WIDTH,
+            max_height: BASIC_MAX_HEIGHT,
+            max_fps: BASIC_MAX_FPS,
+            max_bitrate_kbps: BASIC_STREAMING_MAX_BITRATE_KBPS,
+            max_destinations: BASIC_STREAMING_MAX_DESTINATIONS,
+        },
+    }
+}
+
+fn premium_limits() -> EntitlementLimits {
+    EntitlementLimits {
+        recording: RecordingEntitlementLimits {
+            max_width: PREMIUM_RECORDING_MAX_WIDTH,
+            max_height: PREMIUM_RECORDING_MAX_HEIGHT,
+            max_fps: PREMIUM_RECORDING_MAX_FPS,
+            max_bitrate_kbps: None,
+        },
+        streaming: StreamingEntitlementLimits {
+            max_width: PREMIUM_STREAMING_MAX_WIDTH,
+            max_height: PREMIUM_STREAMING_MAX_HEIGHT,
+            max_fps: PREMIUM_STREAMING_MAX_FPS,
+            max_bitrate_kbps: PREMIUM_STREAMING_MAX_BITRATE_KBPS,
+            max_destinations: PREMIUM_STREAMING_MAX_DESTINATIONS,
+        },
     }
 }
 
@@ -118,14 +204,40 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn entitlement_default_snapshot_keeps_local_recording_free() {
+    fn entitlement_default_snapshot_is_basic_with_hd_recording_and_one_hd_livestream() {
         let snapshot = entitlements_from_env_value(None);
 
-        assert_eq!(snapshot.tier, EntitlementTier::Free);
+        assert_eq!(snapshot.schema_version, ENTITLEMENT_SCHEMA_VERSION);
+        assert_eq!(snapshot.tier, EntitlementTier::Basic);
         assert_eq!(snapshot.source, EntitlementSource::LocalDefault);
         assert!(feature_entitled(&snapshot, FeatureId::LocalRecording));
-        assert!(!feature_entitled(&snapshot, FeatureId::Livestreaming));
+        assert!(feature_entitled(&snapshot, FeatureId::Livestreaming));
+        assert!(!feature_entitled(&snapshot, FeatureId::Multistreaming));
         assert!(!feature_entitled(&snapshot, FeatureId::CloudAi));
+        assert_eq!(snapshot.limits.recording.max_width, 1920);
+        assert_eq!(snapshot.limits.recording.max_height, 1080);
+        assert_eq!(snapshot.limits.recording.max_fps, 30);
+        assert_eq!(snapshot.limits.streaming.max_width, 1920);
+        assert_eq!(snapshot.limits.streaming.max_height, 1080);
+        assert_eq!(snapshot.limits.streaming.max_fps, 30);
+        assert_eq!(snapshot.limits.streaming.max_bitrate_kbps, 6000);
+        assert_eq!(snapshot.limits.streaming.max_destinations, 1);
+    }
+
+    #[test]
+    fn premium_snapshot_enables_multistreaming_and_cloud_ai() {
+        let snapshot = premium_entitlements(EntitlementSource::Creem);
+
+        assert_eq!(snapshot.schema_version, ENTITLEMENT_SCHEMA_VERSION);
+        assert_eq!(snapshot.tier, EntitlementTier::Premium);
+        assert_eq!(snapshot.source, EntitlementSource::Creem);
+        assert!(feature_entitled(&snapshot, FeatureId::LocalRecording));
+        assert!(feature_entitled(&snapshot, FeatureId::Livestreaming));
+        assert!(feature_entitled(&snapshot, FeatureId::Multistreaming));
+        assert!(feature_entitled(&snapshot, FeatureId::CloudAi));
+        assert_eq!(snapshot.limits.recording.max_width, 3840);
+        assert_eq!(snapshot.limits.recording.max_height, 2160);
+        assert_eq!(snapshot.limits.streaming.max_destinations, 3);
     }
 
     #[test]
@@ -135,6 +247,7 @@ mod tests {
         assert_eq!(snapshot.tier, EntitlementTier::Developer);
         assert_eq!(snapshot.source, EntitlementSource::EnvOverride);
         assert!(feature_entitled(&snapshot, FeatureId::Livestreaming));
+        assert!(feature_entitled(&snapshot, FeatureId::Multistreaming));
         assert!(feature_entitled(&snapshot, FeatureId::CloudAi));
         assert_eq!(
             capability(&snapshot, FeatureId::Livestreaming)
@@ -156,7 +269,7 @@ mod tests {
         ));
         assert!(!feature_entitled(
             &entitlements_from_env_value(Some("")),
-            FeatureId::Livestreaming
+            FeatureId::CloudAi
         ));
     }
 
@@ -165,6 +278,7 @@ mod tests {
         let snapshot = entitlements_from_env_value(Some("true"));
         let value = serde_json::to_value(snapshot).unwrap();
 
+        assert_eq!(value["schemaVersion"], json!(1));
         assert_eq!(value["tier"], json!("developer"));
         assert_eq!(value["source"], json!("env-override"));
         assert_eq!(
@@ -175,13 +289,14 @@ mod tests {
             value["capabilities"][1]["state"],
             json!("developer-override")
         );
+        assert_eq!(value["limits"]["streaming"]["maxDestinations"], json!(3));
     }
 
     #[test]
     fn entitlement_require_feature_returns_disabled_reason() {
         let snapshot = entitlements_from_env_value(None);
-        let error = require_feature(&snapshot, FeatureId::Livestreaming)
-            .expect_err("livestreaming should be gated in free mode");
+        let error = require_feature(&snapshot, FeatureId::CloudAi)
+            .expect_err("cloud AI should be gated in Basic mode");
 
         assert!(error.to_string().contains("Premium"));
     }

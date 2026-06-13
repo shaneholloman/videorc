@@ -18,7 +18,7 @@ function validBundle(overrides = {}) {
       secretStoreBackend: 'json-file'
     },
     entitlements: {
-      tier: 'free'
+      tier: 'basic'
     },
     recording: {
       state: 'idle',

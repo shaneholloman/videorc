@@ -5079,9 +5079,37 @@ fn validate_session_entitlements(
 ) -> Result<()> {
     if params.output.stream_enabled {
         entitlements::require_feature(snapshot, FeatureId::Livestreaming)?;
+        let destination_count = ready_stream_destination_count(params)?;
+        if destination_count > snapshot.limits.streaming.max_destinations {
+            if snapshot.limits.streaming.max_destinations <= 1 {
+                entitlements::require_feature(snapshot, FeatureId::Multistreaming)?;
+            }
+            bail!(
+                "This plan allows up to {} livestream destination(s); this session has {} ready destination(s).",
+                snapshot.limits.streaming.max_destinations,
+                destination_count
+            );
+        }
     }
 
     Ok(())
+}
+
+fn ready_stream_destination_count(params: &StartSessionParams) -> Result<u32> {
+    if !params.output.stream_enabled {
+        return Ok(0);
+    }
+
+    let count = match params
+        .streaming
+        .as_ref()
+        .filter(|streaming| streaming.enabled)
+    {
+        Some(streaming) => stream_targets_from_streaming(streaming)?.len(),
+        None => 1,
+    };
+
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 fn validate_outputs(params: &StartSessionParams) -> Result<()> {
@@ -8740,7 +8768,7 @@ mod tests {
     }
 
     #[test]
-    fn entitlement_guard_allows_local_recording_in_free_mode() {
+    fn entitlement_guard_allows_local_recording_in_basic_mode() {
         let params = base_params(true, false);
         let snapshot = entitlements::entitlements_from_env_value(None);
 
@@ -8748,18 +8776,58 @@ mod tests {
     }
 
     #[test]
-    fn entitlement_guard_blocks_livestreaming_in_free_mode() {
+    fn entitlement_guard_allows_one_basic_livestream() {
         let params = base_params(false, true);
         let snapshot = entitlements::entitlements_from_env_value(None);
-        let error = validate_session_entitlements(&params, &snapshot)
-            .expect_err("streaming requires premium entitlement");
 
-        assert!(error.to_string().contains("Premium"));
+        validate_session_entitlements(&params, &snapshot).unwrap();
+    }
+
+    #[test]
+    fn entitlement_guard_blocks_basic_multistreaming() {
+        let mut params = base_params(false, true);
+        params.streaming = Some(streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "youtube-key",
+            ),
+            (
+                StreamPlatform::Twitch,
+                "rtmp://live.twitch.tv/app",
+                "twitch-key",
+            ),
+        ]));
+        let snapshot = entitlements::entitlements_from_env_value(None);
+        let error = validate_session_entitlements(&params, &snapshot)
+            .expect_err("Basic should allow only one ready livestream destination");
+
+        assert!(error.to_string().contains("Multistreaming requires"));
     }
 
     #[test]
     fn entitlement_guard_allows_livestreaming_with_developer_override() {
         let params = base_params(false, true);
+        let snapshot = entitlements::entitlements_from_env_value(Some("1"));
+
+        validate_session_entitlements(&params, &snapshot).unwrap();
+    }
+
+    #[test]
+    fn entitlement_guard_allows_multistreaming_with_developer_override() {
+        let mut params = base_params(false, true);
+        params.streaming = Some(streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "youtube-key",
+            ),
+            (
+                StreamPlatform::Twitch,
+                "rtmp://live.twitch.tv/app",
+                "twitch-key",
+            ),
+        ]));
         let snapshot = entitlements::entitlements_from_env_value(Some("1"));
 
         validate_session_entitlements(&params, &snapshot).unwrap();

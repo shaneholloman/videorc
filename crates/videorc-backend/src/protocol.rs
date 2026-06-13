@@ -75,6 +75,7 @@ pub struct ToolStatus {
 pub enum FeatureId {
     LocalRecording,
     Livestreaming,
+    Multistreaming,
     CloudAi,
 }
 
@@ -89,7 +90,7 @@ pub enum EntitlementState {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum EntitlementTier {
-    Free,
+    Basic,
     Premium,
     Developer,
 }
@@ -99,7 +100,37 @@ pub enum EntitlementTier {
 pub enum EntitlementSource {
     LocalDefault,
     EnvOverride,
+    Creem,
+    Manual,
+    SignedCache,
     FutureLicense,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingEntitlementLimits {
+    pub max_width: u32,
+    pub max_height: u32,
+    pub max_fps: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bitrate_kbps: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamingEntitlementLimits {
+    pub max_width: u32,
+    pub max_height: u32,
+    pub max_fps: u32,
+    pub max_bitrate_kbps: u32,
+    pub max_destinations: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitlementLimits {
+    pub recording: RecordingEntitlementLimits,
+    pub streaming: StreamingEntitlementLimits,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,9 +145,15 @@ pub struct EntitlementCapability {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct EntitlementsSnapshot {
+    pub schema_version: u32,
     pub tier: EntitlementTier,
     pub source: EntitlementSource,
     pub capabilities: Vec<EntitlementCapability>,
+    pub limits: EntitlementLimits,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

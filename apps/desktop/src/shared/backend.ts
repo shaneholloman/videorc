@@ -35,10 +35,16 @@ export interface SupportBundleExportResult {
   redactionSummary: SupportBundleRedactionSummary
 }
 
-export type FeatureId = 'local-recording' | 'livestreaming' | 'cloud-ai'
+export type FeatureId = 'local-recording' | 'livestreaming' | 'multistreaming' | 'cloud-ai'
 export type EntitlementState = 'enabled' | 'disabled' | 'developer-override'
-export type EntitlementTier = 'free' | 'premium' | 'developer'
-export type EntitlementSource = 'local-default' | 'env-override' | 'future-license'
+export type EntitlementTier = 'basic' | 'premium' | 'developer'
+export type EntitlementSource =
+  | 'local-default'
+  | 'env-override'
+  | 'creem'
+  | 'manual'
+  | 'signed-cache'
+  | 'future-license'
 
 export interface EntitlementCapability {
   featureId: FeatureId
@@ -46,10 +52,34 @@ export interface EntitlementCapability {
   reason?: string
 }
 
+export interface RecordingEntitlementLimits {
+  maxWidth: number
+  maxHeight: number
+  maxFps: number
+  maxBitrateKbps?: number
+}
+
+export interface StreamingEntitlementLimits {
+  maxWidth: number
+  maxHeight: number
+  maxFps: number
+  maxBitrateKbps: number
+  maxDestinations: number
+}
+
+export interface EntitlementLimits {
+  recording: RecordingEntitlementLimits
+  streaming: StreamingEntitlementLimits
+}
+
 export interface EntitlementsSnapshot {
+  schemaVersion: number
   tier: EntitlementTier
   source: EntitlementSource
   capabilities: EntitlementCapability[]
+  limits: EntitlementLimits
+  checkedAt?: string
+  expiresAt?: string
 }
 
 export type DeviceKind = 'screen' | 'window' | 'camera' | 'microphone' | 'system-audio'

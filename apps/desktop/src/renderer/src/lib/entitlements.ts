@@ -1,7 +1,8 @@
 import type { EntitlementCapability, EntitlementsSnapshot, FeatureId } from './backend'
 
-export const DEFAULT_FREE_ENTITLEMENTS: EntitlementsSnapshot = {
-  tier: 'free',
+export const DEFAULT_BASIC_ENTITLEMENTS: EntitlementsSnapshot = {
+  schemaVersion: 1,
+  tier: 'basic',
   source: 'local-default',
   capabilities: [
     {
@@ -10,15 +11,33 @@ export const DEFAULT_FREE_ENTITLEMENTS: EntitlementsSnapshot = {
     },
     {
       featureId: 'livestreaming',
+      state: 'enabled'
+    },
+    {
+      featureId: 'multistreaming',
       state: 'disabled',
-      reason: 'Livestreaming is a Videorc Premium feature.'
+      reason: 'Multistreaming requires Videorc Premium. Basic can stream to one destination at HD.'
     },
     {
       featureId: 'cloud-ai',
       state: 'disabled',
       reason: 'Cloud AI is a Videorc Premium feature.'
     }
-  ]
+  ],
+  limits: {
+    recording: {
+      maxWidth: 1920,
+      maxHeight: 1080,
+      maxFps: 30
+    },
+    streaming: {
+      maxWidth: 1920,
+      maxHeight: 1080,
+      maxFps: 30,
+      maxBitrateKbps: 6000,
+      maxDestinations: 1
+    }
+  }
 }
 
 export function entitlementCapability(
@@ -30,7 +49,7 @@ export function entitlementCapability(
     return capability
   }
 
-  const fallback = DEFAULT_FREE_ENTITLEMENTS.capabilities.find(
+  const fallback = DEFAULT_BASIC_ENTITLEMENTS.capabilities.find(
     (item) => item.featureId === featureId
   )
   if (fallback) {
