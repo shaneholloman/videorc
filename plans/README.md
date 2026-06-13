@@ -39,6 +39,175 @@ row when done.
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).
 
+## Master phase roadmap
+
+This roadmap is the execution overlay for the plans above. The individual plan
+files remain the source of truth for exact files, commands, STOP conditions, and
+done criteria.
+
+### Phase 0 - Foundation already landed
+
+Goal: remove known platform/package blockers and establish the native media
+baseline.
+
+- **P0-S1 Windows package scaffold**: Plans 001 and 002 are done. Windows can
+  build/package far enough to keep the future port honest, but Windows capture
+  is not product-ready yet.
+- **P0-S2 Platform seam tests**: Plan 003 is done. Capture-input and FIFO seams
+  have unit coverage before more platform arms are added.
+- **P0-S3 Packaged native preview**: Plan 004 is done. Production preview means
+  detached native CAMetalLayer; JPEG/MJPEG remains fallback/debug only.
+- **P0-S4 VideoToolbox livestream default**: Plan 005 is done. Platform-safe
+  streaming uses VideoToolbox by default instead of the raw-YUV product path.
+
+### Phase 1 - Finish the OBS-class media core
+
+Goal: make the core promise real: smooth 4K local recording, perfect native
+preview, and 1080p livestream output without raw-video fallback.
+
+- **P1-S1 Split-output profile resolver**: Plan 006 Step 1 is done. Recording
+  and stream profiles can resolve separately.
+- **P1-S2 Split-output proof fields**: Plan 006 Step 2 is done. Diagnostics can
+  expose recording/stream output settings and per-output VideoToolbox counters.
+- **P1-S3 Real dual output path**: Finish Plan 006 Step 3. Add separate
+  4K-record and 1080p-stream Metal/VideoToolbox outputs with independent encoded
+  FIFOs or mux legs. STOP if the only stream-scale path is FFmpeg rawvideo.
+- **P1-S4 Validation unlock**: Finish Plan 006 Step 4. Allow 4K recording plus
+  1080p streaming only when the split-output path is actually available; keep
+  stream-only 4K blocked for v1.
+- **P1-S5 Evidence wiring**: Finish Plan 006 Step 5. Scripts must classify
+  `record-stream-split-output` only from proof fields.
+- **P1-S6 Real-source gates**: Finish Plan 006 Step 6. Run 4K A/V and stream
+  A/V gates locally, or record the exact hardware/permission blocker.
+
+Do not move to release signoff until Phase 1 is done or explicitly blocked by
+hardware rather than code.
+
+### Phase 2 - Stabilize the app around the media core
+
+Goal: make future changes safer before adding premium, provider, and support
+surface area.
+
+- **P2-S1 Characterize Studio orchestration**: Execute Plan 007. Extract pure
+  helpers for session params, Go Live decisions, and native preview present
+  policy. No UI redesign.
+- **P2-S2 Dependency/advisory gates**: Execute Plan 008. Clean JS advisories,
+  add Rust advisory checks, and wire CI/release gates.
+- **P2-S3 Secret storage posture**: Execute Plan 009. Make credential storage
+  explicit, migrate legacy renderer-persisted stream keys, and preserve masked
+  hints/delete flows.
+- **P2-S4 Main renderer sandbox**: Execute Plan 011 after packaged preview is
+  stable. Move privileged preload work to main IPC, then enable `sandbox: true`.
+- **P2-S5 Dead-code reconciliation**: Execute Plan 010 only after Plan 006
+  lands, because the fate of the staged live media modules depends on the final
+  split-output architecture.
+
+Plans 007, 008, and 009 can run in parallel if separate executors own them.
+Plan 011 should be isolated because it can break preload/native-preview IPC.
+
+### Phase 3 - Close acceptance, not vibes
+
+Goal: convert "looks good" or "looks bad" into repeatable release evidence.
+
+- **P3-S1 OBS parity harness/evidence**: Execute Plan 013 after Plan 006. Run
+  automated gates first, then human OBS side-by-side visual/currentness checks.
+- **P3-S2 Audio sync calibration**: Execute Plan 014 after Plans 006 and 007,
+  especially if OBS parity or manual testing shows late audio. Add JSON
+  recommendations, UI apply/reset, and drift reporting.
+- **P3-S3 Acceptance decision**: Update the dated acceptance note with PASS,
+  FAIL, or BLOCKED. Failed items must map to owner buckets: preview/compositor,
+  encoder bridge, stream path, audio calibration, or Studio orchestration.
+
+This phase is allowed to fail. A clean FAIL with owner and evidence is better
+than another round of subjective debugging.
+
+### Phase 4 - Release candidate hardening
+
+Goal: prove a creator can install and run the packaged macOS app cleanly.
+
+- **P4-S1 Release preflight**: Execute Plan 012 Step 1. Check signing,
+  notarization, stapler, codesign, spctl, entitlements, and writable outputs
+  without printing secrets.
+- **P4-S2 Artifact validation**: Execute Plan 012 Step 2. Validate signed app
+  and DMG with codesign, stapler, and Gatekeeper.
+- **P4-S3 Workflow/docs wiring**: Execute Plan 012 Steps 3 and 4. Put the same
+  release checks in workflow/docs.
+- **P4-S4 Clean-machine smoke**: Execute Plan 012 Step 5. Packaged backend,
+  bundled FFmpeg, native CAMetalLayer preview, permissions, and one real-source
+  recording must all have dated evidence.
+
+Plan 012 depends on Plans 006, 008, 009, and 011 because release validation
+should test the real media path, real credential posture, advisory gates, and
+sandboxed renderer.
+
+### Phase 5 - Open-core product boundary and real livestreaming
+
+Goal: ship free local recording honestly, and gate premium livestreaming/cloud
+AI in backend-enforced code.
+
+- **P5-S1 Capability matrix**: Execute Plan 016 Step 1. Free/core remains local
+  recording, native preview, source/layout controls, and library. Premium is
+  livestreaming and cloud AI.
+- **P5-S2 Entitlement protocol**: Execute Plan 016 Step 2. Backend exposes
+  deterministic free/premium/developer capabilities.
+- **P5-S3 Backend enforcement**: Execute Plan 016 Step 3. Streaming and cloud
+  AI are rejected server-side without entitlement; local recording stays free.
+- **P5-S4 Renderer states and smokes**: Execute Plan 016 Steps 4 and 5. UI reads
+  the backend model; streaming/AI smokes opt into developer premium explicitly.
+- **P5-S5 Provider live acceptance**: Execute Plan 015 after Plans 006, 009, and
+  012. Prove YouTube/Twitch and any eligible X native path in a packaged app, or
+  record exact non-code blockers.
+
+Do not build payment/licensing infrastructure in this phase. The boundary must
+exist first; billing can replace the local entitlement provider later.
+
+### Phase 6 - Supportability and creator audio completeness
+
+Goal: make future debugging and creator workflows less dependent on chat logs
+and manual reconstruction.
+
+- **P6-S1 Support bundle**: Execute Plan 018 after Plan 007. Export redacted
+  diagnostics/log/session summaries from the Diagnostics tab, excluding secrets,
+  recordings, DB files, extracted audio, and AI artifact bodies.
+- **P6-S2 Native system audio**: Execute Plan 017 after Plans 006, 007, and 014.
+  Add protocol selection, native mixer, macOS system-audio adapter, recording
+  integration, honest UI state, diagnostics, and manual acceptance.
+
+Support bundle can land before system audio; system audio should not land before
+the sync story is measured and stable.
+
+### Phase 7 - Windows follow-through
+
+Goal: avoid confusing "packages on Windows" with "works like a product on
+Windows."
+
+- **P7-S1 Reconcile Windows docs**: Execute Plan 019 Step 1. Mark completed
+  Windows package/seam slices and leave capture acceptance explicit.
+- **P7-S2 Windows gate script**: Execute Plan 019 Step 2. Add a Windows-local
+  gate separate from macOS gates.
+- **P7-S3 Windows capture MVP**: Execute Plan 019 Step 3. Implement source,
+  camera, mic, and capture-input seams without forking recording policy.
+- **P7-S4 Windows package recording acceptance**: Execute Plan 019 Step 4 on a
+  Windows 11 x64 box with evidence.
+- **P7-S5 Signing decision**: Execute Plan 019 Step 5. Document unsigned
+  internal vs Authenticode/Trusted Signing path.
+
+Windows remains after macOS v1 stabilization unless the product priority
+changes.
+
+## Global execution rules
+
+- Finish and verify one slice before relaxing validation or claiming a mode is
+  production-ready.
+- Do not silently downgrade native preview. CAMetalLayer is production; JPEG
+  polling is fallback/debug.
+- Do not claim split output unless diagnostics prove separate VideoToolbox
+  outputs and zero raw-video copied frames.
+- Do not stage user-local files, secrets, recordings, generated media, or
+  scratch probes.
+- For each code slice, update the relevant row in this file and run the smallest
+  focused gate first, then the broader gate required by the plan.
+
 ## Dependency notes
 
 - The immediate media/release blockers are 004 and 005. They can run in
