@@ -47,7 +47,9 @@ export function DiagnosticsTab(): ReactElement {
     previewScreenStatus,
     previewSurfaceStatus,
     nativePreviewSurfaceEnabled,
-    captureConfig
+    captureConfig,
+    exportSupportBundle,
+    supportBundleExportPending
   } = useStudio()
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
   const activeSession =
@@ -501,6 +503,23 @@ export function DiagnosticsTab(): ReactElement {
       </div>
 
       <div className="flex flex-col gap-4">
+        <PanelSection icon={TerminalWindow} title="Support bundle">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Redacted diagnostics JSON</p>
+              <p className="truncate text-xs text-muted-foreground">Logs, health, sessions.</p>
+            </div>
+            <Button
+              size="sm"
+              disabled={supportBundleExportPending}
+              onClick={() => void exportSupportBundle()}
+            >
+              <ArrowSquareOut className="mr-2 size-4" />
+              {supportBundleExportPending ? 'Exporting' : 'Export'}
+            </Button>
+          </div>
+        </PanelSection>
+
         <PanelSection icon={WarningCircle} title="Actionable warnings">
           {actionableEvents.length ? (
             <div className="flex flex-col gap-2">

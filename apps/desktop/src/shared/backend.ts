@@ -20,6 +20,21 @@ export interface ToolStatus {
   message?: string
 }
 
+export interface SupportBundleRedactionSummary {
+  secretValues: number
+  databasePaths: number
+  mediaPaths: number
+  homePaths: number
+  urlCredentials: number
+  aiArtifactBodies: number
+}
+
+export interface SupportBundleExportResult {
+  path: string
+  includedSections: string[]
+  redactionSummary: SupportBundleRedactionSummary
+}
+
 export type FeatureId = 'local-recording' | 'livestreaming' | 'cloud-ai'
 export type EntitlementState = 'enabled' | 'disabled' | 'developer-override'
 export type EntitlementTier = 'free' | 'premium' | 'developer'
@@ -1714,6 +1729,7 @@ export interface VideorcApi {
   getNativePreviewSurfaceStatus: () => Promise<PreviewSurfaceStatus>
   openSystemPermissions: (pane?: SystemPermissionPane) => Promise<void>
   revealPermissionTarget: () => Promise<void>
+  revealPath: (path: string) => Promise<void>
   onOAuthCallbackUrl: (callback: (callbackUrl: string) => void) => () => void
   /**
    * Page-navigation shortcuts (⌘1–⌘9, ⌘,) routed from the main process. They

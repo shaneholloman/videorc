@@ -3839,6 +3839,15 @@ async function revealPermissionTarget(): Promise<void> {
   shell.showItemInFolder(permissionTargetPath(process.execPath))
 }
 
+async function revealPath(targetPath: string): Promise<void> {
+  const trimmed = typeof targetPath === 'string' ? targetPath.trim() : ''
+  if (!trimmed) {
+    throw new Error('Reveal path is empty.')
+  }
+
+  shell.showItemInFolder(resolve(trimmed))
+}
+
 async function pickScreenImage(): Promise<string | null> {
   const options: Electron.OpenDialogOptions = {
     title: 'Choose Screen image',
@@ -3912,6 +3921,7 @@ app.whenReady().then(() => {
     openSystemPermissions(pane)
   )
   ipcMain.handle('system:reveal-permission-target', () => revealPermissionTarget())
+  ipcMain.handle('system:reveal-path', (_event, targetPath: string) => revealPath(targetPath))
   ipcMain.handle('screens:pick-image', () => pickScreenImage())
   ipcMain.handle('oauth:open-url', (_event, authUrl: string) => openOAuthUrl(authUrl))
   ipcMain.handle('oauth:callback-redirect-uri', (_event, platform?: string) =>

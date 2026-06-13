@@ -105,6 +105,7 @@ import type {
   StreamTargetRuntime,
   StreamTargetSettings,
   StreamTargetsSnapshot,
+  SupportBundleExportResult,
   SystemPermissionPane,
   TwitchCategory,
   VideoPreset,
@@ -261,6 +262,7 @@ export type StudioContextValue = {
   stopRequestPending: boolean
   screenImportPending: boolean
   streamMetadataSavePending: boolean
+  supportBundleExportPending: boolean
   // settings + capture config
   settings: SettingsState
   setSettings: Dispatch<SetStateAction<SettingsState>>
@@ -330,6 +332,7 @@ export type StudioContextValue = {
   openSystemPermission: (pane: SystemPermissionPane) => Promise<void>
   openPreviewPermissions: () => Promise<void>
   revealPermissionTarget: () => Promise<void>
+  exportSupportBundle: () => Promise<void>
   registerPreviewSurfaceResize: () => void
   syncNativePreviewSurfaceBounds: (bounds: PreviewSurfaceBounds) => Promise<void>
   sampleAudioMeter: () => Promise<void>
@@ -591,6 +594,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [stopRequestPending, setStopRequestPending] = useState(false)
   const [screenImportPending, setScreenImportPending] = useState(false)
   const [streamMetadataSavePending, setStreamMetadataSavePending] = useState(false)
+  const [supportBundleExportPending, setSupportBundleExportPending] = useState(false)
   const [settings, setSettings] = useState<SettingsState>(() =>
     loadJson(STORAGE_KEYS.settings, defaultSettings)
   )
@@ -2742,6 +2746,41 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [reportError])
 
+  const exportSupportBundle = useCallback(async () => {
+    if (!client) {
+      toast.error('Backend socket is not connected.')
+      return
+    }
+    if (supportBundleExportPending) {
+      return
+    }
+
+    try {
+      setLastError(null)
+      setSupportBundleExportPending(true)
+      const result = await client.request<SupportBundleExportResult>(
+        'diagnostics.supportBundle.export',
+        {
+          ffmpegPath: settings.ffmpegPath.trim() || undefined
+        }
+      )
+      const reveal = window.videorc?.revealPath
+      toast.success('Support bundle exported.', {
+        description: result.path,
+        action: reveal
+          ? {
+              label: 'Reveal',
+              onClick: () => void reveal(result.path)
+            }
+          : undefined
+      })
+    } catch (error) {
+      reportError(error)
+    } finally {
+      setSupportBundleExportPending(false)
+    }
+  }, [client, reportError, settings.ffmpegPath, supportBundleExportPending])
+
   const sampleAudioMeter = useCallback(async () => {
     if (!client) {
       return
@@ -4144,6 +4183,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       stopRequestPending,
       screenImportPending,
       streamMetadataSavePending,
+      supportBundleExportPending,
       settings,
       setSettings,
       captureConfig,
@@ -4195,6 +4235,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       openSystemPermission,
       openPreviewPermissions,
       revealPermissionTarget,
+      exportSupportBundle,
       registerPreviewSurfaceResize,
       syncNativePreviewSurfaceBounds,
       sampleAudioMeter,
@@ -4279,6 +4320,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       stopRequestPending,
       screenImportPending,
       streamMetadataSavePending,
+      supportBundleExportPending,
       settings,
       setSettings,
       captureConfig,
@@ -4330,6 +4372,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       openSystemPermission,
       openPreviewPermissions,
       revealPermissionTarget,
+      exportSupportBundle,
       registerPreviewSurfaceResize,
       syncNativePreviewSurfaceBounds,
       sampleAudioMeter,

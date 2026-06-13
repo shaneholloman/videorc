@@ -52,6 +52,7 @@ const api: VideorcApi = {
   getNativePreviewSurfaceStatus: () => ipcRenderer.invoke('preview-surface:status'),
   openSystemPermissions: (pane) => ipcRenderer.invoke('system:open-permissions', pane),
   revealPermissionTarget: () => ipcRenderer.invoke('system:reveal-permission-target'),
+  revealPath: (path) => ipcRenderer.invoke('system:reveal-path', path),
   onOAuthCallbackUrl: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, callbackUrl: string): void => {
       callback(callbackUrl)
