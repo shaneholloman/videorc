@@ -2,12 +2,14 @@ import {
   app,
   BrowserWindow,
   contentTracing,
+  desktopCapturer,
   dialog,
   ipcMain,
   nativeImage,
   nativeTheme,
   screen,
   shell,
+  systemPreferences,
   type BrowserWindowConstructorOptions,
   type NativeImage
 } from 'electron'
@@ -2976,6 +2978,39 @@ function logBackend(level: BackendLogEvent['level'], message: string): void {
   logger(`[backend:${level}] ${message}`)
 }
 
+async function primeScreenCapturePermission(): Promise<void> {
+  if (!isMac) {
+    return
+  }
+
+  try {
+    const status = systemPreferences.getMediaAccessStatus('screen')
+    if (status === 'granted') {
+      return
+    }
+
+    if (status === 'not-determined') {
+      await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 0, height: 0 }
+      })
+      const nextStatus = systemPreferences.getMediaAccessStatus('screen')
+      logBackend(
+        nextStatus === 'granted' ? 'info' : 'warn',
+        `Screen Recording permission request resolved as ${nextStatus} for ${runtimeInfo().permissionTargetName}.`
+      )
+      return
+    }
+
+    logBackend(
+      'warn',
+      `Screen Recording permission is ${status} for ${runtimeInfo().permissionTargetName}; open Screen Recording settings, grant access, then quit and relaunch Videorc.`
+    )
+  } catch (error) {
+    logBackend('warn', `Could not request Screen Recording permission: ${errorMessage(error)}`)
+  }
+}
+
 // Diagnostic tallies for probes: how chatty is main->renderer IPC really?
 const sendToWindowsCounts = new Map<string, number>()
 
@@ -3949,7 +3984,7 @@ app.on('open-url', (event, url) => {
   dispatchOAuthCallbackUrl(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) {
     return
   }
@@ -4037,9 +4072,10 @@ app.whenReady().then(() => {
   )
   ipcMain.handle('preview-surface:status', () => nativePreviewSurfaceStatus)
 
-  setDockIcon()
-  startBackend()
   createWindow()
+  setDockIcon()
+  await primeScreenCapturePermission()
+  startBackend()
   startSmokePreviewMotionServer()
 
   app.on('activate', () => {

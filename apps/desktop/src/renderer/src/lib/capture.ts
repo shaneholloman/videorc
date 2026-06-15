@@ -1024,10 +1024,33 @@ function isNativeWindowSourceId(sourceId: string | undefined): boolean {
   return sourceId?.startsWith('window:screencapturekit:') === true
 }
 
+const SCREEN_CAPTUREKIT_STATUS_IDS = new Set([
+  'screen:screencapturekit-permission',
+  'screen:screencapturekit-unavailable',
+  'screen:screencapturekit-timeout',
+  'screen:screencapturekit-missing'
+])
+
+const WINDOW_CAPTUREKIT_STATUS_IDS = new Set([
+  'window:screencapturekit-permission',
+  'window:screencapturekit-unavailable',
+  'window:screencapturekit-timeout',
+  'window:screencapturekit-missing'
+])
+
 export function isNativeCaptureDevice(device: Device): boolean {
   return (
     (device.kind === 'screen' && isNativeScreenSourceId(device.id)) ||
     (device.kind === 'window' && isNativeWindowSourceId(device.id))
+  )
+}
+
+export function isScreenCaptureKitCaptureDevice(device: Device): boolean {
+  return (
+    (device.kind === 'screen' &&
+      (isNativeScreenSourceId(device.id) || SCREEN_CAPTUREKIT_STATUS_IDS.has(device.id))) ||
+    (device.kind === 'window' &&
+      (isNativeWindowSourceId(device.id) || WINDOW_CAPTUREKIT_STATUS_IDS.has(device.id)))
   )
 }
 

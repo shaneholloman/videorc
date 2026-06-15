@@ -16,7 +16,7 @@
 // Microphone permissions granted to the dev app. This records your screen for the
 // configured duration — run it intentionally.
 //
-//   node scripts/real-source-baseline-app.mjs [--gate]
+//   node scripts/real-source-baseline-app.mjs [--gate|--screen-recording-gate]
 //
 // Env:
 //   VIDEORC_BASELINE_RECORDING_MS   recording length (default 60000)
@@ -36,7 +36,7 @@
 //   VIDEORC_BASELINE_LAYOUT_PRESET  force layout preset; otherwise inferred from selected sources
 //   VIDEORC_SMOKE_FFMPEG_PATH / VIDEORC_SMOKE_FFPROBE_PATH
 
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -53,6 +53,7 @@ import { classifyObsParityEvidence } from './lib/obs-parity-evidence.mjs'
 import { requiredSourceBlocker } from './lib/required-source-blockers.mjs'
 import { pickDevice } from './lib/source-selection.mjs'
 import { evaluateRequired4kSourcePreflight } from './lib/source-preflight.mjs'
+import { evaluateScreenRecordingEvidence } from './lib/real-source-evidence-gates.mjs'
 import {
   claimsNativePreview,
   formatTransportHonesty,
@@ -95,6 +96,7 @@ const config = {
     process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-real-source-baseline-${Date.now()}`)
   ),
   gate: process.argv.includes('--gate'),
+  screenRecordingGate: process.argv.includes('--screen-recording-gate'),
 }
 
 const NATIVE_PREFIX = {
@@ -112,7 +114,7 @@ mkdirSync(config.outputDirectory, { recursive: true })
 let exitCode = 0
 try {
   const verdict = await main()
-  exitCode = config.gate && verdict && !verdict.pass ? 1 : 0
+  exitCode = (config.gate || config.screenRecordingGate) && verdict && !verdict.pass ? 1 : 0
 } catch (error) {
   console.error(`real-source baseline failed: ${error?.message ?? error}`)
   exitCode = 2
@@ -426,6 +428,12 @@ async function main() {
       qualityMode,
       previewSurfaceOutputFailures,
     })
+    const screenRecording = config.screenRecordingGate
+      ? evaluateScreenRecordingEvidence(JSON.parse(readFileSync(evidenceManifestPath, 'utf8')), {
+          checkFiles: true,
+          requireMotion: config.requireMotion,
+        })
+      : null
 
     printSummary(
       report,
@@ -436,9 +444,10 @@ async function main() {
       evidenceManifestPath,
       acceptance,
       ownership,
-      qualityMode
+      qualityMode,
+      screenRecording
     )
-    return acceptance
+    return screenRecording ?? acceptance
   } finally {
     ws.close()
   }
@@ -2095,7 +2104,8 @@ function printSummary(
   evidenceManifestPath,
   acceptance,
   ownership,
-  qualityMode
+  qualityMode,
+  screenRecording
 ) {
   const fmtMs = (value) => typeof value === 'number' && Number.isFinite(value) ? `${value}ms` : 'n/a'
   console.log('')
@@ -2104,6 +2114,10 @@ function printSummary(
     `Acceptance gate: ${acceptance.pass ? 'PASS' : 'FAIL'}` +
       (config.avSyncStimulus ? ' (A/V sync stimulus; preview cadence gate relaxed)' : '')
   )
+  if (screenRecording) {
+    console.log(`Screen recording gate: ${screenRecording.pass ? 'PASS' : 'FAIL'}`)
+    for (const f of screenRecording.failures) console.log(`  ✗ ${f}`)
+  }
   console.log(`Media quality mode: ${qualityMode.mode} (${qualityMode.label})`)
   if (qualityMode.reasons.length) console.log(`Quality evidence: ${qualityMode.reasons.join('; ')}`)
   for (const f of acceptance.failures) console.log(`  ✗ ${f}`)

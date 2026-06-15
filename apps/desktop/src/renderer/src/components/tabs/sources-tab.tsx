@@ -15,7 +15,7 @@ import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { PanelSection } from '@/components/panel-section'
 import { SourceSelect } from '@/components/source-select'
 import { StatusBadge, type StatusTone } from '@/components/status-badge'
-import { Alert, AlertTitle } from '@/components/ui/alert'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -30,7 +30,7 @@ import {
   MICROPHONE_SYNC_OFFSET_MIN_MS,
   applyAudioSyncRecommendation,
   audioSyncCalibrationState,
-  isNativeCaptureDevice,
+  isScreenCaptureKitCaptureDevice,
   normalizeMicrophoneSyncOffsetMs,
   parseAudioSyncRecommendationJson,
   parseMicrophoneSyncOffsetInput,
@@ -121,15 +121,21 @@ export function SourcesTab(): ReactElement {
     sourceDeviceSwitchPending,
     switchSourceDeviceLive,
     previewCameraStatus,
-    previewScreenStatus
+    previewScreenStatus,
+    openPreviewPermissions,
+    revealPermissionTarget,
+    runtimeInfo
   } = useStudio()
 
   const problemDeviceCount = deviceList.devices.filter(
     (device) => device.status !== 'available'
   ).length
-  const captureDevices = deviceList.devices.filter(isNativeCaptureDevice)
+  const captureDevices = deviceList.devices.filter(isScreenCaptureKitCaptureDevice)
   const cameras = deviceList.devices.filter((device) => device.kind === 'camera')
   const microphones = deviceList.devices.filter((device) => device.kind === 'microphone')
+  const hasCapturePermissionRequired = captureDevices.some(
+    (device) => device.status === 'permission-required'
+  )
   const syncOffsetMs = captureConfig.audio.microphoneSyncOffsetMs
   const [syncOffsetDraft, setSyncOffsetDraft] = useState(() => String(syncOffsetMs))
   const [syncRecommendation, setSyncRecommendation] =
@@ -269,6 +275,25 @@ export function SourcesTab(): ReactElement {
             <AlertTitle>{warning}</AlertTitle>
           </Alert>
         ))}
+        {hasCapturePermissionRequired ? (
+          <Alert variant="warning">
+            <Warning weight="fill" />
+            <AlertTitle>
+              Screen Recording permission is required for{' '}
+              {runtimeInfo?.permissionTargetName ?? 'Videorc'}.
+            </AlertTitle>
+            <AlertDescription className="flex flex-wrap gap-2 pt-2">
+              <Button size="sm" variant="outline" onClick={() => void openPreviewPermissions()}>
+                <Monitor data-icon="inline-start" />
+                Open Screen Recording
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => void revealPermissionTarget()}>
+                <UploadSimple data-icon="inline-start" />
+                Show App
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <div className="grid gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <SourceSelect

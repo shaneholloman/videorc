@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { evaluateRealSourceEvidence } from './real-source-evidence-gates.mjs'
+import {
+  evaluateRealSourceEvidence,
+  evaluateScreenRecordingEvidence,
+} from './real-source-evidence-gates.mjs'
 
 const dimensions = (width, height) => ({
   latest: { width, height },
@@ -150,5 +153,74 @@ describe('evaluateRealSourceEvidence', () => {
     assert.equal(verdict.pass, false)
     assert.match(verdict.failures.join(' '), /camera source missing/)
     assert.match(verdict.failures.join(' '), /file does not exist/)
+  })
+})
+
+describe('evaluateScreenRecordingEvidence', () => {
+  it('passes real ScreenCaptureKit screen recordings without requiring OBS-preview acceptance', () => {
+    const manifest = healthyManifest()
+    manifest.request.width = 1920
+    manifest.request.height = 1080
+    manifest.request.bitrateKbps = 6000
+    manifest.request.recordingMs = 8000
+    manifest.request.require4kMediaEvidence = false
+    manifest.result.acceptancePass = false
+    manifest.result.finalFilePass = false
+    manifest.result.mediaQualityMode = 'zero-copy-recording'
+    manifest.sources.screen = { id: 'screen:screencapturekit:1', name: 'Display 1' }
+    manifest.sources.camera = null
+    manifest.sources.microphone = null
+    manifest.diagnostics.previewTransportsObserved = ['electron-proof-surface']
+    manifest.diagnostics.previewSurfaceBacking = 'electron-browser-window'
+    manifest.diagnostics.previewSurfaceBackingsObserved = ['electron-browser-window']
+    manifest.diagnostics.previewSourcePixelsPresent = false
+    manifest.diagnostics.previewFramePollingSuppressed = false
+    manifest.diagnostics.mediaDimensions.requestedOutput = { width: 1920, height: 1080, fps: 30 }
+    manifest.diagnostics.finalFile = {
+      width: 1920,
+      height: 1080,
+      durationSeconds: 8.3,
+      observedFrames: 249,
+      observedFps: 30,
+      longestFreezeMs: 867,
+    }
+    manifest.diagnostics.startup = {
+      metadataWidth: 1920,
+      metadataHeight: 1080,
+      expectedWidth: 1920,
+      expectedHeight: 1080,
+      startupFrameCount: 60,
+      dimensionMismatchCount: 0,
+      previewSizedFrameCount: 0,
+    }
+
+    const verdict = evaluateScreenRecordingEvidence(manifest, {
+      checkFiles: false,
+      requireMotion: true,
+    })
+
+    assert.deepEqual(verdict, { pass: true, failures: [] })
+  })
+
+  it('fails when screen recording blocked before encoding', () => {
+    const manifest = healthyManifest()
+    manifest.result.blockedBeforeEncoding = true
+    manifest.sources.screen = { id: 'screen:screencapturekit:1', name: 'Display 1' }
+
+    const verdict = evaluateScreenRecordingEvidence(manifest, { checkFiles: false })
+
+    assert.equal(verdict.pass, false)
+    assert.match(verdict.failures.join(' '), /blocked before encoding/)
+  })
+
+  it('fails legacy AVFoundation screen sources', () => {
+    const manifest = healthyManifest()
+    manifest.result.mediaQualityMode = 'zero-copy-recording'
+    manifest.sources.screen = { id: 'screen:avfoundation:7', name: 'Capture screen 1' }
+
+    const verdict = evaluateScreenRecordingEvidence(manifest, { checkFiles: false })
+
+    assert.equal(verdict.pass, false)
+    assert.match(verdict.failures.join(' '), /native ScreenCaptureKit screen source/)
   })
 })

@@ -1143,9 +1143,10 @@ mod macos {
 
         unsafe impl NSObjectProtocol for ScreenPreviewDelegate {}
 
+        #[allow(non_snake_case)]
         unsafe impl SCStreamOutput for ScreenPreviewDelegate {
             #[unsafe(method(stream:didOutputSampleBuffer:ofType:))]
-            fn stream_did_output_sample_buffer(
+            unsafe fn stream_didOutputSampleBuffer_ofType(
                 &self,
                 _stream: &SCStream,
                 sample_buffer: &CMSampleBuffer,
@@ -1158,9 +1159,10 @@ mod macos {
             }
         }
 
+        #[allow(non_snake_case)]
         unsafe impl SCStreamDelegate for ScreenPreviewDelegate {
             #[unsafe(method(stream:didStopWithError:))]
-            fn stream_did_stop_with_error(&self, _stream: &SCStream, error: &NSError) {
+            unsafe fn stream_didStopWithError(&self, _stream: &SCStream, error: &NSError) {
                 let description = error.localizedDescription();
                 let mut guard = self
                     .ivars()
@@ -1222,6 +1224,7 @@ mod macos {
         _filter: Retained<SCContentFilter>,
         _configuration: Retained<SCStreamConfiguration>,
         _queue: dispatch2::DispatchRetained<DispatchQueue>,
+        _start_handler: RcBlock<dyn Fn(*mut NSError)>,
         native_width: u32,
         native_height: u32,
         requested_width: u32,
@@ -1254,7 +1257,7 @@ mod macos {
         );
         let stream_config = unsafe { SCStreamConfiguration::new() };
         configure_stream(&stream_config, &capture_request);
-        let delegate = ScreenPreviewDelegate::new(shared);
+        let delegate = ScreenPreviewDelegate::new(Arc::clone(&shared));
         let delegate_protocol = ProtocolObject::from_ref(&*delegate);
         let stream = unsafe {
             SCStream::initWithFilter_configuration_delegate(
@@ -1280,7 +1283,7 @@ mod macos {
                     ))
                 })?;
         }
-        start_capture(&stream)?;
+        let start_handler = start_capture(&stream, &shared);
 
         let selected_fps = f64::from(capture_request.requested_fps);
         let message = Some(format!(
@@ -1312,6 +1315,7 @@ mod macos {
             _filter: selected.filter,
             _configuration: stream_config,
             _queue: queue,
+            _start_handler: start_handler,
             native_width: capture_request.native_width,
             native_height: capture_request.native_height,
             requested_width: capture_request.requested_width,
@@ -1472,33 +1476,29 @@ mod macos {
         }
     }
 
-    fn start_capture(stream: &SCStream) -> Result<(), NativeScreenStartup> {
-        let (tx, rx) = std_mpsc::channel();
+    fn start_capture(
+        stream: &SCStream,
+        shared: &Arc<StdMutex<PreviewScreenShared>>,
+    ) -> RcBlock<dyn Fn(*mut NSError)> {
+        let shared = Arc::clone(shared);
         let handler = RcBlock::new(move |error: *mut NSError| {
-            let _ = tx.send(if error.is_null() {
-                Ok(())
-            } else {
-                Err(error_description(error))
-            });
+            if error.is_null() {
+                return;
+            }
+
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.last_error = Some(format!(
+                "ScreenCaptureKit stream failed to start: {}",
+                error_description(error)
+            ));
         });
 
         unsafe {
             stream.startCaptureWithCompletionHandler(Some(&handler));
         }
-
-        match rx.recv_timeout(SCREEN_CAPTUREKIT_STREAM_START_TIMEOUT) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) if is_permission_error(&error) => {
-                Err(NativeScreenStartup::PermissionNeeded(error))
-            }
-            Ok(Err(error)) => Err(NativeScreenStartup::Failed(format!(
-                "ScreenCaptureKit stream failed to start: {error}"
-            ))),
-            Err(_) => Err(NativeScreenStartup::Failed(format!(
-                "ScreenCaptureKit stream start timed out after {:.0}s after Screen Recording permission preflight passed.",
-                SCREEN_CAPTUREKIT_STREAM_START_TIMEOUT.as_secs_f64()
-            ))),
-        }
+        handler
     }
 
     fn stop_stream(stream: &SCStream) {

@@ -11,6 +11,8 @@ import {
   legacyStreamKeyMigrationCandidates,
   hasSelectedCameraSource,
   hasSelectedScreenSource,
+  isNativeCaptureDevice,
+  isScreenCaptureKitCaptureDevice,
   layoutPresetNeedsCamera,
   layoutPresetNeedsScreen,
   normalizeAudioSettings,
@@ -109,6 +111,79 @@ describe('reconcileSourceSelection', () => {
     expect(sourceSelectionChangeMessages(remembered, next)).toEqual([
       'Capture source "Capture screen 1" is unavailable, so it was cleared.'
     ])
+  })
+
+  it('does not select permission placeholders as renderable capture sources', () => {
+    const remembered: SourceSelection = {
+      screenId: 'screen:avfoundation:7',
+      screenName: 'Capture screen 1'
+    }
+    const devices: Device[] = [
+      {
+        id: 'screen:screencapturekit-permission',
+        name: 'Primary Display',
+        kind: 'screen',
+        status: 'permission-required'
+      },
+      {
+        id: 'window:screencapturekit-permission',
+        name: 'Window Capture',
+        kind: 'window',
+        status: 'permission-required'
+      },
+      {
+        id: 'screen:avfoundation:7',
+        name: 'Capture screen 1',
+        kind: 'screen',
+        status: 'available'
+      }
+    ]
+
+    const next = reconcileSourceSelection(remembered, devices)
+
+    expect(next.screenId).toBeUndefined()
+    expect(next.screenName).toBeUndefined()
+    expect(next.windowId).toBeUndefined()
+    expect(next.windowName).toBeUndefined()
+  })
+})
+
+describe('ScreenCaptureKit capture device filtering', () => {
+  it('shows native status rows in the source picker but does not treat them as selectable native sources', () => {
+    const permissionDisplay: Device = {
+      id: 'screen:screencapturekit-permission',
+      name: 'Primary Display',
+      kind: 'screen',
+      status: 'permission-required'
+    }
+    const permissionWindow: Device = {
+      id: 'window:screencapturekit-permission',
+      name: 'Window Capture',
+      kind: 'window',
+      status: 'permission-required'
+    }
+    const legacyDisplay: Device = {
+      id: 'screen:avfoundation:7',
+      name: 'Capture screen 1',
+      kind: 'screen',
+      status: 'available'
+    }
+    const nativeDisplay: Device = {
+      id: 'screen:screencapturekit:222',
+      name: 'Display 2',
+      kind: 'screen',
+      status: 'available'
+    }
+
+    expect(isScreenCaptureKitCaptureDevice(permissionDisplay)).toBe(true)
+    expect(isScreenCaptureKitCaptureDevice(permissionWindow)).toBe(true)
+    expect(isScreenCaptureKitCaptureDevice(nativeDisplay)).toBe(true)
+    expect(isScreenCaptureKitCaptureDevice(legacyDisplay)).toBe(false)
+
+    expect(isNativeCaptureDevice(permissionDisplay)).toBe(false)
+    expect(isNativeCaptureDevice(permissionWindow)).toBe(false)
+    expect(isNativeCaptureDevice(nativeDisplay)).toBe(true)
+    expect(isNativeCaptureDevice(legacyDisplay)).toBe(false)
   })
 })
 

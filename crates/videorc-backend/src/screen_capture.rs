@@ -53,6 +53,7 @@ mod macos {
     use block2::RcBlock;
     use objc2_core_graphics::{
         CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayMode, CGPreflightScreenCaptureAccess,
+        CGRequestScreenCaptureAccess,
     };
     use objc2_foundation::{NSError, NSString};
     use objc2_screen_capture_kit::{SCShareableContent, SCWindow};
@@ -63,7 +64,7 @@ mod macos {
     }
 
     pub fn list_native_capture_sources() -> NativeCaptureSources {
-        if !CGPreflightScreenCaptureAccess() {
+        if !screen_capture_access_granted() {
             return NativeCaptureSources {
                 devices: vec![
                     Device {
@@ -184,6 +185,10 @@ mod macos {
                 ],
             },
         }
+    }
+
+    fn screen_capture_access_granted() -> bool {
+        CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
     }
 
     fn screen_capture_permission_message() -> String {

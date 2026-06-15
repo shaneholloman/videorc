@@ -11,6 +11,11 @@ export const DEFAULT_REAL_SOURCE_EVIDENCE_GATES = Object.freeze({
   maxPreviewInputToPresentP99Ms: 100,
 })
 
+export const DEFAULT_SCREEN_RECORDING_EVIDENCE_GATES = Object.freeze({
+  minDurationRatio: 0.8,
+  nativeScreenPrefix: 'screen:screencapturekit:',
+})
+
 export function evaluateRealSourceEvidence(manifest, options = {}) {
   const gates = { ...DEFAULT_REAL_SOURCE_EVIDENCE_GATES, ...options }
   const failures = []
@@ -166,6 +171,104 @@ export function evaluateRealSourceEvidence(manifest, options = {}) {
   const startup = diagnostics.startup ?? {}
   requireEqual(failures, 'startup.metadataWidth', startup.metadataWidth, gates.width)
   requireEqual(failures, 'startup.metadataHeight', startup.metadataHeight, gates.height)
+  if ((startup.dimensionMismatchCount ?? 0) !== 0) {
+    failures.push(`startup: ${startup.dimensionMismatchCount} dimension mismatch frame(s)`)
+  }
+  if ((startup.previewSizedFrameCount ?? 0) !== 0) {
+    failures.push(`startup: ${startup.previewSizedFrameCount} preview-sized frame(s)`)
+  }
+
+  return {
+    pass: failures.length === 0,
+    failures,
+  }
+}
+
+export function evaluateScreenRecordingEvidence(manifest, options = {}) {
+  const gates = { ...DEFAULT_SCREEN_RECORDING_EVIDENCE_GATES, ...options }
+  const failures = []
+  const exists = options.exists ?? existsSync
+
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    return {
+      pass: false,
+      failures: ['manifest: expected an evidence manifest object'],
+    }
+  }
+
+  const request = manifest.request ?? {}
+  const result = manifest.result ?? {}
+  const paths = manifest.paths ?? {}
+  const sources = manifest.sources ?? {}
+  const diagnostics = manifest.diagnostics ?? {}
+  const finalFile = diagnostics.finalFile ?? {}
+  const startup = diagnostics.startup ?? {}
+  const screenId = sources.screen?.id
+
+  if (result.blockedBeforeEncoding === true) {
+    failures.push('result: run blocked before encoding')
+  }
+  if (result.startupPass !== true) {
+    failures.push('result: startup analyzer did not pass')
+  }
+  if (!['zero-copy-recording', '4k-accepted'].includes(result.mediaQualityMode)) {
+    failures.push(`result: expected zero-copy screen recording, got ${result.mediaQualityMode ?? 'unknown'}`)
+  }
+
+  if (typeof screenId !== 'string' || !screenId.startsWith(gates.nativeScreenPrefix)) {
+    failures.push(`sources: expected native ScreenCaptureKit screen source, got ${screenId ?? 'missing'}`)
+  }
+  if (options.requireMotion === true && request.screenMotionStimulus !== true) {
+    failures.push('request: screen motion stimulus was not enabled')
+  }
+
+  requirePath(failures, paths, 'recording', exists, options.checkFiles)
+  requirePath(failures, paths, 'baselineReport', exists, options.checkFiles)
+  requirePath(failures, paths, 'evidenceManifest', exists, options.checkFiles)
+  requirePath(failures, paths, 'qualityJson', exists, options.checkFiles)
+  requirePath(failures, paths, 'qualityReport', exists, options.checkFiles)
+  requirePath(failures, paths, 'startupJson', exists, options.checkFiles)
+  requirePath(failures, paths, 'startupReport', exists, options.checkFiles)
+
+  if ((diagnostics.imagePollDuringSession?.total ?? 0) !== 0) {
+    failures.push(`preview: ${diagnostics.imagePollDuringSession?.total ?? 'unknown'} image-poll request(s) during session`)
+  }
+  if (diagnostics.compositorBackend !== 'metal') {
+    failures.push(`compositor: expected metal backend, got ${diagnostics.compositorBackend ?? 'unknown'}`)
+  }
+  if ((diagnostics.compositorCpuFallbackFrames ?? 0) !== 0) {
+    failures.push(`compositor: ${diagnostics.compositorCpuFallbackFrames} CPU fallback frame(s)`)
+  }
+  if ((diagnostics.encoderBridgeRawVideoCopiedFrames ?? 0) !== 0) {
+    failures.push(`recording: ${diagnostics.encoderBridgeRawVideoCopiedFrames} raw-YUV copied frame(s)`)
+  }
+  if ((diagnostics.encoderBridgeMetalTargetCopiedFrames ?? 0) !== 0) {
+    failures.push(`recording: ${diagnostics.encoderBridgeMetalTargetCopiedFrames} copied Metal target frame(s)`)
+  }
+  if (!numberGreaterThan(diagnostics.encoderBridgeZeroCopyFrames, 0)) {
+    failures.push('recording: no zero-copy encoder frames observed')
+  }
+  if (!numberGreaterThan(diagnostics.encoderBridgeVideoToolboxOutputFrames, 0)) {
+    failures.push('recording: no VideoToolbox output frames observed')
+  }
+  if (!numberGreaterThan(diagnostics.encoderBridgeVideoToolboxOutputBytes, 0)) {
+    failures.push('recording: no VideoToolbox output bytes observed')
+  }
+  if ((diagnostics.encoderBridgeSyntheticFrames ?? 0) !== 0) {
+    failures.push(`recording: ${diagnostics.encoderBridgeSyntheticFrames} synthetic filler frame(s)`)
+  }
+
+  requireEqual(failures, 'final.width', finalFile.width, request.width)
+  requireEqual(failures, 'final.height', finalFile.height, request.height)
+  if (!numberAtLeast(finalFile.durationSeconds, (request.recordingMs / 1000) * gates.minDurationRatio)) {
+    failures.push(`final: duration ${format(finalFile.durationSeconds)}s too short for ${request.recordingMs}ms request`)
+  }
+  if (!numberGreaterThan(finalFile.observedFrames, 0)) {
+    failures.push('final: no decoded video frames observed')
+  }
+
+  requireEqual(failures, 'startup.metadataWidth', startup.metadataWidth, request.width)
+  requireEqual(failures, 'startup.metadataHeight', startup.metadataHeight, request.height)
   if ((startup.dimensionMismatchCount ?? 0) !== 0) {
     failures.push(`startup: ${startup.dimensionMismatchCount} dimension mismatch frame(s)`)
   }
