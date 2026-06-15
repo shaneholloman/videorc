@@ -6,6 +6,8 @@
 // pure data + helpers (no React, no storage) so the registry logic is
 // unit-testable in isolation.
 
+import type { EffectiveSceneBackground } from './backend'
+
 export type BackgroundAssetSlotStatus =
   | 'empty'
   | 'ready'
@@ -58,10 +60,13 @@ export type BackgroundAssetSlot = {
 export type BackgroundAssetRegistry = {
   slots: BackgroundAssetSlot[]
   assets: Record<string, BackgroundAsset>
-  // The slot the user explicitly Applied; becomes Scene.background.assetId (A5).
+  // The slot the user explicitly Applied; resolves to Scene.background (A5).
   // Always points at a 'ready' slot or is null — enforced by applySlot and
   // reconcileRegistry so a dangling/empty active can never persist.
   activeSlotId: string | null
+  // Per-scene overrides on the active background's asset defaults (A5). A present
+  // field shadows the asset default; an absent field inherits it.
+  sceneOverrides: BackgroundStyleOverrides
 }
 
 // The ten initial slots: stable ids the protocol/scene will reference, plus the
@@ -80,6 +85,29 @@ const SLOT_DEFS: readonly { id: string; label: string }[] = [
 ]
 
 export const BACKGROUND_SLOT_COUNT = SLOT_DEFS.length
+
+export type NumericStyleField = Exclude<keyof BackgroundStyle, 'fit'>
+
+// The numeric background-style controls in display order, with their ranges and
+// units. Shared by the Assets inspector (edits asset defaults) and the Scene tab
+// (edits per-scene overrides) so both render the same controls. `fit` is a
+// separate segmented control, not a slider.
+export const BACKGROUND_STYLE_FIELDS: readonly {
+  key: NumericStyleField
+  label: string
+  min: number
+  max: number
+  suffix?: string
+  bipolar?: boolean
+}[] = [
+  { key: 'scale', label: 'Scale', min: 50, max: 200, suffix: '%' },
+  { key: 'offsetX', label: 'Pan X', min: -100, max: 100, bipolar: true },
+  { key: 'offsetY', label: 'Pan Y', min: -100, max: 100, bipolar: true },
+  { key: 'blurPx', label: 'Blur', min: 0, max: 40, suffix: 'px' },
+  { key: 'dimPercent', label: 'Dim', min: 0, max: 80, suffix: '%' },
+  { key: 'saturationPercent', label: 'Saturation', min: 0, max: 150, suffix: '%' },
+  { key: 'vignettePercent', label: 'Vignette', min: 0, max: 100, suffix: '%' }
+]
 
 export function defaultBackgroundStyle(): BackgroundStyle {
   return {
@@ -107,7 +135,8 @@ export function createDefaultRegistry(): BackgroundAssetRegistry {
   return {
     slots: createDefaultBackgroundSlots(),
     assets: {},
-    activeSlotId: null
+    activeSlotId: null,
+    sceneOverrides: {}
   }
 }
 
@@ -345,7 +374,12 @@ export function reconcileRegistry(loaded: unknown): BackgroundAssetRegistry {
     return base
   }
 
-  const data = loaded as { slots?: unknown; assets?: unknown; activeSlotId?: unknown }
+  const data = loaded as {
+    slots?: unknown
+    assets?: unknown
+    activeSlotId?: unknown
+    sceneOverrides?: unknown
+  }
 
   const assets: Record<string, BackgroundAsset> = {}
   if (data.assets && typeof data.assets === 'object') {
@@ -392,5 +426,98 @@ export function reconcileRegistry(loaded: unknown): BackgroundAssetRegistry {
     }
   }
 
-  return { slots, assets: prunedAssets, activeSlotId }
+  return {
+    slots,
+    assets: prunedAssets,
+    activeSlotId,
+    sceneOverrides: normalizeOverrides(data.sceneOverrides)
+  }
+}
+
+function normalizeOverrides(raw: unknown): BackgroundStyleOverrides {
+  if (!raw || typeof raw !== 'object') {
+    return {}
+  }
+  const data = raw as Partial<BackgroundStyle>
+  const result: BackgroundStyleOverrides = {}
+  const num = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(value)
+  if (data.fit === 'fill' || data.fit === 'fit' || data.fit === 'stretch') {
+    result.fit = data.fit
+  }
+  if (num(data.scale)) result.scale = data.scale
+  if (num(data.offsetX)) result.offsetX = data.offsetX
+  if (num(data.offsetY)) result.offsetY = data.offsetY
+  if (num(data.blurPx)) result.blurPx = data.blurPx
+  if (num(data.dimPercent)) result.dimPercent = data.dimPercent
+  if (num(data.saturationPercent)) result.saturationPercent = data.saturationPercent
+  if (num(data.vignettePercent)) result.vignettePercent = data.vignettePercent
+  return result
+}
+
+// Asset defaults with the scene's overrides layered on top — the concrete style
+// the compositor renders. Editing an asset default flows through for any field
+// the scene hasn't overridden.
+export function effectiveStyle(
+  asset: BackgroundAsset,
+  overrides: BackgroundStyleOverrides
+): BackgroundStyle {
+  return { ...asset.styleDefaults, ...overrides }
+}
+
+// The resolved background for the active scene, or null when nothing usable is
+// selected (no active slot, or its asset has no managed file). The renderer
+// injects this onto Scene.background before sending to the backend.
+export function effectiveSceneBackground(
+  registry: BackgroundAssetRegistry
+): EffectiveSceneBackground | null {
+  if (!registry.activeSlotId) {
+    return null
+  }
+  const slot = registry.slots.find((entry) => entry.id === registry.activeSlotId)
+  const asset = slot ? slotAsset(slot, registry) : null
+  if (!asset || !asset.assetPath) {
+    return null
+  }
+  const style = effectiveStyle(asset, registry.sceneOverrides)
+  return {
+    assetId: asset.id,
+    managedAssetPath: asset.assetPath,
+    fit: style.fit,
+    scale: style.scale,
+    offsetX: style.offsetX,
+    offsetY: style.offsetY,
+    blurPx: style.blurPx,
+    dimPercent: style.dimPercent,
+    saturationPercent: style.saturationPercent,
+    vignettePercent: style.vignettePercent
+  }
+}
+
+export function isFieldOverridden(
+  registry: BackgroundAssetRegistry,
+  key: keyof BackgroundStyle
+): boolean {
+  return registry.sceneOverrides[key] !== undefined
+}
+
+// Set one or more per-scene overrides. To clear a field back to the asset
+// default, use resetSceneOverride (setting undefined would persist a hole).
+export function setSceneOverride(
+  registry: BackgroundAssetRegistry,
+  patch: BackgroundStyleOverrides
+): BackgroundAssetRegistry {
+  return { ...registry, sceneOverrides: { ...registry.sceneOverrides, ...patch } }
+}
+
+export function resetSceneOverride(
+  registry: BackgroundAssetRegistry,
+  key: keyof BackgroundStyle
+): BackgroundAssetRegistry {
+  if (registry.sceneOverrides[key] === undefined) {
+    return registry
+  }
+  const sceneOverrides = { ...registry.sceneOverrides }
+  delete sceneOverrides[key]
+  return { ...registry, sceneOverrides }
 }

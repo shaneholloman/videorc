@@ -7,7 +7,7 @@ import {
   UploadSimple,
   Warning
 } from '@phosphor-icons/react'
-import { useEffect, useMemo, useState, type ComponentProps, type ReactElement } from 'react'
+import { useMemo, useState, type ComponentProps, type ReactElement } from 'react'
 import { toast } from 'sonner'
 
 import { PanelSection } from '@/components/panel-section'
@@ -19,13 +19,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
+  BACKGROUND_STYLE_FIELDS,
   applySlot,
   canApplySlot,
   createImportedAsset,
   defaultBackgroundStyle,
   importIntoSlot,
   markSlotStatus,
-  reconcileRegistry,
   removeSlotAsset,
   renameAsset,
   setAssetStyle,
@@ -39,11 +39,10 @@ import {
   type BackgroundFit,
   type BackgroundStyle
 } from '@/lib/background-assets'
-import { STORAGE_KEYS, loadJson } from '@/lib/capture'
+import { useBackgroundAssets } from '@/hooks/use-background-assets'
 import { cn } from '@/lib/utils'
 
 type BadgeVariant = NonNullable<ComponentProps<typeof Badge>['variant']>
-type NumericStyleKey = Exclude<keyof BackgroundStyle, 'fit'>
 
 const STATUS_BADGE: Record<BackgroundAssetSlotStatus, { label: string; variant: BadgeVariant }> = {
   empty: { label: 'Empty', variant: 'outline' },
@@ -57,25 +56,6 @@ const FIT_OPTIONS: { value: BackgroundFit; label: string }[] = [
   { value: 'fill', label: 'Fill' },
   { value: 'fit', label: 'Fit' },
   { value: 'stretch', label: 'Stretch' }
-]
-
-// The background inspector's PowerSliders, in display order. Ranges come from the
-// Assets plan; each edits an asset-level style default.
-const STYLE_SLIDERS: {
-  key: NumericStyleKey
-  label: string
-  min: number
-  max: number
-  suffix?: string
-  bipolar?: boolean
-}[] = [
-  { key: 'scale', label: 'Scale', min: 50, max: 200, suffix: '%' },
-  { key: 'offsetX', label: 'Pan X', min: -100, max: 100, bipolar: true },
-  { key: 'offsetY', label: 'Pan Y', min: -100, max: 100, bipolar: true },
-  { key: 'blurPx', label: 'Blur', min: 0, max: 40, suffix: 'px' },
-  { key: 'dimPercent', label: 'Dim', min: 0, max: 80, suffix: '%' },
-  { key: 'saturationPercent', label: 'Saturation', min: 0, max: 150, suffix: '%' },
-  { key: 'vignettePercent', label: 'Vignette', min: 0, max: 100, suffix: '%' }
 ]
 
 function fileUrl(path: string): string {
@@ -95,18 +75,9 @@ function firstEmptySlotId(registry: BackgroundAssetRegistry): string | null {
 }
 
 export function AssetsTab(): ReactElement {
-  const [registry, setRegistry] = useState<BackgroundAssetRegistry>(() =>
-    reconcileRegistry(loadJson(STORAGE_KEYS.backgroundAssets, null))
-  )
+  const { registry, setRegistry } = useBackgroundAssets()
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
-
-  // Persist on every change, matching the captureConfig store. The registry is a
-  // few KB, so writing on each PowerSlider tick is cheap and never loses the last
-  // edit to a quick tab switch.
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.backgroundAssets, JSON.stringify(registry))
-  }, [registry])
 
   const selectedSlot = useMemo(
     () => registry.slots.find((slot) => slot.id === selectedSlotId) ?? null,
@@ -396,7 +367,7 @@ function BackgroundInspector({
       </div>
 
       <div className="flex flex-col gap-3">
-        {STYLE_SLIDERS.map((config) => (
+        {BACKGROUND_STYLE_FIELDS.map((config) => (
           <PowerSlider
             key={config.key}
             label={config.label}

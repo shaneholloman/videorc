@@ -5,6 +5,7 @@ import { AppShell } from '@/components/app-shell'
 import { GlassWallpaperUnderlay } from '@/components/glass-wallpaper'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { BackgroundAssetsProvider } from '@/hooks/use-background-assets'
 import { StudioProvider } from '@/hooks/use-studio'
 import { STORAGE_KEYS } from '@/lib/capture'
 
@@ -33,10 +34,12 @@ export function App(): ReactElement {
       <NativeThemeSync />
       <GlassWallpaperUnderlay />
       <TooltipProvider>
-        <StudioProvider>
-          <AppShell />
-          <Toaster richColors position="bottom-right" />
-        </StudioProvider>
+        <BackgroundAssetsProvider>
+          <StudioProvider>
+            <AppShell />
+            <Toaster richColors position="bottom-right" />
+          </StudioProvider>
+        </BackgroundAssetsProvider>
       </TooltipProvider>
     </ThemeProvider>
   )

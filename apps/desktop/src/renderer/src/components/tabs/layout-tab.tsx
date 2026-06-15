@@ -4,6 +4,7 @@ import {
   ArrowRight,
   ArrowUp,
   FrameCorners,
+  ImageSquare,
   Layout,
   Selection,
   SlidersHorizontal
@@ -11,6 +12,7 @@ import {
 import type { ReactElement } from 'react'
 
 import { PanelSection } from '@/components/panel-section'
+import { PowerSlider } from '@/components/power-slider'
 import { PreviewStage } from '@/components/preview-stage'
 import { ScreensTab } from '@/components/tabs/screens-tab'
 import { Badge } from '@/components/ui/badge'
@@ -21,7 +23,19 @@ import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { useBackgroundAssets } from '@/hooks/use-background-assets'
 import { useStudio } from '@/hooks/use-studio'
+import {
+  BACKGROUND_STYLE_FIELDS,
+  effectiveStyle,
+  isFieldOverridden,
+  resetSceneOverride,
+  setSceneOverride,
+  slotAsset,
+  slotName,
+  type BackgroundFit,
+  type BackgroundStyle
+} from '@/lib/background-assets'
 import type {
   CameraCorner,
   CameraFit,
@@ -423,10 +437,91 @@ export function LayoutTab(): ReactElement {
         </PanelSection>
       </div>
 
+      <SceneBackgroundSection />
+
       {/* Takeover images are scene content (they replace the screen source),
           so the Screens grid lives on the Scene page (ux-ia plan slice 4). */}
       <ScreensTab />
     </div>
+  )
+}
+
+// Per-scene background overrides (A5). Reads the active background's asset
+// defaults and layers the scene's overrides; each control shows an Override badge
+// + reset when it differs, and setting a field back to the asset default clears
+// the override so future default edits flow through again.
+function SceneBackgroundSection(): ReactElement {
+  const { registry, setRegistry } = useBackgroundAssets()
+  const activeSlot = registry.activeSlotId
+    ? (registry.slots.find((slot) => slot.id === registry.activeSlotId) ?? null)
+    : null
+  const asset = activeSlot ? slotAsset(activeSlot, registry) : null
+
+  if (!activeSlot || !asset) {
+    return (
+      <PanelSection icon={ImageSquare} title="Background">
+        <p className="text-sm text-muted-foreground">
+          No digital background is applied. Pick one in Assets and choose Apply to scene; its
+          controls appear here for per-scene overrides.
+        </p>
+      </PanelSection>
+    )
+  }
+
+  const defaults = asset.styleDefaults
+  const style = effectiveStyle(asset, registry.sceneOverrides)
+
+  return (
+    <PanelSection
+      description={`${slotName(activeSlot, registry)} — overrides apply to this scene only.`}
+      icon={ImageSquare}
+      title="Background"
+    >
+      <Field>
+        <FieldLabel>Fit</FieldLabel>
+        <ToggleGroup
+          className="w-full"
+          type="single"
+          value={style.fit}
+          variant="outline"
+          onValueChange={(value) =>
+            value &&
+            setRegistry((current) =>
+              value === defaults.fit
+                ? resetSceneOverride(current, 'fit')
+                : setSceneOverride(current, { fit: value as BackgroundFit })
+            )
+          }
+        >
+          <ToggleGroupItem value="fill">Fill</ToggleGroupItem>
+          <ToggleGroupItem value="fit">Fit</ToggleGroupItem>
+          <ToggleGroupItem value="stretch">Stretch</ToggleGroupItem>
+        </ToggleGroup>
+      </Field>
+      <div className="flex flex-col gap-3">
+        {BACKGROUND_STYLE_FIELDS.map((config) => (
+          <PowerSlider
+            key={config.key}
+            bipolar={config.bipolar}
+            defaultValue={defaults[config.key]}
+            label={config.label}
+            max={config.max}
+            min={config.min}
+            numericInput
+            status={isFieldOverridden(registry, config.key) ? { label: 'Override' } : undefined}
+            suffix={config.suffix}
+            value={style[config.key]}
+            onChange={(next) =>
+              setRegistry((current) =>
+                next === defaults[config.key]
+                  ? resetSceneOverride(current, config.key)
+                  : setSceneOverride(current, { [config.key]: next } as Partial<BackgroundStyle>)
+              )
+            }
+          />
+        ))}
+      </div>
+    </PanelSection>
   )
 }
 

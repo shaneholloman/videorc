@@ -82,6 +82,33 @@ describe('buildStartSessionParams', () => {
     expect(params.scene).toBe(scene)
   })
 
+  it('sends the scene with a background even when scene edit mode is off', () => {
+    const withBackground: Scene = {
+      ...scene,
+      background: {
+        assetId: 'a1',
+        managedAssetPath: '/managed/a1.png',
+        fit: 'fill',
+        scale: 100,
+        offsetX: 0,
+        offsetY: 0,
+        blurPx: 0,
+        dimPercent: 0,
+        saturationPercent: 100,
+        vignettePercent: 0
+      }
+    }
+
+    const params = buildStartSessionParams({
+      captureConfig: captureConfig(),
+      scene: withBackground,
+      settings: { outputDirectory: '', ffmpegPath: '' }
+    })
+
+    expect(params.scene).toBe(withBackground)
+    expect(params.scene?.background?.assetId).toBe('a1')
+  })
+
   it('passes through streaming and output enablement from capture config', () => {
     const config = captureConfig({
       recordEnabled: false,

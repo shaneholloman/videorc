@@ -9,10 +9,14 @@ export function buildStartSessionParams(input: {
 }): StartSessionParams {
   const { captureConfig, scene, sceneEditMode = false, settings } = input
 
+  // Send the scene whenever edit mode is on OR it carries a background, so the
+  // backend learns the selected background even outside transform editing (A5).
+  const includeScene = sceneEditMode || scene?.background != null
+
   return {
     sources: captureConfig.sources,
     layout: captureConfig.layout,
-    scene: sceneEditMode ? (scene ?? undefined) : undefined,
+    scene: includeScene ? (scene ?? undefined) : undefined,
     output: {
       recordEnabled: captureConfig.recordEnabled,
       streamEnabled: captureConfig.streamEnabled,

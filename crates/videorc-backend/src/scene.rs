@@ -26,6 +26,7 @@ pub fn default_scene() -> Scene {
             height: 720,
             fps: 30,
         }],
+        background: None,
     }
 }
 
@@ -55,6 +56,7 @@ pub fn scene_from_capture_config(params: SceneConfigParams) -> Scene {
                 fps,
             },
         ],
+        background: None,
     };
 
     match params.layout.layout_preset {

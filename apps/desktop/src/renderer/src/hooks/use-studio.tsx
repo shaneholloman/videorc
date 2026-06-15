@@ -129,6 +129,8 @@ import {
   pendingCompositorStatusSupersedes,
   type NativePreviewRendererTimingFields
 } from '@/lib/native-preview-present-policy'
+import { effectiveSceneBackground } from '@/lib/background-assets'
+import { useBackgroundAssets } from '@/hooks/use-background-assets'
 import { buildStartSessionParams } from '@/lib/session-params'
 import {
   findDevice,
@@ -681,9 +683,27 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [streamTargets])
 
+  const { registry: backgroundRegistry } = useBackgroundAssets()
+  // Overlay the active background from the shared registry onto the scene so both
+  // the session and the native preview carry it; the registry is the source of
+  // truth (A5). Resolves to no background when nothing usable is selected.
+  const sceneWithBackground = useMemo<Scene | null>(
+    () =>
+      scene
+        ? { ...scene, background: effectiveSceneBackground(backgroundRegistry) ?? undefined }
+        : null,
+    [scene, backgroundRegistry]
+  )
+
   const sessionParams = useMemo<StartSessionParams>(
-    () => buildStartSessionParams({ captureConfig, scene, sceneEditMode, settings }),
-    [captureConfig, scene, sceneEditMode, settings]
+    () =>
+      buildStartSessionParams({
+        captureConfig,
+        scene: sceneWithBackground,
+        sceneEditMode,
+        settings
+      }),
+    [captureConfig, sceneWithBackground, sceneEditMode, settings]
   )
 
   const reportError = useCallback((error: unknown) => {
@@ -2614,7 +2634,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     nativePreviewSurfaceSceneRevisionRef.current = revision
     const params: PreviewSurfaceSceneUpdateParams = {
       revision,
-      scene: scene ?? null,
+      scene: sceneWithBackground,
       layout: captureConfig.layout,
       activeScreen: activeScreen ?? null
     }
@@ -2650,7 +2670,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     captureConfig.layout,
     client,
     nativePreviewSurfaceEnabled,
-    scene,
+    sceneWithBackground,
     wsStatus
   ])
 

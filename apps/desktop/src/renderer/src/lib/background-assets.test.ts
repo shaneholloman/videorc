@@ -8,12 +8,16 @@ import {
   createDefaultRegistry,
   createImportedAsset,
   defaultBackgroundStyle,
+  effectiveSceneBackground,
   importIntoSlot,
+  isFieldOverridden,
   markSlotStatus,
   reconcileRegistry,
   removeSlotAsset,
   renameAsset,
+  resetSceneOverride,
   setAssetStyle,
+  setSceneOverride,
   slotDisplayStatus,
   slotName,
   type BackgroundAsset,
@@ -267,5 +271,56 @@ describe('reconcileRegistry with imported assets', () => {
     })
     expect(restored.assets.a1?.styleDefaults.blurPx).toBe(9)
     expect(restored.assets.a1?.styleDefaults.scale).toBe(100)
+  })
+})
+
+describe('effective scene background and overrides', () => {
+  it('returns null when no slot is active', () => {
+    expect(effectiveSceneBackground(createDefaultRegistry())).toBeNull()
+  })
+
+  it('resolves the active asset into an effective background', () => {
+    let registry = importIntoSlot(createDefaultRegistry(), 'bg-02', importedAsset('a1', 'Sunset'))
+    registry = applySlot(registry, 'bg-02')
+    expect(effectiveSceneBackground(registry)).toEqual({
+      assetId: 'a1',
+      managedAssetPath: '/managed/a1.png',
+      fit: 'fill',
+      scale: 100,
+      offsetX: 0,
+      offsetY: 0,
+      blurPx: 0,
+      dimPercent: 0,
+      saturationPercent: 100,
+      vignettePercent: 0
+    })
+  })
+
+  it('layers scene overrides over asset defaults', () => {
+    let registry = importIntoSlot(createDefaultRegistry(), 'bg-02', importedAsset('a1', 'Sunset'))
+    registry = setAssetStyle(registry, 'a1', { blurPx: 4, scale: 150 })
+    registry = applySlot(registry, 'bg-02')
+    registry = setSceneOverride(registry, { blurPx: 20 })
+
+    const effective = effectiveSceneBackground(registry)
+    expect(effective?.blurPx).toBe(20) // scene override wins
+    expect(effective?.scale).toBe(150) // un-overridden asset default inherited
+  })
+
+  it('tracks and resets overridden fields', () => {
+    let registry = setSceneOverride(createDefaultRegistry(), { blurPx: 12 })
+    expect(isFieldOverridden(registry, 'blurPx')).toBe(true)
+    expect(isFieldOverridden(registry, 'scale')).toBe(false)
+
+    registry = resetSceneOverride(registry, 'blurPx')
+    expect(isFieldOverridden(registry, 'blurPx')).toBe(false)
+    expect(resetSceneOverride(registry, 'blurPx')).toBe(registry)
+  })
+
+  it('restores scene overrides through reconcile, dropping junk values', () => {
+    const restored = reconcileRegistry({
+      sceneOverrides: { blurPx: 9, scale: 'nope', fit: 'fit', bogus: 1 }
+    })
+    expect(restored.sceneOverrides).toEqual({ blurPx: 9, fit: 'fit' })
   })
 })

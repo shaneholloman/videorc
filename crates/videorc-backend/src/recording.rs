@@ -6210,6 +6210,7 @@ mod tests {
                 height: default_video_settings().height,
                 fps: default_video_settings().fps,
             }],
+            background: None,
         }
     }
 

@@ -422,6 +422,32 @@ pub enum SideBySideCameraSide {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BackgroundFit {
+    Fill,
+    Fit,
+    Stretch,
+}
+
+// Resolved background a scene renders (asset defaults + scene overrides + the
+// managed file path). Mirrors the TS EffectiveSceneBackground; A6 reads it in the
+// compositor. Absent = no digital background, which is always valid.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveSceneBackground {
+    pub asset_id: String,
+    pub managed_asset_path: String,
+    pub fit: BackgroundFit,
+    pub scale: f64,
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub blur_px: f64,
+    pub dim_percent: f64,
+    pub saturation_percent: f64,
+    pub vignette_percent: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Scene {
@@ -429,6 +455,8 @@ pub struct Scene {
     pub name: String,
     pub sources: Vec<SceneSource>,
     pub outputs: Vec<SceneOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<EffectiveSceneBackground>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2070,6 +2098,46 @@ impl ServerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_round_trips_background_and_omits_it_when_absent() {
+        // No background: the field is omitted on the wire and a legacy scene
+        // (saved before this field existed) still deserializes.
+        let plain = Scene {
+            id: "scene:test".to_string(),
+            name: "Test".to_string(),
+            sources: Vec::new(),
+            outputs: Vec::new(),
+            background: None,
+        };
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        assert!(!plain_json.contains("background"));
+        let legacy: Scene =
+            serde_json::from_str(r#"{"id":"s","name":"n","sources":[],"outputs":[]}"#).unwrap();
+        assert_eq!(legacy.background, None);
+
+        // With a background, every field survives a camelCase round trip.
+        let scene = Scene {
+            background: Some(EffectiveSceneBackground {
+                asset_id: "asset-1".to_string(),
+                managed_asset_path: "/managed/asset-1.png".to_string(),
+                fit: BackgroundFit::Fit,
+                scale: 120.0,
+                offset_x: -10.0,
+                offset_y: 5.0,
+                blur_px: 8.0,
+                dim_percent: 20.0,
+                saturation_percent: 110.0,
+                vignette_percent: 30.0,
+            }),
+            ..plain
+        };
+        let json = serde_json::to_string(&scene).unwrap();
+        assert!(json.contains("\"managedAssetPath\":\"/managed/asset-1.png\""));
+        assert!(json.contains("\"fit\":\"fit\""));
+        let restored: Scene = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, scene);
+    }
 
     #[test]
     fn layout_preset_serializes_to_kebab_case() {
