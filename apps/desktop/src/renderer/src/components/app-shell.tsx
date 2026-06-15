@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import type { StatusDotTone } from '@/components/status-dot'
 import { AiTab } from '@/components/tabs/ai-tab'
+import { AssetsTab } from '@/components/tabs/assets-tab'
 import { DiagnosticsTab } from '@/components/tabs/diagnostics-tab'
 import { LayoutTab } from '@/components/tabs/layout-tab'
 import { LibraryTab } from '@/components/tabs/library-tab'
@@ -95,10 +96,6 @@ export function AppShell(): ReactElement {
   // key to a page here, where navigation state lives.
   useEffect(() => {
     const off = window.videorc?.onShortcutNavigate?.((key) => {
-      if (key === ',') {
-        setActive('settings')
-        return
-      }
       const shortcut = WORKSPACE_SHORTCUTS.find((entry) => entry.digit === key)
       if (shortcut) {
         setActive(shortcut.tab)
@@ -151,6 +148,7 @@ export function AppShell(): ReactElement {
               {active === 'studio' ? <StudioTab /> : null}
               {active === 'sources' ? <SourcesTab /> : null}
               {active === 'layouts' ? <LayoutTab /> : null}
+              {active === 'assets' ? <AssetsTab /> : null}
               {active === 'live' ? <StreamingTab /> : null}
               {active === 'recording' ? <RecordingTab /> : null}
               {active === 'library' ? <LibraryTab onOpenInAi={openInAi} /> : null}

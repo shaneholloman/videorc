@@ -2,6 +2,7 @@ import {
   Broadcast,
   FilmReel,
   GearSix,
+  ImageSquare,
   Monitor,
   Pulse,
   Record,
@@ -17,7 +18,7 @@ import { createContext, useContext } from 'react'
 // 2026-06-09, overriding the earlier push-rail idea). Sources is the single home for
 // every capture device — screen/window, camera, AND microphone — so changing what
 // gets captured never requires hunting across pages (UI rewrite plan, 2026-06-10).
-export type StudioPanel = 'sources' | 'layouts' | 'live' | 'recording'
+export type StudioPanel = 'sources' | 'layouts' | 'assets' | 'live' | 'recording'
 
 // Full pages: they replace the workspace content area.
 export type WorkspaceTab = 'studio' | StudioPanel | 'library' | 'ai' | 'diagnostics' | 'settings'
@@ -57,21 +58,26 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 export const STUDIO_PANELS: StudioPanelMeta[] = [
   { id: 'sources', label: 'Sources', icon: Monitor, legacyTabId: 'sources' },
   { id: 'layouts', label: 'Scene', icon: SquaresFour, legacyTabId: 'layout' },
+  { id: 'assets', label: 'Assets', icon: ImageSquare, legacyTabId: 'assets' },
   { id: 'live', label: 'Destinations', icon: Broadcast, legacyTabId: 'streaming' },
   { id: 'recording', label: 'Output', icon: Record, legacyTabId: 'recording' }
 ]
 
-// ⌘1–⌘9 page shortcuts, in sidebar order (stage → setup → library → system).
+// Page shortcuts in sidebar order (stage → setup → library → system). The nine
+// workflow pages take ⌘1–⌘9; Settings keeps the macOS convention ⌘, rather than
+// consuming a digit (Assets Tab plan, 2026-06-15), so `digit` holds ',' for it.
+// The main process emits the raw key ('1'–'9' or ',') and AppShell maps it here.
 export const WORKSPACE_SHORTCUTS: { digit: string; tab: WorkspaceTab }[] = [
   { digit: '1', tab: 'studio' },
   { digit: '2', tab: 'sources' },
   { digit: '3', tab: 'layouts' },
-  { digit: '4', tab: 'live' },
-  { digit: '5', tab: 'recording' },
-  { digit: '6', tab: 'library' },
-  { digit: '7', tab: 'ai' },
-  { digit: '8', tab: 'settings' },
-  { digit: '9', tab: 'diagnostics' }
+  { digit: '4', tab: 'assets' },
+  { digit: '5', tab: 'live' },
+  { digit: '6', tab: 'recording' },
+  { digit: '7', tab: 'library' },
+  { digit: '8', tab: 'ai' },
+  { digit: '9', tab: 'diagnostics' },
+  { digit: ',', tab: 'settings' }
 ]
 
 export function shortcutDigitFor(tab: WorkspaceTab): string | undefined {
