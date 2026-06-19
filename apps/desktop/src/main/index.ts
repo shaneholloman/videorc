@@ -436,6 +436,7 @@ let previewWindow: BrowserWindow | null = null
 let previewWindowLastFrame: Electron.Rectangle | null = null
 let previewWindowAlwaysOnTop = false
 let previewWindowClosing = false
+let previewWindowSurfaceGeneration = 0
 // The visible drag bar at the top of the preview window; the native video covers
 // the content BELOW it, and the aspect lock applies to that video region only.
 const PREVIEW_WINDOW_BAR_HEIGHT = 28
@@ -950,6 +951,15 @@ function previewWindowIsOpenForSurface(): boolean {
   return Boolean(previewWindow && !previewWindow.isDestroyed() && !previewWindowClosing)
 }
 
+function nextPreviewWindowSurfaceGeneration(): number {
+  previewWindowSurfaceGeneration += 1
+  return previewWindowSurfaceGeneration
+}
+
+function previewWindowSurfaceGenerationIsCurrent(generation: number): boolean {
+  return generation === previewWindowSurfaceGeneration
+}
+
 type PreviewWindowState = {
   open: boolean
   visible: boolean
@@ -1019,12 +1029,19 @@ function pushPreviewWindowPlacement(): void {
   if (!bounds) {
     return
   }
-  const surfaceExists = Boolean(
-    nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed()
-  )
-  void applyNativePreviewHostCommands([
-    { kind: surfaceExists ? 'update-bounds' : 'create', bounds }
-  ]).catch((error) => {
+  const generation = previewWindowSurfaceGeneration
+  void runNativePreviewSurfaceMutation(() => {
+    if (!previewWindowSurfaceGenerationIsCurrent(generation)) {
+      return nativePreviewSurfaceStatus
+    }
+    const surfaceExists = Boolean(
+      nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed()
+    )
+    return applyNativePreviewHostCommands(
+      [{ kind: surfaceExists ? 'update-bounds' : 'create', bounds }],
+      generation
+    )
+  }).catch((error) => {
     console.error('Preview window placement push failed:', error)
   })
 }
@@ -1051,12 +1068,14 @@ async function reconcileNativePreviewSurfaceForPreviewWindow(
   if (!bounds) {
     return
   }
+  const generation = previewWindowSurfaceGeneration
   if (!options.force && !nativePreviewSurfaceNeedsPlacementReconcile()) {
     return
   }
-  await applyNativePreviewHostCommands([
-    { kind: nativePreviewSurfaceWindowExists() ? 'update-bounds' : 'create', bounds }
-  ])
+  await applyNativePreviewHostCommands(
+    [{ kind: nativePreviewSurfaceWindowExists() ? 'update-bounds' : 'create', bounds }],
+    generation
+  )
 }
 
 const PREVIEW_WINDOW_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -1129,6 +1148,7 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
   })
   previewWindowClosing = false
   previewWindow = window
+  nextPreviewWindowSurfaceGeneration()
   previewWindowAlwaysOnTop = prefs.alwaysOnTop === true
   if (previewWindowAlwaysOnTop) {
     window.setAlwaysOnTop(true, 'floating')
@@ -1156,6 +1176,9 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
   }
   window.on('close', () => {
     if (previewWindow === window) {
+      if (!previewWindowClosing) {
+        nextPreviewWindowSurfaceGeneration()
+      }
       previewWindowClosing = true
       previewWindowLastFrame = window.getBounds()
       savePreviewWindowPrefs({ frame: previewWindowLastFrame, open: false })
@@ -1168,7 +1191,9 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
       // Host teardown happens here, renderer-independent (the renderer's own
       // teardown adds the backend session destroy when its state event lands).
       void setNativePreviewSurfaceFramePollingSuppressed(true)
-      void applyNativePreviewHostCommands([{ kind: 'destroy' }]).catch((error) => {
+      void runNativePreviewSurfaceMutation(() =>
+        applyNativePreviewHostCommands([{ kind: 'destroy' }])
+      ).catch((error) => {
         console.error('Preview window close teardown failed:', error)
       })
       emitPreviewWindowState()
@@ -1184,6 +1209,9 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
 
 function closePreviewWindow(): PreviewWindowState {
   if (previewWindow && !previewWindow.isDestroyed()) {
+    if (!previewWindowClosing) {
+      nextPreviewWindowSurfaceGeneration()
+    }
     previewWindowClosing = true
     previewWindow.close()
   }
@@ -1879,13 +1907,13 @@ function surfaceWindowPlacement(bounds: PreviewSurfaceBounds): {
   }
 }
 
-async function createNativePreviewSurfaceWindow(): Promise<void> {
+async function createNativePreviewSurfaceWindow(generation: number): Promise<void> {
   let lastError: unknown = null
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (!mainWindow || mainWindow.isDestroyed()) {
       throw new Error('Main window is not ready for native preview surface.')
     }
-    if (!previewWindowIsOpenForSurface()) {
+    if (!previewWindowIsOpenForSurface() || !previewWindowSurfaceGenerationIsCurrent(generation)) {
       return
     }
 
@@ -1922,7 +1950,10 @@ async function createNativePreviewSurfaceWindow(): Promise<void> {
     })
 
     try {
-      if (!previewWindowIsOpenForSurface()) {
+      if (
+        !previewWindowIsOpenForSurface() ||
+        !previewWindowSurfaceGenerationIsCurrent(generation)
+      ) {
         if (nativePreviewSurfaceWindow === surfaceWindow) {
           nativePreviewSurfaceWindow = null
         }
@@ -1932,19 +1963,46 @@ async function createNativePreviewSurfaceWindow(): Promise<void> {
         return
       }
       await loadNativePreviewSurfaceHtml(surfaceWindow)
+      if (
+        !previewWindowIsOpenForSurface() ||
+        !previewWindowSurfaceGenerationIsCurrent(generation)
+      ) {
+        if (nativePreviewSurfaceWindow === surfaceWindow) {
+          nativePreviewSurfaceWindow = null
+        }
+        if (!surfaceWindow.isDestroyed()) {
+          surfaceWindow.destroy()
+        }
+        return
+      }
       if (nativePreviewSurfaceFramePollingSuppressed) {
-        await waitForNativePreviewSurfaceScript()
-        await surfaceWindow.webContents.executeJavaScript(
-          'window.__videorcSetFramePollingSuppressed?.(true)',
-          true
-        )
+        await waitForNativePreviewSurfaceScript(surfaceWindow)
+        if (!surfaceWindow.isDestroyed() && previewWindowSurfaceGenerationIsCurrent(generation)) {
+          await surfaceWindow.webContents.executeJavaScript(
+            'window.__videorcSetFramePollingSuppressed?.(true)',
+            true
+          )
+        }
       }
       if (nativePreviewSurfaceScene) {
-        await waitForNativePreviewSurfaceScript()
-        await surfaceWindow.webContents.executeJavaScript(
-          `window.__videorcSetPreviewScene?.(${jsonForInlineScript(nativePreviewSurfaceScene)})`,
-          true
-        )
+        await waitForNativePreviewSurfaceScript(surfaceWindow)
+        if (!surfaceWindow.isDestroyed() && previewWindowSurfaceGenerationIsCurrent(generation)) {
+          await surfaceWindow.webContents.executeJavaScript(
+            `window.__videorcSetPreviewScene?.(${jsonForInlineScript(nativePreviewSurfaceScene)})`,
+            true
+          )
+        }
+      }
+      if (
+        !previewWindowIsOpenForSurface() ||
+        !previewWindowSurfaceGenerationIsCurrent(generation)
+      ) {
+        if (nativePreviewSurfaceWindow === surfaceWindow) {
+          nativePreviewSurfaceWindow = null
+        }
+        if (!surfaceWindow.isDestroyed()) {
+          surfaceWindow.destroy()
+        }
       }
       return
     } catch (error) {
@@ -1954,6 +2012,12 @@ async function createNativePreviewSurfaceWindow(): Promise<void> {
       }
       if (!surfaceWindow.isDestroyed()) {
         surfaceWindow.destroy()
+      }
+      if (
+        !previewWindowIsOpenForSurface() ||
+        !previewWindowSurfaceGenerationIsCurrent(generation)
+      ) {
+        return
       }
       if (attempt === 0 && nativePreviewSurfaceLoadCanRetry(error)) {
         await delay(75)
@@ -1966,11 +2030,12 @@ async function createNativePreviewSurfaceWindow(): Promise<void> {
 }
 
 async function createNativePreviewSurface(
-  bounds: PreviewSurfaceBounds
+  bounds: PreviewSurfaceBounds,
+  generation = previewWindowSurfaceGeneration
 ): Promise<PreviewSurfaceStatus> {
   bounds = normalizePreviewSurfaceBounds(bounds)
   // The direct IPC path must not create a surface while the preview window is closed.
-  if (!previewWindowIsOpenForSurface()) {
+  if (!previewWindowIsOpenForSurface() || !previewWindowSurfaceGenerationIsCurrent(generation)) {
     nativePreviewSurfaceStatus = idleNativePreviewSurfaceStatus('Preview window is closed.')
     return nativePreviewSurfaceStatus
   }
@@ -1988,10 +2053,10 @@ async function createNativePreviewSurface(
   const placement = surfaceWindowPlacement(bounds)
   const rect = placement.rect
   if (!nativePreviewSurfaceWindow || nativePreviewSurfaceWindow.isDestroyed()) {
-    await createNativePreviewSurfaceWindow()
+    await createNativePreviewSurfaceWindow(generation)
   }
 
-  if (!previewWindowIsOpenForSurface()) {
+  if (!previewWindowIsOpenForSurface() || !previewWindowSurfaceGenerationIsCurrent(generation)) {
     nativePreviewSurfaceStatus = idleNativePreviewSurfaceStatus('Preview window is closed.')
     return nativePreviewSurfaceStatus
   }
@@ -2043,9 +2108,13 @@ async function createNativePreviewSurface(
 }
 
 async function updateNativePreviewSurfaceBounds(
-  bounds: PreviewSurfaceBounds
+  bounds: PreviewSurfaceBounds,
+  generation = previewWindowSurfaceGeneration
 ): Promise<PreviewSurfaceStatus> {
   bounds = normalizePreviewSurfaceBounds(bounds)
+  if (!previewWindowSurfaceGenerationIsCurrent(generation)) {
+    return nativePreviewSurfaceStatus
+  }
   if (!nativePreviewSurfaceWindow || nativePreviewSurfaceWindow.isDestroyed()) {
     // Never resurrect a torn-down surface just to hide it: after the detached
     // preview window closes (U2 teardown), the app-focus policy still pushes
@@ -2054,7 +2123,7 @@ async function updateNativePreviewSurfaceBounds(
     if (!surfaceWindowPlacement(bounds).visible) {
       return nativePreviewSurfaceStatus
     }
-    return createNativePreviewSurface(bounds)
+    return createNativePreviewSurface(bounds, generation)
   }
 
   const placement = surfaceWindowPlacement(bounds)
@@ -2103,8 +2172,13 @@ async function showNativePreviewProofSurfaceIfVisible(): Promise<void> {
 }
 
 async function applyNativePreviewHostCommands(
-  commands: NativePreviewHostCommand[]
+  commands: NativePreviewHostCommand[],
+  generation = previewWindowSurfaceGeneration
 ): Promise<PreviewSurfaceStatus> {
+  const nonDestroyCommands = commands.filter((command) => command.kind !== 'destroy')
+  if (nonDestroyCommands.length > 0 && !previewWindowSurfaceGenerationIsCurrent(generation)) {
+    return nativePreviewSurfaceStatus
+  }
   // No preview window, no surface — period. A renderer holding a stale window
   // state (IPC events race the close) must not resurrect the hosts main just
   // tore down; only destroys pass while the window is closed.
@@ -2139,14 +2213,18 @@ async function applyNativePreviewHostCommands(
       continue
     }
 
+    if (!previewWindowSurfaceGenerationIsCurrent(generation)) {
+      return status
+    }
+
     if (!command.bounds) {
       throw new Error(`Native preview host ${command.kind} command is missing bounds.`)
     }
 
     status =
       command.kind === 'create'
-        ? await createNativePreviewSurface(command.bounds)
-        : await updateNativePreviewSurfaceBounds(command.bounds)
+        ? await createNativePreviewSurface(command.bounds, generation)
+        : await updateNativePreviewSurfaceBounds(command.bounds, generation)
   }
   return status
 }
@@ -2158,9 +2236,10 @@ async function setNativePreviewSurfacesVisible(visible: boolean): Promise<void> 
   if (!bounds) {
     return
   }
+  const generation = previewWindowSurfaceGeneration
   try {
     await runNativePreviewSurfaceMutation(() =>
-      applyNativePreviewHostCommands([{ kind: 'update-bounds', bounds }])
+      applyNativePreviewHostCommands([{ kind: 'update-bounds', bounds }], generation)
     )
   } catch {
     // Visibility policy is best-effort; the next preview-window event re-syncs.
@@ -2335,7 +2414,7 @@ async function presentNativePreviewSurfaceCompositor(
   let metrics: Record<string, unknown> | null = null
   const surfaceWindow = nativePreviewSurfaceWindow
   if (surfaceWindow && !surfaceWindow.isDestroyed()) {
-    await waitForNativePreviewSurfaceScript()
+    await waitForNativePreviewSurfaceScript(surfaceWindow)
     const sceneScript = compositorScene
       ? `window.__videorcSetPreviewScene?.(${jsonForInlineScript(compositorScene)});`
       : ''
@@ -4813,16 +4892,24 @@ app.whenReady().then(async () => {
   ipcMain.handle('notes-window:save-document', (_event, patch: Partial<NotesDocument>) =>
     saveNotesDocument(patch ?? {})
   )
-  ipcMain.handle('preview-surface:create', (_event, bounds: PreviewSurfaceBounds) =>
-    runNativePreviewSurfaceMutation(() => createNativePreviewSurface(bounds))
-  )
-  ipcMain.handle('preview-surface:update-bounds', (_event, bounds: PreviewSurfaceBounds) =>
-    runNativePreviewSurfaceMutation(() => updateNativePreviewSurfaceBounds(bounds))
-  )
+  ipcMain.handle('preview-surface:create', (_event, bounds: PreviewSurfaceBounds) => {
+    const generation = previewWindowSurfaceGeneration
+    return runNativePreviewSurfaceMutation(() => createNativePreviewSurface(bounds, generation))
+  })
+  ipcMain.handle('preview-surface:update-bounds', (_event, bounds: PreviewSurfaceBounds) => {
+    const generation = previewWindowSurfaceGeneration
+    return runNativePreviewSurfaceMutation(() =>
+      updateNativePreviewSurfaceBounds(bounds, generation)
+    )
+  })
   ipcMain.handle(
     'preview-surface:apply-host-commands',
-    (_event, commands: NativePreviewHostCommand[]) =>
-      runNativePreviewSurfaceMutation(() => applyNativePreviewHostCommands(commands))
+    (_event, commands: NativePreviewHostCommand[]) => {
+      const generation = previewWindowSurfaceGeneration
+      return runNativePreviewSurfaceMutation(() =>
+        applyNativePreviewHostCommands(commands, generation)
+      )
+    }
   )
   ipcMain.handle('preview-surface:update-scene', (_event, scene: PreviewSurfaceSceneUpdateParams) =>
     updateNativePreviewSurfaceScene(scene)
