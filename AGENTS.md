@@ -13,6 +13,7 @@ Use the smallest gate that proves the change, then run the broader gate before h
 - Node logic tests: `pnpm test:scripts`
 - Desktop unit tests: `pnpm --filter @videorc/desktop test`
 - Desktop build: `pnpm build`
+- Preview lifecycle probe: `pnpm probe:preview-lifecycle`
 - Rust format: `cargo fmt --check --all`
 - Rust advisory audit: `pnpm audit:rust` (requires `cargo install cargo-audit --locked` locally)
 - Rust tests: `cargo test -p videorc-backend`
@@ -36,6 +37,7 @@ CI covers Rust advisory audit, Rust fmt, clippy, Rust tests, JS production advis
 - Production preview is the detached native CAMetalLayer path. MJPEG/JPEG preview routes are fallback or debug paths only.
 - Do not silently downgrade a session that claims native preview. If native CAMetalLayer cannot run, surface the fallback reason in status, diagnostics, or health copy.
 - Probe before merging preview changes. At minimum run the relevant native preview tests and use the smoke/probe command that exercises the touched path.
+- For detached preview window lifecycle, toggle, close/reopen, placement ownership, frame-polling suppression, or proof-surface teardown changes, run `pnpm probe:preview-lifecycle`; add `pnpm probe:preview-window` when placement or move/resize behavior is touched.
 - `PreviewSurfaceBounds` has mirrors in Rust protocol, shared TS types, native host/helper protocol, and normalization/comparison code. Any field change must preserve all mirrors and must include a regression test proving fields survive normalization and helper serialization.
 - Stacking fields (`orderAboveWindowId`, `elevated`) are required for detached preview-window ordering. Dropping them reintroduces the preview-over-everything bug.
 
