@@ -172,7 +172,7 @@ describe('reconcileSourceSelection', () => {
     expect(next.windowName).toBeUndefined()
   })
 
-  it('uses a real avfoundation screen fallback instead of disabled native permission placeholders', () => {
+  it('does not select avfoundation screen fallback while screen capture permission is blocked', () => {
     const remembered: SourceSelection = {
       screenId: 'screen:avfoundation:7',
       screenName: 'Capture screen 1'
@@ -194,14 +194,14 @@ describe('reconcileSourceSelection', () => {
         id: 'screen:avfoundation:7',
         name: 'Capture screen 1',
         kind: 'screen',
-        status: 'available'
+        status: 'permission-required'
       }
     ]
 
     const next = reconcileSourceSelection(remembered, devices)
 
-    expect(next.screenId).toBe('screen:avfoundation:7')
-    expect(next.screenName).toBe('Capture screen 1')
+    expect(next.screenId).toBeUndefined()
+    expect(next.screenName).toBeUndefined()
     expect(next.windowId).toBeUndefined()
     expect(next.windowName).toBeUndefined()
   })

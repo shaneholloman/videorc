@@ -47,6 +47,18 @@ fn permission_or_unavailable(error: &str) -> DeviceStatus {
     }
 }
 
+fn should_include_window_metadata(
+    is_on_screen: bool,
+    layer: isize,
+    title: Option<&str>,
+    app_name: Option<&str>,
+) -> bool {
+    is_on_screen
+        && layer >= 0
+        && (title.is_some_and(|value| !value.is_empty())
+            || app_name.is_some_and(|value| !value.is_empty()))
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
@@ -302,10 +314,12 @@ mod macos {
         let title = window_title(window);
         let app_name = window_application_name(window);
 
-        is_on_screen
-            && layer == 0
-            && (title.as_deref().is_some_and(|value| !value.is_empty())
-                || app_name.as_deref().is_some_and(|value| !value.is_empty()))
+        super::should_include_window_metadata(
+            is_on_screen,
+            layer,
+            title.as_deref(),
+            app_name.as_deref(),
+        )
     }
 
     fn display_capture_dimensions(
@@ -430,5 +444,34 @@ mod tests {
             permission_or_unavailable("Window server returned no content"),
             DeviceStatus::Unavailable
         );
+    }
+
+    #[test]
+    fn source_picker_keeps_named_on_screen_windows_across_layers() {
+        assert!(should_include_window_metadata(
+            true,
+            0,
+            Some("Editor"),
+            Some("Code")
+        ));
+        assert!(should_include_window_metadata(
+            true,
+            7,
+            None,
+            Some("Browser")
+        ));
+        assert!(!should_include_window_metadata(
+            false,
+            0,
+            Some("Editor"),
+            Some("Code")
+        ));
+        assert!(!should_include_window_metadata(true, 0, None, None));
+        assert!(!should_include_window_metadata(
+            true,
+            -1,
+            Some("Desktop"),
+            Some("Window Server")
+        ));
     }
 }

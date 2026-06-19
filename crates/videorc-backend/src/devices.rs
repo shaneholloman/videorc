@@ -60,6 +60,10 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
     }
 
     let native_capture_sources = list_native_capture_sources();
+    let screen_capture_permission_required = native_capture_sources.devices.iter().any(|device| {
+        matches!(device.kind, DeviceKind::Screen | DeviceKind::Window)
+            && device.status == DeviceStatus::PermissionRequired
+    });
     warnings.extend(native_capture_sources.warnings);
     devices.extend(preview_ready_native_capture_devices(
         native_capture_sources.devices,
@@ -79,7 +83,8 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
 
     match probe_avfoundation_devices(ffmpeg_path).await {
         Ok(av_devices) => {
-            let screens = avfoundation_screen_devices(&av_devices);
+            let screens =
+                avfoundation_screen_devices(&av_devices, screen_capture_permission_required);
             if screens.is_empty() {
                 devices.push(missing_avfoundation_screen_device());
             } else {
@@ -166,7 +171,10 @@ fn preview_ready_native_capture_devices(devices: Vec<Device>) -> Vec<Device> {
         .collect()
 }
 
-fn avfoundation_screen_devices(av_devices: &[AvFoundationDevice]) -> Vec<Device> {
+fn avfoundation_screen_devices(
+    av_devices: &[AvFoundationDevice],
+    screen_capture_permission_required: bool,
+) -> Vec<Device> {
     av_devices
         .iter()
         .filter(|device| {
@@ -177,11 +185,18 @@ fn avfoundation_screen_devices(av_devices: &[AvFoundationDevice]) -> Vec<Device>
             id: format!("screen:avfoundation:{}", device.index),
             name: device.name.clone(),
             kind: DeviceKind::Screen,
-            status: DeviceStatus::Available,
-            detail: Some(
+            status: if screen_capture_permission_required {
+                DeviceStatus::PermissionRequired
+            } else {
+                DeviceStatus::Available
+            },
+            detail: Some(if screen_capture_permission_required {
+                "FFmpeg avfoundation screen fallback also needs macOS Screen Recording permission; it is not usable while ScreenCaptureKit is permission-blocked."
+                    .to_string()
+            } else {
                 "Capturable FFmpeg avfoundation screen source used by current preview and recording."
-                    .to_string(),
-            ),
+                    .to_string()
+            }),
             width: None,
             height: None,
         })
@@ -642,22 +657,48 @@ mod tests {
 
     #[test]
     fn avfoundation_screen_sources_are_selectable() {
-        let devices = avfoundation_screen_devices(&[
-            AvFoundationDevice {
-                index: 1,
-                name: "Capture screen 0".to_string(),
-                kind: AvFoundationDeviceKind::Video,
-            },
-            AvFoundationDevice {
-                index: 2,
-                name: "FaceTime HD Camera".to_string(),
-                kind: AvFoundationDeviceKind::Video,
-            },
-        ]);
+        let devices = avfoundation_screen_devices(
+            &[
+                AvFoundationDevice {
+                    index: 1,
+                    name: "Capture screen 0".to_string(),
+                    kind: AvFoundationDeviceKind::Video,
+                },
+                AvFoundationDevice {
+                    index: 2,
+                    name: "FaceTime HD Camera".to_string(),
+                    kind: AvFoundationDeviceKind::Video,
+                },
+            ],
+            false,
+        );
 
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].id, "screen:avfoundation:1");
         assert_eq!(devices[0].status, DeviceStatus::Available);
+    }
+
+    #[test]
+    fn avfoundation_screen_sources_require_screen_recording_permission_too() {
+        let devices = avfoundation_screen_devices(
+            &[AvFoundationDevice {
+                index: 1,
+                name: "Capture screen 0".to_string(),
+                kind: AvFoundationDeviceKind::Video,
+            }],
+            true,
+        );
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "screen:avfoundation:1");
+        assert_eq!(devices[0].status, DeviceStatus::PermissionRequired);
+        assert!(
+            devices[0]
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Screen Recording permission")
+        );
     }
 
     #[test]
