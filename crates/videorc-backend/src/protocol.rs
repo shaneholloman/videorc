@@ -539,6 +539,8 @@ pub struct SceneConfigParams {
     pub layout: LayoutSettings,
     #[serde(default)]
     pub video: Option<VideoSettings>,
+    #[serde(default)]
+    pub protected_overlay_window_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1809,6 +1811,8 @@ pub enum PreviewCameraState {
 pub struct PreviewScreenStartParams {
     pub sources: SourceSelection,
     pub video: VideoSettings,
+    #[serde(default)]
+    pub protected_overlay_window_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -110,6 +110,7 @@ struct PreviewScreenStartKey {
     source_key: SourceKey,
     video: VideoSettings,
     target_fps: u32,
+    protected_overlay_window_ids: Vec<u32>,
 }
 
 #[derive(Debug)]
@@ -118,6 +119,7 @@ struct NativeScreenPreviewThread {
     join_handle: Option<thread::JoinHandle<()>>,
     shared: Arc<StdMutex<PreviewScreenShared>>,
     video: VideoSettings,
+    protected_overlay_window_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,11 +280,26 @@ pub async fn start_preview_screen(
     // already cost a real stream a browser window whose tab title matched the
     // old name heuristic.
     let exclude_current_process_windows = false;
+    let protected_overlay_window_ids =
+        normalized_protected_overlay_window_ids(params.protected_overlay_window_ids.clone());
+    if let Some(window_id) = source.window_id
+        && protected_overlay_window_ids.contains(&window_id)
+    {
+        stop_preview_screen(&state).await;
+        let status = status_for_missing_source(
+            Some(source.source_id),
+            Some(source.source_kind),
+            "The Videorc Notes window cannot be selected as a capture source.",
+        );
+        set_screen_status(&state, status.clone()).await;
+        return status;
+    }
     let source_key = source_key_for_source(&source);
     let start_key = PreviewScreenStartKey {
         source_key: source_key.clone(),
         video: params.video.clone(),
         target_fps,
+        protected_overlay_window_ids: protected_overlay_window_ids.clone(),
     };
     let existing_source_key = current_screen_source_key(&state).await;
     if existing_source_key.as_ref() != Some(&source_key) {
@@ -298,8 +315,14 @@ pub async fn start_preview_screen(
         SourceIdentityConfidence::Exact,
     )
     .await;
-    if let Some(status) =
-        reuse_current_screen_source(&state, &source_key, &params.video, target_fps).await
+    if let Some(status) = reuse_current_screen_source(
+        &state,
+        &source_key,
+        &params.video,
+        target_fps,
+        &protected_overlay_window_ids,
+    )
+    .await
     {
         acquire_preview_screen_source(
             &state,
@@ -355,6 +378,7 @@ pub async fn start_preview_screen(
         video: params.video.clone(),
         include_cursor,
         exclude_current_process_windows,
+        protected_overlay_window_ids,
     };
 
     let join_handle = thread::Builder::new()
@@ -479,6 +503,7 @@ pub async fn start_preview_screen(
                     join_handle: Some(join_handle),
                     shared,
                     video: params.video,
+                    protected_overlay_window_ids: start_key.protected_overlay_window_ids.clone(),
                 });
                 slot.poll_task = Some(poll_task);
             }
@@ -767,6 +792,17 @@ struct SelectedScreenSource {
     window_id: Option<u32>,
 }
 
+fn normalized_protected_overlay_window_ids(mut window_ids: Vec<u32>) -> Vec<u32> {
+    window_ids.retain(|id| *id > 0);
+    window_ids.sort_unstable();
+    window_ids.dedup();
+    window_ids
+}
+
+fn should_exclude_protected_overlay_window(window_id: u32, protected_ids: &[u32]) -> bool {
+    protected_ids.binary_search(&window_id).is_ok()
+}
+
 fn selected_screen_source(params: &PreviewScreenStartParams) -> Option<SelectedScreenSource> {
     if let Some(window_id) = params.sources.window_id.clone() {
         return parse_screencapturekit_window_id(&window_id).map(|native_window_id| {
@@ -945,15 +981,17 @@ async fn reuse_current_screen_source(
     source_key: &SourceKey,
     video: &VideoSettings,
     target_fps: u32,
+    protected_overlay_window_ids: &[u32],
 ) -> Option<PreviewScreenStatus> {
     let mut slot = state.preview_screen.lock().await;
     if slot.source_key.as_ref() != Some(source_key) {
         return None;
     }
-    let can_reuse = slot
-        .active
-        .as_ref()
-        .is_some_and(|active| active.video == *video && slot.status.target_fps == target_fps);
+    let can_reuse = slot.active.as_ref().is_some_and(|active| {
+        active.video == *video
+            && slot.status.target_fps == target_fps
+            && active.protected_overlay_window_ids == protected_overlay_window_ids
+    });
     if !can_reuse {
         return None;
     }
@@ -1174,6 +1212,7 @@ struct NativeScreenPreviewConfig {
     video: VideoSettings,
     include_cursor: bool,
     exclude_current_process_windows: bool,
+    protected_overlay_window_ids: Vec<u32>,
 }
 
 #[derive(Debug)]
@@ -1460,11 +1499,16 @@ mod macos {
                         config.source_id
                     ))
                 })?;
-                let excluded = if config.exclude_current_process_windows {
+                let broad_excluded = if config.exclude_current_process_windows {
                     videorc_windows(content)
                 } else {
                     NSArray::<SCWindow>::new()
                 };
+                let excluded = protected_overlay_windows(
+                    content,
+                    &config.protected_overlay_window_ids,
+                    broad_excluded,
+                );
                 let filter = unsafe {
                     SCContentFilter::initWithDisplay_excludingWindows(
                         SCContentFilter::alloc(),
@@ -1864,6 +1908,25 @@ mod macos {
         excluded
     }
 
+    fn protected_overlay_windows(
+        content: &SCShareableContent,
+        protected_ids: &[u32],
+        mut excluded: Retained<NSArray<SCWindow>>,
+    ) -> Retained<NSArray<SCWindow>> {
+        if protected_ids.is_empty() {
+            return excluded;
+        }
+        let windows = unsafe { content.windows() };
+        for index in 0..windows.count() {
+            let window = windows.objectAtIndex(index);
+            let window_id = unsafe { window.windowID() };
+            if should_exclude_protected_overlay_window(window_id, protected_ids) {
+                excluded = excluded.arrayByAddingObject(&window);
+            }
+        }
+        excluded
+    }
+
     fn is_videorc_window(window: &SCWindow) -> bool {
         let current_pid = unsafe { libc::getpid() };
         let app = unsafe { window.owningApplication() };
@@ -1988,6 +2051,7 @@ mod tests {
                 test_pattern: false,
             },
             video: test_video(),
+            protected_overlay_window_ids: Vec::new(),
         }
     }
 
@@ -2038,6 +2102,37 @@ mod tests {
         assert_eq!(
             source_key_for_source(&window),
             SourceKey::window("window:screencapturekit:42")
+        );
+    }
+
+    #[test]
+    fn protected_overlay_window_ids_are_normalized_and_exact() {
+        let ids = normalized_protected_overlay_window_ids(vec![42, 0, 7, 42]);
+
+        assert_eq!(ids, vec![7, 42]);
+        assert!(should_exclude_protected_overlay_window(42, &ids));
+        assert!(should_exclude_protected_overlay_window(7, &ids));
+        assert!(!should_exclude_protected_overlay_window(4, &ids));
+        assert!(!should_exclude_protected_overlay_window(420, &ids));
+    }
+
+    #[tokio::test]
+    async fn rejects_protected_overlay_window_as_selected_source() {
+        let state = test_state();
+        let mut params = screen_params(None, Some("window:screencapturekit:42"));
+        params.protected_overlay_window_ids = vec![42];
+
+        let status = start_preview_screen(state, params).await;
+
+        assert_eq!(status.state, PreviewScreenState::SourceMissing);
+        assert_eq!(
+            status.source_id.as_deref(),
+            Some("window:screencapturekit:42")
+        );
+        assert_eq!(status.source_kind, Some(PreviewScreenSourceKind::Window));
+        assert_eq!(
+            status.message.as_deref(),
+            Some("The Videorc Notes window cannot be selected as a capture source.")
         );
     }
 
@@ -2158,6 +2253,7 @@ mod tests {
             source_key: source_key.clone(),
             video: video.clone(),
             target_fps: video.fps,
+            protected_overlay_window_ids: Vec::new(),
         };
         let starting = PreviewScreenStatus {
             state: PreviewScreenState::Starting,
@@ -2337,10 +2433,11 @@ mod tests {
                 join_handle: None,
                 shared: Arc::new(StdMutex::new(PreviewScreenShared::default())),
                 video: video.clone(),
+                protected_overlay_window_ids: Vec::new(),
             });
         }
 
-        let status = reuse_current_screen_source(&state, &source_key, &video, video.fps)
+        let status = reuse_current_screen_source(&state, &source_key, &video, video.fps, &[])
             .await
             .expect("screen source should be reused");
         let slot = state.preview_screen.lock().await;
@@ -2350,6 +2447,61 @@ mod tests {
         assert_eq!(
             status.message.as_deref(),
             Some("Native screen preview source reused.")
+        );
+    }
+
+    #[tokio::test]
+    async fn changed_protected_overlay_windows_prevent_screen_source_reuse() {
+        let state = test_state();
+        let source_key = SourceKey::screen("screen:screencapturekit:5");
+        let (stop_tx, _stop_rx) = std_mpsc::channel();
+        let video = test_video();
+        {
+            let mut slot = state.preview_screen.lock().await;
+            slot.source_key = Some(source_key.clone());
+            slot.run_id = Some("run-1".to_string());
+            slot.status = PreviewScreenStatus {
+                state: PreviewScreenState::Live,
+                source_id: Some(source_key.id.clone()),
+                source_kind: Some(PreviewScreenSourceKind::Screen),
+                target_fps: video.fps,
+                width: Some(video.width),
+                height: Some(video.height),
+                native_width: Some(video.width),
+                native_height: Some(video.height),
+                requested_width: Some(video.width),
+                requested_height: Some(video.height),
+                actual_width: Some(video.width),
+                actual_height: Some(video.height),
+                iosurface_available: Some(false),
+                source_fps: Some(f64::from(video.fps)),
+                frame_age_ms: Some(6),
+                frames_captured: 24,
+                dropped_frames: 0,
+                sequence: Some(24),
+                include_cursor: true,
+                exclude_current_process_windows: false,
+                updated_at: Utc::now().to_rfc3339(),
+                message: Some("Live".to_string()),
+            };
+            slot.active = Some(NativeScreenPreviewThread {
+                stop_tx,
+                join_handle: None,
+                shared: Arc::new(StdMutex::new(PreviewScreenShared::default())),
+                video: video.clone(),
+                protected_overlay_window_ids: vec![42],
+            });
+        }
+
+        assert!(
+            reuse_current_screen_source(&state, &source_key, &video, video.fps, &[42])
+                .await
+                .is_some()
+        );
+        assert!(
+            reuse_current_screen_source(&state, &source_key, &video, video.fps, &[7])
+                .await
+                .is_none()
         );
     }
 }

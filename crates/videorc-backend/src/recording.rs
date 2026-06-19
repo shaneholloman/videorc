@@ -583,6 +583,7 @@ pub async fn start_session(
                 sources: params.sources.clone(),
                 layout: params.layout.clone(),
                 video: Some(params.output.video.clone()),
+                protected_overlay_window_ids: Vec::new(),
             })
         });
         let startup_source_requirements = recording_startup_source_requirements(&scene);
@@ -3420,6 +3421,7 @@ async fn should_use_compositor_encoder_bridge(
             sources: params.sources.clone(),
             layout: params.layout.clone(),
             video: Some(params.output.video.clone()),
+            protected_overlay_window_ids: Vec::new(),
         })
     });
     let screen_image_usable = stream_screen_image_usable(active_screen);

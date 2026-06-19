@@ -413,6 +413,7 @@ async fn start_missing_sources(
                     PreviewScreenStartParams {
                         sources: params.sources.clone(),
                         video: params.video.clone().unwrap_or_else(fallback_video_settings),
+                        protected_overlay_window_ids: params.protected_overlay_window_ids.clone(),
                     },
                 )
                 .await;
@@ -527,6 +528,7 @@ mod tests {
             sources: sources(camera, screen),
             layout: layout(preset),
             video: Some(fallback_video_settings()),
+            protected_overlay_window_ids: Vec::new(),
         }
     }
 

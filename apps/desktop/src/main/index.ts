@@ -617,6 +617,16 @@ function notesWindowIsOpen(): boolean {
   return Boolean(notesWindow && !notesWindow.isDestroyed() && !notesWindowClosing)
 }
 
+function notesWindowGlobalId(): number | undefined {
+  const window = notesWindow
+  if (!notesWindowIsOpen() || !window) {
+    return undefined
+  }
+  const match = /^window:(\d+):/.exec(window.getMediaSourceId())
+  const id = match ? Number(match[1]) : Number.NaN
+  return Number.isFinite(id) && id > 0 ? id : undefined
+}
+
 function notesWindowState(message?: string): NotesWindowState {
   const window = notesWindow
   const open = notesWindowIsOpen()
@@ -624,6 +634,7 @@ function notesWindowState(message?: string): NotesWindowState {
     open,
     visible: open ? window!.isVisible() && !window!.isMinimized() : false,
     bounds: open ? window!.getBounds() : null,
+    windowId: notesWindowGlobalId(),
     alwaysOnTop: notesWindowAlwaysOnTop,
     protected: notesWindowContentProtected,
     enabled: notesWindowFeatureEnabled,

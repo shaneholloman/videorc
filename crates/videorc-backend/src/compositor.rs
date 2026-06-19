@@ -3571,6 +3571,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 6000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         CompositorSceneSnapshot {
             revision: 1,
@@ -3969,6 +3970,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         let snapshot = CompositorSceneSnapshot {
             revision: 1,
@@ -4052,6 +4054,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         let mut overlay = scene.sources[0].clone();
         overlay.id = "source:test-pattern-overlay".to_string();
@@ -4126,6 +4129,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         let snapshot = CompositorSceneSnapshot {
             revision: 1,
@@ -4202,6 +4206,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         scene.background = Some(EffectiveSceneBackground {
             asset_id: "builtin-bg-01".to_string(),
@@ -4287,6 +4292,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         {
             let mut compositor = state.compositor.lock().await;
@@ -4365,6 +4371,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         {
             let mut compositor = state.compositor.lock().await;
@@ -4433,6 +4440,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         scene
             .sources
@@ -4731,6 +4739,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         update_compositor_scene(
             &state,
@@ -4807,6 +4816,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         let stream_store = Arc::new(StdMutex::new(FrameStore::new(2)));
         {
@@ -5353,6 +5363,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         let snapshot = CompositorSceneSnapshot {
             revision: 1,
@@ -5415,6 +5426,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         scene.background = Some(EffectiveSceneBackground {
             asset_id: "builtin-bg-01".to_string(),
@@ -5542,6 +5554,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         let snapshot = CompositorSceneSnapshot {
             revision: 1,
@@ -5601,6 +5614,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            protected_overlay_window_ids: Vec::new(),
         });
         {
             let mut compositor = state.compositor.lock().await;
@@ -5670,6 +5684,7 @@ mod tests {
             },
             layout: layout.clone(),
             video: None,
+            protected_overlay_window_ids: Vec::new(),
         });
         let scene_source_count = scene.sources.len();
 

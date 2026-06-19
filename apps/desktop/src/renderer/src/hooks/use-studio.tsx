@@ -528,6 +528,30 @@ const idleNotesWindowState = (): NotesWindowState => ({
   message: 'Notes window is behind the VIDEORC_NOTES_WINDOW=1 internal feature gate.'
 })
 
+function protectedOverlayWindowIdsFromNotesWindow(
+  notesWindow: Pick<NotesWindowState, 'open' | 'windowId'>
+): number[] {
+  return notesWindow.open && typeof notesWindow.windowId === 'number' ? [notesWindow.windowId] : []
+}
+
+function deviceListWithoutNotesWindow(
+  deviceList: DeviceList,
+  notesWindow: Pick<NotesWindowState, 'open' | 'windowId'>
+): DeviceList {
+  const protectedWindowIds = protectedOverlayWindowIdsFromNotesWindow(notesWindow)
+  if (protectedWindowIds.length === 0) {
+    return deviceList
+  }
+  const protectedIds = new Set(protectedWindowIds.map((id) => `window:screencapturekit:${id}`))
+  const devices = deviceList.devices.filter((device) => !protectedIds.has(device.id))
+  return devices.length === deviceList.devices.length ? deviceList : { ...deviceList, devices }
+}
+
+async function currentProtectedOverlayWindowIds(): Promise<number[]> {
+  const latestNotesWindow = await window.videorc?.getNotesWindowState?.().catch(() => null)
+  return protectedOverlayWindowIdsFromNotesWindow(latestNotesWindow ?? idleNotesWindowState())
+}
+
 export function useStudio(): StudioContextValue {
   const value = useContext(StudioContext)
   if (!value) {
@@ -2050,13 +2074,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           return
         }
         setLayoutSwitchPending(layout.layoutPreset)
-        client
-          .request<LiveLayoutApplyStatus>('scene.layout.apply_live', {
-            sources: captureConfig.sources,
-            layout,
-            video: captureConfig.video
-          })
-          .then((status) => {
+        void (async () => {
+          try {
+            const protectedOverlayWindowIds = await currentProtectedOverlayWindowIds()
+            const status = await client.request<LiveLayoutApplyStatus>('scene.layout.apply_live', {
+              sources: captureConfig.sources,
+              layout,
+              video: captureConfig.video,
+              protectedOverlayWindowIds
+            })
             applyScene(status.scene)
             setCaptureConfig((current) => ({
               ...current,
@@ -2070,12 +2096,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             if (status.mode === 'warm' && status.message) {
               toast.success(status.message)
             }
-          })
-          .catch((error: unknown) => {
+          } catch (error) {
             // The previous layout is still live; surface the exact backend reason.
             reportError(error)
-          })
-          .finally(() => setLayoutSwitchPending(null))
+          } finally {
+            setLayoutSwitchPending(null)
+          }
+        })()
         return
       }
 
@@ -2132,10 +2159,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
       setSourceDeviceSwitchPending(sourceKind)
       try {
+        const protectedOverlayWindowIds = await currentProtectedOverlayWindowIds()
         const status = await client.request<LiveLayoutApplyStatus>('scene.source.device.switch', {
           sources,
           layout: captureConfig.layout,
-          video: captureConfig.video
+          video: captureConfig.video,
+          protectedOverlayWindowIds
         })
         applyScene(status.scene)
         setCaptureConfig((current) => ({ ...current, sources }))
@@ -2252,12 +2281,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       return status
     }
 
+    const protectedOverlayWindowIds = await currentProtectedOverlayWindowIds()
     const key = JSON.stringify({
       sourceId,
       sourceKind,
       width: captureConfig.video.width,
       height: captureConfig.video.height,
-      fps: captureConfig.video.fps
+      fps: captureConfig.video.fps,
+      protectedOverlayWindowIds
     })
     const current = previewScreenStatusRef.current
     if (
@@ -2271,7 +2302,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
     const status = await client.request<PreviewScreenStatus>('preview.screen.start', {
       sources: captureConfig.sources,
-      video: captureConfig.video
+      video: captureConfig.video,
+      protectedOverlayWindowIds
     })
     nativePreviewScreenKeyRef.current =
       status.state === 'failed' || status.state === 'source-missing' ? null : key
@@ -2677,6 +2709,18 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       })
     })
   }, [notesWindow.open, recording.state])
+
+  useEffect(() => {
+    if (!notesWindow.enabled) {
+      return
+    }
+    const current = previewScreenStatusRef.current
+    if (current.state !== 'starting' && current.state !== 'live') {
+      return
+    }
+    nativePreviewScreenKeyRef.current = null
+    void ensureNativePreviewScreen()
+  }, [ensureNativePreviewScreen, notesWindow.enabled, notesWindow.open, notesWindow.windowId])
 
   // The preview window is locked to the OUTPUT aspect ratio — the user can never
   // squeeze or stretch what they will record/stream.
@@ -4116,12 +4160,19 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     !stopRequestPending
       ? startBlockedReason
       : null
+  const visibleDeviceList = useMemo(
+    () => deviceListWithoutNotesWindow(deviceList, notesWindow),
+    [deviceList, notesWindow]
+  )
   const selectedCaptureDevice = findDevice(
-    deviceList.devices,
+    visibleDeviceList.devices,
     captureConfig.sources.screenId ?? captureConfig.sources.windowId
   )
-  const selectedCamera = findDevice(deviceList.devices, captureConfig.sources.cameraId)
-  const selectedMicrophone = findDevice(deviceList.devices, captureConfig.sources.microphoneId)
+  const selectedCamera = findDevice(visibleDeviceList.devices, captureConfig.sources.cameraId)
+  const selectedMicrophone = findDevice(
+    visibleDeviceList.devices,
+    captureConfig.sources.microphoneId
+  )
   const setupSteps = setupChecklist({
     audioMeter,
     captureConfig,
@@ -4209,7 +4260,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       wsStatus,
       health,
       entitlements,
-      deviceList,
+      deviceList: visibleDeviceList,
       recording,
       logs,
       healthEvents,
@@ -4350,7 +4401,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       wsStatus,
       health,
       entitlements,
-      deviceList,
+      visibleDeviceList,
       recording,
       logs,
       healthEvents,

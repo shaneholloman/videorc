@@ -514,6 +514,7 @@ mod tests {
                 side_by_side_camera_side: SideBySideCameraSide::Right,
             },
             video: None,
+            protected_overlay_window_ids: Vec::new(),
         }
     }
 

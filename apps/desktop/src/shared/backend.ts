@@ -312,6 +312,7 @@ export interface SceneConfigParams {
   sources: SourceSelection
   layout: LayoutSettings
   video?: VideoSettings
+  protectedOverlayWindowIds?: number[]
 }
 
 export interface SceneTransformUpdateParams {
@@ -1190,6 +1191,7 @@ export type PreviewScreenSourceKind = 'screen' | 'window'
 export interface PreviewScreenStartParams {
   sources: SourceSelection
   video: VideoSettings
+  protectedOverlayWindowIds?: number[]
 }
 
 export interface PreviewScreenStatus {
@@ -1733,6 +1735,7 @@ export interface NotesWindowState {
   open: boolean
   visible: boolean
   bounds: { x: number; y: number; width: number; height: number } | null
+  windowId?: number
   alwaysOnTop: boolean
   protected: boolean
   enabled: boolean
