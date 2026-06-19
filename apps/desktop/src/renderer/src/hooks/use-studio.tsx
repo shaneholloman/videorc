@@ -2698,6 +2698,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     await window.videorc?.setNotesWindowAlwaysOnTop?.(alwaysOnTop)
   }, [])
 
+  const notesProtectedOverlayKey = useMemo(
+    () =>
+      notesWindow.open && typeof notesWindow.windowId === 'number'
+        ? String(notesWindow.windowId)
+        : '',
+    [notesWindow.open, notesWindow.windowId]
+  )
+
   useEffect(() => {
     if (
       !notesWindow.open ||
@@ -2714,16 +2722,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   }, [notesWindow.open, recording.state, runtimeInfo?.notesWindowRecordingOverlayAllowed])
 
   useEffect(() => {
-    if (!notesWindow.enabled) {
-      return
-    }
     const current = previewScreenStatusRef.current
     if (current.state !== 'starting' && current.state !== 'live') {
       return
     }
     nativePreviewScreenKeyRef.current = null
     void ensureNativePreviewScreen()
-  }, [ensureNativePreviewScreen, notesWindow.enabled, notesWindow.open, notesWindow.windowId])
+  }, [ensureNativePreviewScreen, notesProtectedOverlayKey])
 
   // The preview window is locked to the OUTPUT aspect ratio — the user can never
   // squeeze or stretch what they will record/stream.
