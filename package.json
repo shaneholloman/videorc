@@ -53,6 +53,7 @@
     "measure:av-sync": "node scripts/measure-av-sync.mjs",
     "smoke:dev": "node scripts/smoke-dev-app.mjs",
     "smoke:backend-single-instance": "node scripts/smoke-backend-single-instance.mjs",
+    "smoke:process-lifecycle": "node scripts/smoke-process-lifecycle.mjs",
     "smoke:sources": "node scripts/smoke-source-reconciliation.mjs",
     "smoke:start-labels": "node scripts/smoke-start-labels.mjs",
     "smoke:preview-motion": "node scripts/smoke-preview-motion-app.mjs",
