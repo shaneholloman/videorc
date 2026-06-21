@@ -497,17 +497,23 @@ pub async fn start_session(
     } else {
         EncoderBridgeVideoOutput::RawYuv420p
     };
-    let encoder_bridge_resolved_stream_profile =
-        if use_encoder_bridge && params.output.stream_enabled {
-            Some(resolve_stream_output_video(&params)?)
-        } else {
-            None
-        };
     let encoder_bridge_stream_output = if use_encoder_bridge {
         recording_compositor_stream_output(&params, encoder_bridge_video_output)?
     } else {
         None
     };
+    let encoder_bridge_resolved_stream_profile =
+        if use_encoder_bridge && params.output.stream_enabled {
+            match encoder_bridge_stream_output {
+                Some(stream_output) => Some(resolve_auxiliary_stream_output_video(
+                    &params,
+                    &stream_output,
+                )?),
+                None => Some(resolve_stream_output_video(&params)?),
+            }
+        } else {
+            None
+        };
     let encoder_bridge_stream_profile =
         encoder_bridge_stream_output.and_then(|_| encoder_bridge_resolved_stream_profile.clone());
     let encoder_bridge_stream_fifo = if encoder_bridge_stream_output.is_some() {
@@ -2775,6 +2781,7 @@ struct StreamTarget {
     target_id: String,
     platform: StreamPlatform,
     label: String,
+    output_video: Option<VideoSettings>,
 }
 
 /// An enabled stream destination that was skipped this session because its
@@ -3795,7 +3802,7 @@ fn bridge_compositor_split_output_ffmpeg_args(
         bail!("Split output encoder bridge requires at least one stream target");
     }
     ensure_encoded_bridge_video_output(recording_video_output)?;
-    let stream_video = resolve_stream_output_video(params)?;
+    let stream_video = resolve_auxiliary_stream_output_video(params, &stream_output)?;
     if stream_output.width != stream_video.width || stream_output.height != stream_video.height {
         bail!(
             "Split output compositor target {}x{} does not match stream profile {}x{}",
@@ -3847,6 +3854,55 @@ fn bridge_compositor_split_output_ffmpeg_args(
         screen_overlay_input_index: None,
         audio_inputs: input_layout.audio_inputs.clone(),
     };
+    let mut stream_routes = Vec::new();
+    let mut uses_recording_stream_input = false;
+    let mut uses_companion_stream_input = false;
+    for target in stream_targets {
+        let target_video = target.output_video.as_ref().unwrap_or(&stream_video);
+        let video_input_index = if same_video_profile(target_video, &params.output.video) {
+            uses_recording_stream_input = true;
+            recording_video_input_index
+        } else if same_video_profile(target_video, &stream_video) {
+            uses_companion_stream_input = true;
+            stream_video_input_index
+        } else {
+            bail!(
+                "Target {} resolves to unsupported mixed stream profile {}x{}@{} {}kbps",
+                target.label,
+                target_video.width,
+                target_video.height,
+                target_video.fps,
+                target_video.bitrate_kbps
+            );
+        };
+        stream_routes.push((target, video_input_index));
+    }
+    let mixed_stream_inputs = uses_recording_stream_input && uses_companion_stream_input;
+
+    if mixed_stream_inputs {
+        for (target, video_input_index) in stream_routes {
+            let stream_input_layout = InputLayout {
+                video_input_index,
+                camera_input_index: None,
+                screen_overlay_input_index: None,
+                audio_inputs: input_layout.audio_inputs.clone(),
+            };
+            args.extend(["-map".to_string(), format!("{video_input_index}:v")]);
+            append_audio_output_args(&mut args, &stream_input_layout);
+            args.extend(["-c:v".to_string(), "copy".to_string()]);
+            append_audio_encoding_args(&mut args, &stream_input_layout, &params.audio, true);
+            args.push("-shortest".to_string());
+            args.extend([
+                "-flvflags".to_string(),
+                "no_duration_filesize".to_string(),
+                "-f".to_string(),
+                "flv".to_string(),
+                target.url.clone(),
+            ]);
+        }
+        return Ok(args);
+    }
+
     args.extend(["-map".to_string(), format!("{stream_video_input_index}:v")]);
     append_audio_output_args(&mut args, &stream_input_layout);
     args.extend(["-c:v".to_string(), "copy".to_string()]);
@@ -5350,19 +5406,84 @@ fn recording_compositor_stream_output(
     ) {
         return Ok(None);
     }
-    let profiles = resolve_split_output_profiles(params)?;
-    let (Some(recording), Some(stream)) = (profiles.recording.as_ref(), profiles.stream.as_ref())
-    else {
-        return Ok(None);
-    };
-    if recording.width == stream.width && recording.height == stream.height {
+    let recording = &params.output.video;
+    let companion_outputs = companion_stream_outputs_for_recording(params, recording)?;
+    if companion_outputs.is_empty() {
         return Ok(None);
     }
+    if companion_outputs.len() > 1 {
+        bail!(
+            "Mixed stream output currently supports one companion output profile beside the recording profile."
+        );
+    }
+    let stream = &companion_outputs[0];
     Ok(Some(CompositorAuxiliaryOutput {
         width: stream.width,
         height: stream.height,
         publish_yuv_frames: false,
     }))
+}
+
+fn companion_stream_outputs_for_recording(
+    params: &StartSessionParams,
+    recording: &VideoSettings,
+) -> Result<Vec<VideoSettings>> {
+    let mut outputs = Vec::new();
+    for output in resolved_enabled_stream_output_videos(params)? {
+        if same_video_profile(&output, recording) {
+            continue;
+        }
+        if !outputs
+            .iter()
+            .any(|existing| same_video_profile(existing, &output))
+        {
+            outputs.push(output);
+        }
+    }
+    Ok(outputs)
+}
+
+fn resolved_enabled_stream_output_videos(
+    params: &StartSessionParams,
+) -> Result<Vec<VideoSettings>> {
+    if !params.output.stream_enabled {
+        return Ok(Vec::new());
+    }
+    if let Some(streaming) = params
+        .streaming
+        .as_ref()
+        .filter(|streaming| streaming.enabled)
+    {
+        return Ok(enabled_streaming_targets(params)
+            .into_iter()
+            .map(|target| stream_target_output_video(streaming, target))
+            .collect());
+    }
+    Ok(vec![params.output.video.clone()])
+}
+
+fn same_video_profile(left: &VideoSettings, right: &VideoSettings) -> bool {
+    left.width == right.width
+        && left.height == right.height
+        && left.fps == right.fps
+        && left.bitrate_kbps == right.bitrate_kbps
+}
+
+fn resolve_auxiliary_stream_output_video(
+    params: &StartSessionParams,
+    stream_output: &CompositorAuxiliaryOutput,
+) -> Result<VideoSettings> {
+    let companion_outputs = companion_stream_outputs_for_recording(params, &params.output.video)?;
+    companion_outputs
+        .into_iter()
+        .find(|output| output.width == stream_output.width && output.height == stream_output.height)
+        .or_else(|| resolve_stream_output_video(params).ok())
+        .with_context(|| {
+            format!(
+                "No stream profile matched auxiliary compositor output {}x{}",
+                stream_output.width, stream_output.height
+            )
+        })
 }
 
 fn encoder_bridge_output_profile(video: &VideoSettings) -> EncoderBridgeOutputProfile {
@@ -5455,9 +5576,37 @@ fn validate_true_4k_stream_profile(
             "YouTube 4K30 streaming requires the Record 4K30 local recording profile during v1 acceptance."
         );
     }
-    let targets = enabled_streaming_targets(params);
-    if targets.len() != 1 || targets[0].platform != StreamPlatform::Youtube {
-        bail!("YouTube 4K30 streaming requires exactly one enabled YouTube destination.");
+    let target_outputs = resolved_enabled_stream_output_videos(params)?;
+    let true_4k_targets: Vec<&VideoSettings> = target_outputs
+        .iter()
+        .filter(|video| is_true_4k_stream_output(video))
+        .collect();
+    if true_4k_targets.is_empty() {
+        bail!("YouTube 4K30 streaming requires at least one enabled YouTube 4K destination.");
+    }
+    let streaming = params
+        .streaming
+        .as_ref()
+        .filter(|streaming| streaming.enabled)
+        .context("YouTube 4K30 streaming requires modern streaming settings.")?;
+    for target in enabled_streaming_targets(params) {
+        let target_video = stream_target_output_video(streaming, target);
+        if is_true_4k_stream_output(&target_video) {
+            if target.platform != StreamPlatform::Youtube {
+                bail!("True 4K streaming requires a YouTube destination.");
+            }
+            if !matches!(target_video.preset, VideoPreset::StreamYoutube4k30) {
+                bail!("True 4K streaming requires the YouTube 4K30 stream profile.");
+            }
+            require_video_profile(&target_video, 3840, 2160, 30, 30_000)?;
+        } else if target_video.width > 1920
+            || target_video.height > 1080
+            || target_video.bitrate_kbps > 6000
+        {
+            bail!(
+                "Mixed 4K streaming requires non-YouTube destinations to use stream-safe 1080p output."
+            );
+        }
     }
     if compositor_encoder_bridge_disabled(
         params.output.record_enabled,
@@ -5617,6 +5766,7 @@ fn build_stream_url(settings: &RtmpSettings) -> Result<StreamTarget> {
         target_id: stream_platform_id(platform).to_string(),
         platform,
         label: stream_platform_label(platform).to_string(),
+        output_video: None,
     })
 }
 
@@ -5637,11 +5787,15 @@ fn escape_tee_target(target: &str) -> String {
         .replace(']', "\\]")
 }
 
-fn resolve_stream_target(target: &StreamTargetSettings) -> Result<StreamTarget> {
+fn resolve_stream_target(
+    streaming: &StreamingSettings,
+    target: &StreamTargetSettings,
+) -> Result<StreamTarget> {
     let server = target.server_url.trim().trim_end_matches('/');
     if server.is_empty() {
         bail!("{} RTMP URL is missing", target.label);
     }
+    let output_video = Some(stream_target_output_video(streaming, target));
     if matches!(target.url_mode, Some(StreamUrlMode::FullUrl)) {
         return Ok(StreamTarget {
             url: server.to_string(),
@@ -5649,6 +5803,7 @@ fn resolve_stream_target(target: &StreamTargetSettings) -> Result<StreamTarget> 
             target_id: target.id.clone(),
             platform: target.platform,
             label: target.label.clone(),
+            output_video,
         });
     }
     let stream_key = target.stream_key.trim().trim_start_matches('/');
@@ -5661,7 +5816,32 @@ fn resolve_stream_target(target: &StreamTargetSettings) -> Result<StreamTarget> 
         target_id: target.id.clone(),
         platform: target.platform,
         label: target.label.clone(),
+        output_video,
     })
+}
+
+fn stream_target_output_video(
+    streaming: &StreamingSettings,
+    target: &StreamTargetSettings,
+) -> VideoSettings {
+    let output_preset = target.output_preset.clone().unwrap_or_else(|| {
+        if streaming.default_output_preset == VideoPreset::StreamYoutube4k30
+            && target.platform != StreamPlatform::Youtube
+        {
+            VideoPreset::StreamSafe1080p30
+        } else {
+            streaming.default_output_preset.clone()
+        }
+    });
+    let mut video = video_preset_defaults(output_preset.clone());
+    video.bitrate_kbps = target.output_bitrate_kbps.unwrap_or_else(|| {
+        if output_preset == streaming.default_output_preset {
+            streaming.default_bitrate_kbps
+        } else {
+            video.bitrate_kbps
+        }
+    });
+    video
 }
 
 /// Resolves every enabled stream target, partitioning into the destinations that are
@@ -5671,7 +5851,7 @@ fn resolve_stream_target(target: &StreamTargetSettings) -> Result<StreamTarget> 
 fn resolve_stream_targets(streaming: &StreamingSettings) -> StreamTargetResolution {
     let mut resolution = StreamTargetResolution::default();
     for target in streaming.targets.iter().filter(|target| target.enabled) {
-        match resolve_stream_target(target) {
+        match resolve_stream_target(streaming, target) {
             Ok(resolved) => resolution.ready.push(resolved),
             Err(error) => resolution.skipped.push(SkippedStreamTarget {
                 target_id: target.id.clone(),
@@ -6431,6 +6611,51 @@ mod tests {
         assert!(targets.iter().any(|t| t.url.ends_with("/yt")));
         assert!(targets.iter().any(|t| t.url.ends_with("/tw")));
         assert!(targets.iter().any(|t| t.url.ends_with("/xk")));
+    }
+
+    #[test]
+    fn resolves_target_output_profiles_for_mixed_youtube_4k_streaming() {
+        let mut streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+        ]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        let youtube = targets
+            .iter()
+            .find(|target| target.platform == StreamPlatform::Youtube)
+            .unwrap();
+        let twitch = targets
+            .iter()
+            .find(|target| target.platform == StreamPlatform::Twitch)
+            .unwrap();
+
+        assert_eq!(
+            youtube.output_video,
+            Some(VideoSettings {
+                preset: VideoPreset::StreamYoutube4k30,
+                width: 3840,
+                height: 2160,
+                fps: 30,
+                bitrate_kbps: 30_000,
+            })
+        );
+        assert_eq!(
+            twitch.output_video,
+            Some(VideoSettings {
+                preset: VideoPreset::StreamSafe1080p30,
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                bitrate_kbps: 6000,
+            })
+        );
     }
 
     #[test]
@@ -7593,6 +7818,82 @@ mod tests {
             "stream split-output tee must isolate stream slaves with a fifo: {args:?}"
         );
         assert_eq!(arg_value(&args, "-filter_complex"), None);
+    }
+
+    #[test]
+    fn split_output_bridge_routes_mixed_youtube_4k_and_twitch_1080p_outputs() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+        ]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+        params.streaming = Some(streaming.clone());
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        let recording_fifo_path = Path::new("/tmp/videorc-bridge-recording-output.h264");
+        let stream_fifo_path = Path::new("/tmp/videorc-bridge-stream-output.h264");
+        let stream_output = recording_compositor_stream_output(
+            &params,
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+        )
+        .unwrap()
+        .expect("1080p companion stream output");
+
+        assert_eq!(
+            stream_output,
+            CompositorAuxiliaryOutput {
+                width: 1920,
+                height: 1080,
+                publish_yuv_frames: false,
+            }
+        );
+
+        let args = bridge_compositor_split_output_ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: None,
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-bridge-record-stream-mixed.mkv")),
+            &targets,
+            recording_fifo_path,
+            stream_fifo_path,
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+            stream_output,
+        )
+        .unwrap();
+
+        assert!(!args.contains(&"tee".to_string()));
+        assert!(args.contains(&"/tmp/videorc-bridge-record-stream-mixed.mkv".to_string()));
+        assert!(args.contains(&"rtmp://a.rtmp.youtube.com/live2/yt".to_string()));
+        assert!(args.contains(&"rtmp://live.twitch.tv/app/tw".to_string()));
+        assert_eq!(
+            args.windows(2)
+                .filter(|pair| pair == &["-map", "1:v"])
+                .count(),
+            2
+        );
+        assert_eq!(
+            args.windows(2)
+                .filter(|pair| pair == &["-map", "2:v"])
+                .count(),
+            1
+        );
+        assert_eq!(args.iter().filter(|arg| *arg == "-c:v").count(), 3);
+        assert_eq!(args.iter().filter(|arg| arg.as_str() == "copy").count(), 3);
     }
 
     #[test]
@@ -9413,6 +9714,55 @@ mod tests {
             .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn split_output_profiles_allow_youtube_4k_with_twitch_1080p_companion() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+        ]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+        params.streaming = Some(streaming);
+
+        let profiles = resolve_split_output_profiles(&params).unwrap();
+
+        assert_eq!(
+            profiles.stream,
+            Some(VideoSettings {
+                preset: VideoPreset::StreamYoutube4k30,
+                width: 3840,
+                height: 2160,
+                fps: 30,
+                bitrate_kbps: 30_000,
+            })
+        );
+        assert_eq!(
+            recording_compositor_stream_output(
+                &params,
+                EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+            )
+            .unwrap(),
+            Some(CompositorAuxiliaryOutput {
+                width: 1920,
+                height: 1080,
+                publish_yuv_frames: false,
+            })
+        );
+        validate_outputs(&params).unwrap();
     }
 
     #[test]
