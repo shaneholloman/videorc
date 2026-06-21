@@ -54,6 +54,7 @@ import type {
   StreamPrivacy,
   StreamTargetRuntime,
   StreamTargetSettings,
+  StreamingSettings,
   StreamUrlMode,
   VideoSettings,
   TwitchCategory,
@@ -62,6 +63,7 @@ import type {
 } from '@/lib/backend'
 import {
   isStreamTargetReady,
+  streamOutputVideoForTarget,
   streamOutputVideoSettings,
   videoProfileCompatibility
 } from '@/lib/capture'
@@ -247,6 +249,7 @@ export function StreamingTab(): ReactElement {
           recordEnabled={captureConfig.recordEnabled}
           recordingVideo={video}
           splitOutputActive={splitOutputActive}
+          streaming={streaming}
           streamVideo={streamVideo}
           targets={streaming.targets}
         />
@@ -1406,6 +1409,7 @@ function StreamingReadiness({
   recordEnabled,
   recordingVideo,
   splitOutputActive,
+  streaming,
   streamVideo
 }: {
   targets: StreamTargetSettings[]
@@ -1414,31 +1418,55 @@ function StreamingReadiness({
   recordEnabled: boolean
   recordingVideo: VideoSettings
   splitOutputActive: boolean
+  streaming: StreamingSettings
   streamVideo: VideoSettings
 }): ReactElement {
   const enabled = targets.filter((target) => target.enabled)
   const readyCount = enabled.filter(isStreamTargetReady).length
   const allReady = enabled.length > 0 && readyCount === enabled.length
-  const true4kStreamActive = streamVideo.preset === 'stream-youtube-4k30'
-  const youtube4kTargetActive = enabled.length === 1 && enabled[0]?.platform === 'youtube'
+  const targetOutputs = enabled.map((target) => ({
+    target,
+    video: streamOutputVideoForTarget(recordingVideo, streaming, target)
+  }))
+  const outputVideos = targetOutputs.length
+    ? targetOutputs.map((output) => output.video)
+    : [streamVideo]
+  const true4kStreamActive = outputVideos.some((video) => video.preset === 'stream-youtube-4k30')
+  const mixedDestinationOutputs =
+    true4kStreamActive &&
+    targetOutputs.some((output) => output.video.preset !== 'stream-youtube-4k30')
   const presetOk =
     profileCompatible &&
-    (streamVideo.bitrateKbps <= 6000 ||
-      (true4kStreamActive && youtube4kTargetActive && streamVideo.bitrateKbps === 30000))
+    outputVideos.every((video, index) => {
+      const target = targetOutputs[index]?.target
+      return (
+        video.bitrateKbps <= 6000 ||
+        (video.preset === 'stream-youtube-4k30' &&
+          target?.platform === 'youtube' &&
+          video.bitrateKbps === 30000)
+      )
+    })
   const showRecordingOutput = recordEnabled && (splitOutputActive || true4kStreamActive)
   const compatibilityHint = true4kStreamActive
-    ? ' · enable one YouTube destination'
+    ? ' · keep 4K on YouTube and companions stream-safe'
     : ' · choose stream-safe 1080p'
   const outputCompatibilityLabel = true4kStreamActive
-    ? 'YouTube 4K stream compatible'
+    ? mixedDestinationOutputs
+      ? 'Mixed stream outputs compatible'
+      : 'YouTube 4K stream compatible'
     : splitOutputActive
       ? 'Stream output compatible'
       : 'Output preset compatible'
-  const outputCompatibilityDetail = `${formatVideoOutput(streamVideo)} · ${streamVideo.bitrateKbps} kbps${
-    presetOk ? '' : compatibilityHint
-  }`
+  const outputCompatibilityDetail =
+    targetOutputs.length > 1
+      ? `${formatTargetOutputSummary(targetOutputs)}${presetOk ? '' : compatibilityHint}`
+      : `${formatVideoOutput(streamVideo)} · ${streamVideo.bitrateKbps} kbps${
+          presetOk ? '' : compatibilityHint
+        }`
   const uploadMbps = enabled.length
-    ? Math.round((((streamVideo.bitrateKbps + 128) * enabled.length * 1.1) / 1000) * 10) / 10
+    ? Math.round(
+        (outputVideos.reduce((total, video) => total + video.bitrateKbps + 128, 0) * 1.1) / 100
+      ) / 10
     : 0
   const diskMbPerMin = Math.round((recordingVideo.bitrateKbps / 8 / 1000) * 60)
 
@@ -1479,7 +1507,9 @@ function StreamingReadiness({
 
       <p className="text-xs text-muted-foreground">
         {true4kStreamActive
-          ? 'YouTube 4K30 uses normal latency. Keep stable upload comfortably above 30 Mbps; Twitch and custom destinations stay blocked until per-target outputs ship.'
+          ? mixedDestinationOutputs
+            ? 'YouTube 4K30 uses normal latency. Non-YouTube destinations use separate stream-safe 1080p outputs; upload is the sum of every active destination.'
+            : 'YouTube 4K30 uses normal latency. Keep stable upload comfortably above 30 Mbps.'
           : splitOutputActive
             ? 'Recording and livestreaming use separate output encoders; the stream leg stays platform-safe for every destination.'
             : 'v1 streams the same encode to every destination via FFmpeg, so the bitrate is capped by the strictest platform (Twitch ~6000 kbps).'}
@@ -1499,6 +1529,17 @@ function sameVideoOutput(left: VideoSettings, right: VideoSettings): boolean {
 
 function formatVideoOutput(video: VideoSettings): string {
   return `${video.width}×${video.height} @ ${video.fps}`
+}
+
+function formatTargetOutputSummary(
+  outputs: Array<{ target: StreamTargetSettings; video: VideoSettings }>
+): string {
+  return outputs
+    .map(
+      ({ target, video }) =>
+        `${platformLabel(target.platform)} ${formatVideoOutput(video)} · ${video.bitrateKbps} kbps`
+    )
+    .join(' / ')
 }
 
 function ChecklistRow({

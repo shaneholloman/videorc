@@ -35,6 +35,8 @@
 //   VIDEORC_BASELINE_STREAM_BITRATE_KBPS       modern stream bitrate (default 6000)
 //   VIDEORC_BASELINE_STREAM_TARGET_PLATFORM    modern target platform (default custom)
 //   VIDEORC_BASELINE_STREAM_TARGET_ID          modern target id (default target platform)
+//   VIDEORC_BASELINE_STREAM_COMPANION=1        add one companion modern target
+//   VIDEORC_BASELINE_STREAM_COMPANION_SERVER_URL / _KEY / _PLATFORM / _ID
 //   VIDEORC_SMOKE_OUTPUT_DIR        where recordings + reports land
 //   VIDEORC_BASELINE_SCREEN_ID / _CAMERA_ID / _MIC_ID   force a specific device id
 //   VIDEORC_BASELINE_NO_SCREEN / _NO_CAMERA / _NO_MIC   omit that source
@@ -98,6 +100,14 @@ const config = {
     process.env.VIDEORC_BASELINE_STREAM_TARGET_ID ??
     process.env.VIDEORC_BASELINE_STREAM_TARGET_PLATFORM ??
     'custom',
+  streamCompanionEnabled: process.env.VIDEORC_BASELINE_STREAM_COMPANION === '1',
+  streamCompanionServerUrl: process.env.VIDEORC_BASELINE_STREAM_COMPANION_SERVER_URL ?? '',
+  streamCompanionKey: process.env.VIDEORC_BASELINE_STREAM_COMPANION_KEY ?? '',
+  streamCompanionPlatform: process.env.VIDEORC_BASELINE_STREAM_COMPANION_PLATFORM ?? 'twitch',
+  streamCompanionId:
+    process.env.VIDEORC_BASELINE_STREAM_COMPANION_ID ??
+    process.env.VIDEORC_BASELINE_STREAM_COMPANION_PLATFORM ??
+    'twitch',
   fallbackLivePreview: process.env.VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW === '1',
   noPreviewSurface: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE === '1',
   screenMotionStimulus: process.env.VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS === '1',
@@ -1803,6 +1813,17 @@ function realSourceGateRequest() {
     streamBitrateKbps: config.streamingSettingsEnabled ? config.streamBitrateKbps : null,
     streamTargetId: config.streamingSettingsEnabled ? config.streamTargetId : null,
     streamTargetPlatform: config.streamingSettingsEnabled ? config.streamTargetPlatform : null,
+    streamCompanionEnabled: config.streamingSettingsEnabled
+      ? config.streamCompanionEnabled
+      : false,
+    streamCompanionId:
+      config.streamingSettingsEnabled && config.streamCompanionEnabled
+        ? config.streamCompanionId
+        : null,
+    streamCompanionPlatform:
+      config.streamingSettingsEnabled && config.streamCompanionEnabled
+        ? config.streamCompanionPlatform
+        : null,
     requireMotion: config.requireMotion,
     screenMotionStimulus: config.screenMotionStimulus,
     avSyncStimulus: config.avSyncStimulus,
@@ -2511,28 +2532,44 @@ function streamingSettings() {
   const timestamp = new Date().toISOString()
   const targetId = config.streamTargetId
   const platform = config.streamTargetPlatform
+  const targets = [
+    {
+      id: targetId,
+      platform,
+      label: `Local ${streamTargetLabel(platform)} RTMP sink`,
+      enabled: true,
+      serverUrl: config.streamServerUrl,
+      urlMode: 'server-and-key',
+      streamKey: config.streamKey,
+      streamKeyPresent: Boolean(config.streamKey),
+      authMode: 'manual-rtmp',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ]
+  if (config.streamCompanionEnabled) {
+    targets.push({
+      id: config.streamCompanionId,
+      platform: config.streamCompanionPlatform,
+      label: `Local ${streamTargetLabel(config.streamCompanionPlatform)} RTMP sink`,
+      enabled: true,
+      serverUrl: config.streamCompanionServerUrl,
+      urlMode: 'server-and-key',
+      streamKey: config.streamCompanionKey,
+      streamKeyPresent: Boolean(config.streamCompanionKey),
+      authMode: 'manual-rtmp',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })
+  }
   return {
     enabled: true,
-    mode: 'single',
+    mode: targets.length > 1 ? 'multi' : 'single',
     selectedTargetId: targetId,
     defaultOutputPreset: config.streamOutputPreset,
     defaultBitrateKbps: config.streamBitrateKbps,
-    enabledTargetIds: [targetId],
-    targets: [
-      {
-        id: targetId,
-        platform,
-        label: `Local ${streamTargetLabel(platform)} RTMP sink`,
-        enabled: true,
-        serverUrl: config.streamServerUrl,
-        urlMode: 'server-and-key',
-        streamKey: config.streamKey,
-        streamKeyPresent: Boolean(config.streamKey),
-        authMode: 'manual-rtmp',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    ],
+    enabledTargetIds: targets.map((target) => target.id),
+    targets,
   }
 }
 

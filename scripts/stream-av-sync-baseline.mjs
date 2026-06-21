@@ -22,10 +22,12 @@
 //   node scripts/stream-av-sync-baseline.mjs [--gate] [--skip-record-only]
 //   node scripts/stream-av-sync-baseline.mjs --gate --skip-record-only --require-split-output-4k-record
 //   node scripts/stream-av-sync-baseline.mjs --gate --skip-record-only --require-youtube-4k-stream
+//   node scripts/stream-av-sync-baseline.mjs --gate --skip-record-only --require-mixed-youtube-4k-twitch-1080p
 //
 // Env:
 //   VIDEORC_BASELINE_RECORDING_MS    per-session length (default 60000; >=600000 makes the drift gate binding)
 //   VIDEORC_BASELINE_STREAM_PORT     local RTMP sink port (default 19501)
+//   VIDEORC_BASELINE_COMPANION_STREAM_PORT companion local RTMP sink port for mixed gate (default 19502)
 //   VIDEORC_SMOKE_OUTPUT_DIR         where session dirs + evidence land
 //   VIDEORC_SMOKE_FFMPEG_PATH        ffmpeg for the sink and the measurements
 //   (all other VIDEORC_BASELINE_* vars pass through to the underlying sessions)
@@ -40,6 +42,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { measureAvSync } from './lib/av-sync.mjs'
+import { evaluateMixedYoutube4kTwitch1080pEvidence } from './lib/mixed-youtube-4k-twitch-1080p-gate.mjs'
 import { probeMedia } from './lib/recording-analyzer.mjs'
 import { evaluateSplitOutput4kRecordEvidence } from './lib/split-output-4k-record-gate.mjs'
 import {
@@ -56,8 +59,10 @@ const config = {
   skipRecordOnly: argv.includes('--skip-record-only'),
   requireSplitOutput4kRecord: argv.includes('--require-split-output-4k-record'),
   requireYoutube4kStream: argv.includes('--require-youtube-4k-stream'),
+  requireMixedYoutube4kTwitch1080p: argv.includes('--require-mixed-youtube-4k-twitch-1080p'),
   recordingMs: Number(process.env.VIDEORC_BASELINE_RECORDING_MS ?? 60000),
   streamPort: Number(process.env.VIDEORC_BASELINE_STREAM_PORT ?? 19501),
+  companionStreamPort: Number(process.env.VIDEORC_BASELINE_COMPANION_STREAM_PORT ?? 19502),
   ffmpegPath: process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg',
   ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? null,
   sinkConnectGraceMs: 1500,
@@ -67,10 +72,14 @@ const config = {
   )
 }
 const STREAM_KEY = 'avsync-baseline' // local dummy key, not a secret
+const COMPANION_STREAM_KEY = 'avsync-baseline-companion' // local dummy key, not a secret
 const serverUrl = `rtmp://127.0.0.1:${config.streamPort}/live`
+const companionServerUrl = `rtmp://127.0.0.1:${config.companionStreamPort}/live`
 const redactedStreamUrl = `${serverUrl}/••••`
+const redactedCompanionStreamUrl = `${companionServerUrl}/••••`
 
 let sink = null
+let companionSink = null
 let exitCode = 0
 try {
   exitCode = await main()
@@ -79,13 +88,24 @@ try {
   exitCode = 2
 } finally {
   if (sink && sink.exitCode === null) sink.kill('SIGKILL')
+  if (companionSink && companionSink.exitCode === null) companionSink.kill('SIGKILL')
 }
 process.exit(exitCode)
 
 async function main() {
-  if (config.requireSplitOutput4kRecord && config.requireYoutube4kStream) {
+  const requestedProfileGates = [
+    ['--require-split-output-4k-record', config.requireSplitOutput4kRecord],
+    ['--require-youtube-4k-stream', config.requireYoutube4kStream],
+    ['--require-mixed-youtube-4k-twitch-1080p', config.requireMixedYoutube4kTwitch1080p]
+  ].filter(([, enabled]) => enabled)
+  if (requestedProfileGates.length > 1) {
     throw new Error(
-      '--require-split-output-4k-record and --require-youtube-4k-stream are mutually exclusive baseline profiles.'
+      `${requestedProfileGates.map(([flag]) => flag).join(', ')} are mutually exclusive baseline profiles.`
+    )
+  }
+  if (config.requireMixedYoutube4kTwitch1080p && config.streamPort === config.companionStreamPort) {
+    throw new Error(
+      `mixed baseline requires distinct RTMP sink ports; both were ${config.streamPort}.`
     )
   }
 
@@ -93,6 +113,7 @@ async function main() {
   const recordOnlyDir = join(config.outputRoot, 'record-only')
   const recordStreamDir = join(config.outputRoot, 'record-stream')
   const receivedFlvPath = join(recordStreamDir, 'stream-received.flv')
+  const receivedCompanionFlvPath = join(recordStreamDir, 'stream-received-twitch.flv')
   mkdirSync(recordStreamDir, { recursive: true })
 
   // --- Session 1: record-only baseline (pre-encoded product path) ---------------
@@ -125,14 +146,37 @@ async function main() {
         'for the stream session — this gate exists to prove the DEFAULT stream selector path.'
     )
   }
-  sink = spawnRtmpSink(receivedFlvPath)
+  sink = spawnRtmpSink({
+    receivedFlvPath,
+    serverUrl,
+    streamKey: STREAM_KEY,
+    label: 'primary RTMP sink'
+  })
+  if (config.requireMixedYoutube4kTwitch1080p) {
+    companionSink = spawnRtmpSink({
+      receivedFlvPath: receivedCompanionFlvPath,
+      serverUrl: companionServerUrl,
+      streamKey: COMPANION_STREAM_KEY,
+      label: 'companion RTMP sink'
+    })
+  }
   await sleep(config.sinkConnectGraceMs)
   if (sink.exitCode !== null) {
     throw new Error(
       `local RTMP sink exited before the session started (code ${sink.exitCode}) — is port ${config.streamPort} free?`
     )
   }
+  if (companionSink && companionSink.exitCode !== null) {
+    throw new Error(
+      `companion RTMP sink exited before the session started (code ${companionSink.exitCode}) — is port ${config.companionStreamPort} free?`
+    )
+  }
   console.log(`Local RTMP sink listening on ${redactedStreamUrl} -> ${receivedFlvPath}`)
+  if (config.requireMixedYoutube4kTwitch1080p) {
+    console.log(
+      `Companion RTMP sink listening on ${redactedCompanionStreamUrl} -> ${receivedCompanionFlvPath}`
+    )
+  }
 
   await runBaselineSession({
     outputDir: recordStreamDir,
@@ -146,7 +190,8 @@ async function main() {
   })
   const recordStreamEvidence = evidenceFromManifest(recordStreamDir, 'record+stream')
   const recordStreamRecording = recordingFromEvidence(recordStreamEvidence, 'record+stream')
-  await drainSink()
+  await drainSink(sink, 'primary RTMP sink')
+  await drainSink(companionSink, 'companion RTMP sink')
   const receivedFlv =
     existsSync(receivedFlvPath) && statSync(receivedFlvPath).size > 0 ? receivedFlvPath : null
   if (!receivedFlv) {
@@ -157,6 +202,22 @@ async function main() {
     )
   }
   const receivedFlvProbe = await probeOrNull(receivedFlv)
+  const receivedCompanionFlv =
+    config.requireMixedYoutube4kTwitch1080p &&
+    existsSync(receivedCompanionFlvPath) &&
+    statSync(receivedCompanionFlvPath).size > 0
+      ? receivedCompanionFlvPath
+      : null
+  if (config.requireMixedYoutube4kTwitch1080p && !receivedCompanionFlv) {
+    console.error(
+      'Companion RTMP sink produced no received FLV — the companion stream leg never delivered data.'
+    )
+  } else if (receivedCompanionFlv) {
+    console.log(
+      `Received companion FLV: ${receivedCompanionFlv} (${(statSync(receivedCompanionFlv).size / (1024 * 1024)).toFixed(1)} MiB)`
+    )
+  }
+  const receivedCompanionFlvProbe = await probeOrNull(receivedCompanionFlv)
 
   // --- Measure all three outputs -------------------------------------------------
   console.log('\nMeasuring flash/click A/V offsets…')
@@ -167,7 +228,13 @@ async function main() {
     : await measureOrNull(recordOnlyRecording, measureOptions)
   const recordStreamMkv = await measureOrNull(recordStreamRecording, measureOptions)
   const recordStreamFlv = await measureOrNull(receivedFlv, measureOptions)
+  const recordStreamCompanionFlv = config.requireMixedYoutube4kTwitch1080p
+    ? await measureOrNull(receivedCompanionFlv, measureOptions)
+    : undefined
   const flvDrift = fitOffsetDrift(recordStreamFlv?.pairs ?? [])
+  const companionFlvDrift = config.requireMixedYoutube4kTwitch1080p
+    ? fitOffsetDrift(recordStreamCompanionFlv?.pairs ?? [])
+    : null
   const mkvDrift = fitOffsetDrift(recordStreamMkv?.pairs ?? [])
 
   const verdict = evaluateStreamAvSync({
@@ -184,6 +251,24 @@ async function main() {
     flvDrift,
     mkvDrift
   })
+  const companionDriftEvidence = config.requireMixedYoutube4kTwitch1080p
+    ? summarizeStreamAvSyncEvidence({
+        recordStreamMkv,
+        recordStreamFlv: recordStreamCompanionFlv,
+        flvDrift: companionFlvDrift,
+        mkvDrift
+      })
+    : null
+  const companionVerdict = config.requireMixedYoutube4kTwitch1080p
+    ? evaluateStreamAvSync({
+        recordOnly,
+        recordStreamMkv,
+        recordStreamFlv: recordStreamCompanionFlv,
+        flvDrift: companionFlvDrift,
+        mkvDrift,
+        durationSec: config.recordingMs / 1000
+      })
+    : null
   const splitOutput4kRecordVerdict = config.requireSplitOutput4kRecord
     ? evaluateSplitOutput4kRecordEvidence({
         manifest: recordStreamEvidence,
@@ -198,10 +283,20 @@ async function main() {
         streamAvSyncVerdict: verdict
       })
     : null
+  const mixedYoutube4kTwitch1080pVerdict = config.requireMixedYoutube4kTwitch1080p
+    ? evaluateMixedYoutube4kTwitch1080pEvidence({
+        manifest: recordStreamEvidence,
+        youtubeStreamProbe: receivedFlvProbe,
+        twitchStreamProbe: receivedCompanionFlvProbe,
+        youtubeAvSyncVerdict: verdict,
+        twitchAvSyncVerdict: companionVerdict
+      })
+    : null
   const pass =
     verdict.pass &&
     (splitOutput4kRecordVerdict?.pass ?? true) &&
-    (youtube4kStreamVerdict?.pass ?? true)
+    (youtube4kStreamVerdict?.pass ?? true) &&
+    (mixedYoutube4kTwitch1080pVerdict?.pass ?? true)
 
   const evidencePath = join(config.outputRoot, 'stream-av-sync-evidence.json')
   writeFileSync(
@@ -214,7 +309,13 @@ async function main() {
         config: {
           recordingMs: config.recordingMs,
           streamPort: config.streamPort,
+          companionStreamPort: config.requireMixedYoutube4kTwitch1080p
+            ? config.companionStreamPort
+            : null,
           streamServerUrlRedacted: redactedStreamUrl,
+          companionStreamServerUrlRedacted: config.requireMixedYoutube4kTwitch1080p
+            ? redactedCompanionStreamUrl
+            : null,
           skipRecordOnly: config.skipRecordOnly,
           gates: DEFAULT_STREAM_AV_SYNC_GATES
         },
@@ -232,16 +333,20 @@ async function main() {
             directory: recordStreamDir,
             recording: recordStreamRecording,
             receivedFlv,
+            receivedCompanionFlv,
             mediaQualityMode: recordStreamEvidence?.result?.mediaQualityMode ?? null,
             splitOutputProof: splitOutputProof(recordStreamEvidence),
             measurementMkv: summarize(recordStreamMkv),
             measurementFlv: summarize(recordStreamFlv),
+            measurementCompanionFlv: summarize(recordStreamCompanionFlv),
             mkvDrift,
             flvDrift,
+            companionFlvDrift,
             driftEvidence
           }
         },
         driftEvidence,
+        companionDriftEvidence,
         splitOutput4kRecord: splitOutput4kRecordVerdict
           ? {
               required: true,
@@ -256,6 +361,15 @@ async function main() {
               receivedStreamProbe: receivedFlvProbe
             }
           : { required: false },
+        mixedYoutube4kTwitch1080p: mixedYoutube4kTwitch1080pVerdict
+          ? {
+              required: true,
+              verdict: mixedYoutube4kTwitch1080pVerdict,
+              youtubeStreamProbe: receivedFlvProbe,
+              twitchStreamProbe: receivedCompanionFlvProbe,
+              twitchAvSyncVerdict: companionVerdict
+            }
+          : { required: false },
         verdict
       },
       null,
@@ -267,12 +381,16 @@ async function main() {
     recordOnly,
     recordStreamMkv,
     recordStreamFlv,
+    recordStreamCompanionFlv,
     flvDrift,
+    companionFlvDrift,
     mkvDrift,
     driftEvidence,
     verdict,
+    companionVerdict,
     splitOutput4kRecordVerdict,
     youtube4kStreamVerdict,
+    mixedYoutube4kTwitch1080pVerdict,
     evidencePath
   })
   return config.gate && !pass ? 1 : 0
@@ -309,9 +427,32 @@ function runBaselineSession({ outputDir, env }) {
 }
 
 function streamProfileEnv() {
+  if (config.requireMixedYoutube4kTwitch1080p) return mixedYoutube4kTwitch1080pEnv()
   if (config.requireYoutube4kStream) return youtube4kStreamEnv()
   if (config.requireSplitOutput4kRecord) return splitOutput4kRecordEnv()
   return {}
+}
+
+function mixedYoutube4kTwitch1080pEnv() {
+  return {
+    VIDEORC_BASELINE_WIDTH: '3840',
+    VIDEORC_BASELINE_HEIGHT: '2160',
+    VIDEORC_BASELINE_FPS: '30',
+    VIDEORC_BASELINE_BITRATE_KBPS: '30000',
+    VIDEORC_BASELINE_STREAMING_SETTINGS: '1',
+    VIDEORC_BASELINE_STREAM_OUTPUT_PRESET: 'stream-youtube-4k30',
+    VIDEORC_BASELINE_STREAM_BITRATE_KBPS: '30000',
+    VIDEORC_BASELINE_STREAM_TARGET_PLATFORM: 'youtube',
+    VIDEORC_BASELINE_STREAM_TARGET_ID: 'youtube',
+    VIDEORC_BASELINE_STREAM_COMPANION: '1',
+    VIDEORC_BASELINE_STREAM_COMPANION_PLATFORM: 'twitch',
+    VIDEORC_BASELINE_STREAM_COMPANION_ID: 'twitch',
+    VIDEORC_BASELINE_STREAM_COMPANION_SERVER_URL: companionServerUrl,
+    VIDEORC_BASELINE_STREAM_COMPANION_KEY: COMPANION_STREAM_KEY,
+    VIDEORC_BASELINE_LAYOUT_PRESET: process.env.VIDEORC_BASELINE_LAYOUT_PRESET ?? 'screen-only',
+    VIDEORC_BASELINE_NO_CAMERA: process.env.VIDEORC_BASELINE_NO_CAMERA ?? '1',
+    VIDEORC_BASELINE_NO_PREVIEW_SURFACE: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE ?? '1'
+  }
 }
 
 function splitOutput4kRecordEnv() {
@@ -392,7 +533,7 @@ function splitOutputProof(manifest) {
 
 // --- RTMP sink --------------------------------------------------------------------
 
-function spawnRtmpSink(receivedFlvPath) {
+function spawnRtmpSink({ receivedFlvPath, serverUrl: rtmpServerUrl, streamKey, label }) {
   const child = spawn(
     config.ffmpegPath,
     [
@@ -405,7 +546,7 @@ function spawnRtmpSink(receivedFlvPath) {
       '-f',
       'flv',
       '-i',
-      `${serverUrl}/${STREAM_KEY}`,
+      `${rtmpServerUrl}/${streamKey}`,
       '-c',
       'copy',
       '-f',
@@ -415,20 +556,20 @@ function spawnRtmpSink(receivedFlvPath) {
     { stdio: ['ignore', 'inherit', 'inherit'] }
   )
   child.on('error', (error) => {
-    console.error(`RTMP sink failed to spawn: ${error?.message ?? error}`)
+    console.error(`${label} failed to spawn: ${error?.message ?? error}`)
   })
   return child
 }
 
-async function drainSink() {
-  if (!sink) return
-  if (sink.exitCode !== null) return
-  console.log('Waiting for the RTMP sink to drain and finalize the received FLV…')
-  const exited = await waitForExit(sink, config.sinkDrainTimeoutMs)
+async function drainSink(child, label) {
+  if (!child) return
+  if (child.exitCode !== null) return
+  console.log(`Waiting for the ${label} to drain and finalize the received FLV…`)
+  const exited = await waitForExit(child, config.sinkDrainTimeoutMs)
   if (!exited) {
-    console.log('RTMP sink did not exit after disconnect — terminating it.')
-    sink.kill('SIGTERM')
-    if (!(await waitForExit(sink, 5000))) sink.kill('SIGKILL')
+    console.log(`${label} did not exit after disconnect — terminating it.`)
+    child.kill('SIGTERM')
+    if (!(await waitForExit(child, 5000))) child.kill('SIGKILL')
   }
 }
 
@@ -484,24 +625,38 @@ function printSummary({
   recordOnly,
   recordStreamMkv,
   recordStreamFlv,
+  recordStreamCompanionFlv,
   flvDrift,
+  companionFlvDrift,
   mkvDrift,
   driftEvidence,
   verdict,
+  companionVerdict,
   splitOutput4kRecordVerdict,
   youtube4kStreamVerdict,
+  mixedYoutube4kTwitch1080pVerdict,
   evidencePath
 }) {
   console.log('\n=== Stream A/V sync summary ===')
   printMeasurement('record-only MKV       ', recordOnly)
   printMeasurement('record+stream MKV leg ', recordStreamMkv)
   printMeasurement('RTMP-received FLV     ', recordStreamFlv)
+  if (recordStreamCompanionFlv !== undefined) {
+    printMeasurement('RTMP companion FLV    ', recordStreamCompanionFlv)
+  }
   printDrift('MKV leg drift         ', mkvDrift)
   printDrift('received FLV drift    ', flvDrift)
+  if (recordStreamCompanionFlv !== undefined) {
+    printDrift('companion FLV drift   ', companionFlvDrift)
+  }
   console.log(`classification         ${driftEvidence.classification}`)
   for (const finding of verdict.hypotheses) console.log(`HYPOTHESIS: ${finding}`)
   for (const warning of verdict.warnings) console.log(`WARN: ${warning}`)
   for (const failure of verdict.failures) console.log(`FAIL: ${failure}`)
+  if (companionVerdict) {
+    for (const warning of companionVerdict.warnings) console.log(`WARN companion: ${warning}`)
+    for (const failure of companionVerdict.failures) console.log(`FAIL companion: ${failure}`)
+  }
   if (splitOutput4kRecordVerdict) {
     console.log('\n=== Split-output 4K recording summary ===')
     console.log(
@@ -561,11 +716,43 @@ function printSummary({
         : 'FAIL — YouTube 4K30 stream evidence outside the gate.'
     )
   }
+  if (mixedYoutube4kTwitch1080pVerdict) {
+    console.log('\n=== Mixed YouTube 4K + Twitch 1080p stream summary ===')
+    console.log(
+      `recording output       ${formatOutputProfile(mixedYoutube4kTwitch1080pVerdict.summary.recordingOutput)}`
+    )
+    console.log(
+      `companion stream out   ${formatOutputProfile(mixedYoutube4kTwitch1080pVerdict.summary.companionStreamOutput)}`
+    )
+    console.log(
+      `YouTube received       ${formatOutputProfile(mixedYoutube4kTwitch1080pVerdict.summary.youtubeReceived)}`
+    )
+    console.log(
+      `Twitch received        ${formatOutputProfile(mixedYoutube4kTwitch1080pVerdict.summary.twitchReceived)}`
+    )
+    console.log(
+      `VT output encoders     ${mixedYoutube4kTwitch1080pVerdict.summary.activeVideoToolboxOutputEncoders ?? 'n/a'}`
+    )
+    console.log(
+      `separate encoders      ${formatBoolean(mixedYoutube4kTwitch1080pVerdict.summary.separateOutputEncodersActive)}`
+    )
+    console.log(
+      `media quality mode     ${mixedYoutube4kTwitch1080pVerdict.summary.mediaQualityMode ?? 'n/a'}`
+    )
+    for (const warning of mixedYoutube4kTwitch1080pVerdict.warnings) console.log(`WARN: ${warning}`)
+    for (const failure of mixedYoutube4kTwitch1080pVerdict.failures) console.log(`FAIL: ${failure}`)
+    console.log(
+      mixedYoutube4kTwitch1080pVerdict.pass
+        ? 'PASS — mixed YouTube 4K30 and Twitch 1080p30 outputs proved.'
+        : 'FAIL — mixed-destination stream evidence outside the gate.'
+    )
+  }
   console.log(`Evidence: ${evidencePath}`)
   console.log(
     verdict.pass &&
       (splitOutput4kRecordVerdict?.pass ?? true) &&
-      (youtube4kStreamVerdict?.pass ?? true)
+      (youtube4kStreamVerdict?.pass ?? true) &&
+      (mixedYoutube4kTwitch1080pVerdict?.pass ?? true)
       ? 'PASS — stream baseline inside the requested gate(s).'
       : 'FAIL — stream baseline outside the requested gate(s).'
   )
