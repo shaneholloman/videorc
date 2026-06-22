@@ -62,6 +62,13 @@ export function pendingCompositorStatusSupersedes(
   return includeSameRunFrameAdvance && pending.framesRendered > current.framesRendered
 }
 
+export function compositorStatusHasRenderedSceneRevision(
+  status: Pick<CompositorStatus, 'sceneRevision' | 'frameSceneRevision'>,
+  revision: number
+): boolean {
+  return status.sceneRevision === revision && status.frameSceneRevision === revision
+}
+
 export function nativePreviewDroppedFramesWithSuppressed(
   surfaceStatus: Pick<PreviewSurfaceStatus, 'droppedFrames'>,
   suppressedPresents: number

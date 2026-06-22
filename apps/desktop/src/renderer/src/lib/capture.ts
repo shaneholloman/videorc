@@ -1288,7 +1288,10 @@ export function isNativeCaptureDevice(device: Device): boolean {
 }
 
 export function isSelectableCaptureDevice(device: Device): boolean {
-  return isNativeCaptureDevice(device) || isAvFoundationScreenCaptureDevice(device)
+  return (
+    device.status === 'available' &&
+    (isNativeCaptureDevice(device) || isAvFoundationScreenCaptureDevice(device))
+  )
 }
 
 export function isScreenCaptureKitCaptureDevice(device: Device): boolean {

@@ -75,7 +75,8 @@ try {
     cameraId: 'camera-old',
     cameraName: 'FaceTime HD Camera',
     microphoneId: 'mic-old',
-    microphoneName: 'Podcast Mic'
+    microphoneName: 'Podcast Mic',
+    testPattern: false
   })
   const reloadedSources = reconcileSourceSelection(loaded.sources, devices)
   assert.deepEqual(reloadedSources, {
@@ -86,7 +87,8 @@ try {
     cameraId: 'camera:avfoundation-native:face-time',
     cameraName: 'FaceTime HD Camera',
     microphoneId: 'microphone:coreaudio:podcast',
-    microphoneName: 'Podcast Mic'
+    microphoneName: 'Podcast Mic',
+    testPattern: false
   })
   assert.deepEqual(sourceSelectionChangeMessages(loaded.sources, reloadedSources), [
     'Capture source "Built-in Display" was restored by name because its system ID changed.',

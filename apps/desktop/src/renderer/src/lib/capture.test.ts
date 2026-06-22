@@ -230,6 +230,12 @@ describe('ScreenCaptureKit capture device filtering', () => {
       kind: 'screen',
       status: 'available'
     }
+    const blockedLegacyDisplay: Device = {
+      id: 'screen:avfoundation:8',
+      name: 'Capture screen 2',
+      kind: 'screen',
+      status: 'permission-required'
+    }
     const nativeDisplay: Device = {
       id: 'screen:screencapturekit:222',
       name: 'Display 2',
@@ -256,6 +262,7 @@ describe('ScreenCaptureKit capture device filtering', () => {
     expect(isSelectableCaptureDevice(permissionWindow)).toBe(false)
     expect(isSelectableCaptureDevice(nativeDisplay)).toBe(true)
     expect(isSelectableCaptureDevice(legacyDisplay)).toBe(true)
+    expect(isSelectableCaptureDevice(blockedLegacyDisplay)).toBe(false)
   })
 })
 

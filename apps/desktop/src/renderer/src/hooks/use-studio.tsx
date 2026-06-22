@@ -130,6 +130,7 @@ import {
 } from '@/lib/live-chat-view'
 import {
   buildNativePreviewCompositorUpdateParams,
+  compositorStatusHasRenderedSceneRevision,
   decideNativePreviewCompositorPresent,
   nativePreviewDroppedFramesWithSuppressed,
   pendingCompositorStatusSupersedes,
@@ -181,6 +182,8 @@ function streamingWithTargetPatch(
 }
 const NATIVE_PREVIEW_COMPOSITOR_POLL_INTERVAL_MS = 1000 / 60
 const NATIVE_PREVIEW_COMPOSITOR_TIMING_SAMPLE_LIMIT = 900
+const NATIVE_PREVIEW_SCENE_FRAME_WAIT_TIMEOUT_MS = 750
+const NATIVE_PREVIEW_SCENE_FRAME_WAIT_INTERVAL_MS = 33
 
 function recordNativePreviewTimingSample(samples: number[], value: number): void {
   if (!Number.isFinite(value)) {
@@ -205,6 +208,36 @@ function nativePreviewTimingPercentile(
     Math.max(0, Math.ceil(sorted.length * percentileRank) - 1)
   )
   return sorted[index]
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function waitForRenderedCompositorSceneRevision(
+  activeClient: BackendClient,
+  revision: number,
+  initialStatus: CompositorStatus
+): Promise<CompositorStatus> {
+  if (compositorStatusHasRenderedSceneRevision(initialStatus, revision)) {
+    return initialStatus
+  }
+
+  const deadline = Date.now() + NATIVE_PREVIEW_SCENE_FRAME_WAIT_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    await sleep(NATIVE_PREVIEW_SCENE_FRAME_WAIT_INTERVAL_MS)
+    let latestStatus: CompositorStatus
+    try {
+      latestStatus = await activeClient.request<CompositorStatus>('compositor.status')
+    } catch {
+      return initialStatus
+    }
+    if (compositorStatusHasRenderedSceneRevision(latestStatus, revision)) {
+      return latestStatus
+    }
+  }
+
+  return initialStatus
 }
 
 export type StudioContextValue = {
@@ -527,6 +560,74 @@ const idlePreviewScreenStatus = (): PreviewScreenStatus => ({
   message: 'Native screen preview is not running.'
 })
 
+function selectedPreviewScreenDevice(
+  sources: SourceSelection,
+  devices: Device[]
+): Device | undefined {
+  const sourceId = sources.windowId ?? sources.screenId
+  return sourceId ? devices.find((device) => device.id === sourceId) : undefined
+}
+
+function selectedPreviewScreenBlockedStatus(
+  sources: SourceSelection,
+  devices: Device[]
+): PreviewScreenStatus | null {
+  if (devices.length === 0) {
+    return null
+  }
+  const sourceId = sources.windowId ?? sources.screenId
+  if (!sourceId) {
+    return null
+  }
+
+  const selectedDevice = selectedPreviewScreenDevice(sources, devices)
+  const screenPermissionRequired = devices.some(
+    (device) =>
+      (device.kind === 'screen' || device.kind === 'window') &&
+      device.status === 'permission-required'
+  )
+  const sourceKind = sources.windowId ? 'window' : 'screen'
+  const base = {
+    sourceId,
+    sourceKind,
+    targetFps: 0,
+    framesCaptured: 0,
+    droppedFrames: 0,
+    includeCursor: true,
+    excludeCurrentProcessWindows: false,
+    updatedAt: new Date().toISOString()
+  } satisfies Omit<PreviewScreenStatus, 'state' | 'message'>
+
+  if (
+    selectedDevice?.status === 'permission-required' ||
+    (!selectedDevice && screenPermissionRequired)
+  ) {
+    return {
+      ...base,
+      state: 'permission-needed',
+      message: 'Screen Recording permission is required before this source can preview.'
+    }
+  }
+
+  if (selectedDevice && selectedDevice.status !== 'available') {
+    return {
+      ...base,
+      state: 'source-missing',
+      message: selectedDevice.detail ?? 'Selected screen source is not available.'
+    }
+  }
+
+  if (!selectedDevice) {
+    return {
+      ...base,
+      state: 'source-missing',
+      message: 'Selected screen source is no longer available.'
+    }
+  }
+
+  return null
+}
+
 const idleNotesWindowState = (): NotesWindowState => ({
   open: false,
   visible: false,
@@ -593,6 +694,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [health, setHealth] = useState<BackendHealth | null>(null)
   const [entitlements, setEntitlements] = useState<EntitlementsSnapshot | null>(null)
   const [deviceList, setDeviceList] = useState<DeviceList>({ devices: [], warnings: [] })
+  const deviceListRef = useRef(deviceList)
+  useEffect(() => {
+    deviceListRef.current = deviceList
+  }, [deviceList])
   const [recording, setRecording] = useState<RecordingStatus>({ state: 'idle', message: 'Ready.' })
   const [logs, setLogs] = useState<BackendLogEvent[]>([])
   const [healthEvents, setHealthEvents] = useState<HealthEvent[]>([])
@@ -2224,6 +2329,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       return previewCameraStatusRef.current
     }
 
+    if (runtimeInfo?.disableAutoPreview) {
+      return previewCameraStatusRef.current
+    }
+
     if (runtimeInfo?.previewSmokeMode) {
       nativePreviewCameraKeyRef.current = null
       const status = await client.request<PreviewCameraStatus>('preview.camera.stop')
@@ -2291,12 +2400,17 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     captureConfig.sources,
     captureConfig.video,
     client,
+    runtimeInfo?.disableAutoPreview,
     runtimeInfo?.previewSmokeMode,
     wsStatus
   ])
 
   const ensureNativePreviewScreen = useCallback(async () => {
     if (!client || wsStatus !== 'connected') {
+      return previewScreenStatusRef.current
+    }
+
+    if (runtimeInfo?.disableAutoPreview) {
       return previewScreenStatusRef.current
     }
 
@@ -2318,6 +2432,27 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       const status = await client.request<PreviewScreenStatus>('preview.screen.stop')
       applyPreviewScreenStatus(status)
       return status
+    }
+
+    const blockedStatus = selectedPreviewScreenBlockedStatus(
+      captureConfig.sources,
+      deviceListRef.current.devices
+    )
+    if (blockedStatus) {
+      nativePreviewScreenKeyRef.current = null
+      await client.request<PreviewScreenStatus>('preview.screen.stop')
+      applyPreviewScreenStatus(blockedStatus)
+      if (blockedStatus.state === 'permission-needed') {
+        const permissionReport = window.videorc?.reportPreviewPermissionRequired?.(
+          'screen-recording-required',
+          blockedStatus.message,
+          previewWindowRef.current.supervisor.generation
+        )
+        void permissionReport?.catch((error: unknown) => {
+          console.error('Preview screen permission status report failed:', error)
+        })
+      }
+      return blockedStatus
     }
 
     const protectedOverlayWindowIds = await currentProtectedOverlayWindowIds()
@@ -2363,6 +2498,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     captureConfig.sources,
     captureConfig.video,
     client,
+    runtimeInfo?.disableAutoPreview,
     runtimeInfo?.previewSmokeMode,
     wsStatus
   ])
@@ -2701,7 +2837,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   }, [])
 
   useEffect(() => {
-    if (!nativePreviewSurfaceEnabled) {
+    if (!nativePreviewSurfaceEnabled || runtimeInfo?.disableAutoPreview) {
       return
     }
     syncFramePollingSuppression()
@@ -2731,6 +2867,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   }, [
     nativePreviewSurfaceEnabled,
     previewWindow,
+    runtimeInfo?.disableAutoPreview,
     syncFramePollingSuppression,
     syncNativePreviewSurfaceBounds,
     teardownDetachedPreviewSurface
@@ -2859,8 +2996,27 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         'compositor.scene.update',
         compositorParams
       )
+      const renderedStatus = await waitForRenderedCompositorSceneRevision(
+        client,
+        revision,
+        compositorStatus
+      )
+      if (revision !== nativePreviewSurfaceSceneRevisionRef.current) {
+        return
+      }
+      if (!compositorStatusHasRenderedSceneRevision(renderedStatus, revision)) {
+        const status = await window.videorc.updateNativePreviewSurfaceScene(params)
+        applyPreviewSurfaceStatus({
+          ...status,
+          framesRendered: Math.max(
+            status.framesRendered,
+            previewSurfaceStatusRef.current.framesRendered
+          )
+        })
+        return
+      }
       if (window.videorc.updateNativePreviewSurfaceCompositor) {
-        const status = await window.videorc.updateNativePreviewSurfaceCompositor(compositorStatus)
+        const status = await window.videorc.updateNativePreviewSurfaceCompositor(renderedStatus)
         applyPreviewSurfaceStatus({
           ...status,
           framesRendered: Math.max(

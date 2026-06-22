@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { CompositorStatus, PreviewSurfaceStatus } from './backend'
 import {
   buildNativePreviewCompositorUpdateParams,
+  compositorStatusHasRenderedSceneRevision,
   decideNativePreviewCompositorPresent,
   nativePreviewDroppedFramesWithSuppressed,
   pendingCompositorStatusSupersedes
@@ -77,6 +78,21 @@ describe('native preview present policy', () => {
         compositorStatus({ runId: 'run-1', framesRendered: 101 }),
         compositorStatus({ runId: 'run-1', framesRendered: 100 }),
         { includeSameRunFrameAdvance: true }
+      )
+    ).toBe(true)
+  })
+
+  it('requires the rendered frame revision to catch up before scene-change presentation', () => {
+    expect(
+      compositorStatusHasRenderedSceneRevision(
+        compositorStatus({ sceneRevision: 4, frameSceneRevision: 3 }),
+        4
+      )
+    ).toBe(false)
+    expect(
+      compositorStatusHasRenderedSceneRevision(
+        compositorStatus({ sceneRevision: 4, frameSceneRevision: 4 }),
+        4
       )
     ).toBe(true)
   })

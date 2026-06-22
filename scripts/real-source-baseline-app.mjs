@@ -327,6 +327,9 @@ async function main() {
       await tryStep('preview.live.stop', async () => {
         await request(ws, config.timeoutMs, 'preview.live.stop')
       })
+      await requiredStep('preview.window.open', async () => {
+        await smokeCommand(launched.connections['preview-motion-ready'], 'preview-window-open')
+      })
       await requiredStep('preview.surface.create', async () => {
         const status = await request(ws, config.timeoutMs, 'preview.surface.create', {
           bounds: previewSurfaceBounds(),
