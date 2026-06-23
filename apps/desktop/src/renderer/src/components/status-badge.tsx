@@ -25,7 +25,7 @@ export function StatusBadge({
   icon?: Icon
 }): ReactElement {
   return (
-    <Badge variant={toneToVariant[tone]} className="h-6 gap-1.5 rounded-md px-2.5">
+    <Badge variant={toneToVariant[tone]} className="h-6 gap-1.5 rounded-chip px-2.5">
       {LeadingIcon ? (
         <LeadingIcon data-icon="inline-start" weight="fill" />
       ) : (

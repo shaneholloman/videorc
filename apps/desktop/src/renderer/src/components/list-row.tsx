@@ -42,7 +42,7 @@ export function ListRow({
       data-slot="list-row"
       data-selected={selected || undefined}
       className={cn(
-        'flex h-11 items-center gap-3 rounded-lg px-3 text-sm',
+        'flex h-11 items-center gap-3 rounded-row px-3 text-sm',
         interactive && 'cursor-default transition-colors duration-100 hover:bg-accent',
         selected && 'bg-accent',
         className
@@ -52,7 +52,7 @@ export function ListRow({
       {icon ? (
         <span
           data-slot="list-row-icon"
-          className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-[6px] [&_svg:not([class*='size-'])]:size-5"
+          className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-chip [&_svg:not([class*='size-'])]:size-5"
         >
           {icon}
         </span>

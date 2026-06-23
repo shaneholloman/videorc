@@ -27,7 +27,7 @@ export function PanelSection({
 }): ReactElement {
   return (
     <section
-      className={cn('flex flex-col gap-4 rounded-xl border border-border p-4', className)}
+      className={cn('flex flex-col gap-4 rounded-panel border border-border p-4', className)}
       data-slot="panel-section"
     >
       <header className="flex items-start justify-between gap-3">
