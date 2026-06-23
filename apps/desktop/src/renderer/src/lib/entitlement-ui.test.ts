@@ -242,4 +242,34 @@ describe('entitlement UI gates', () => {
       })
     ).toEqual({ allowed: true })
   })
+
+  it('keeps premium toasts as fallbacks by linking normal locked controls', () => {
+    const premiumStreamingProfile: VideoSettings = {
+      preset: 'stream-youtube-4k30',
+      width: 3840,
+      height: 2160,
+      fps: 30,
+      bitrateKbps: 30000
+    }
+    const normalLockedGates = [
+      destinationGate(['youtube'], 'twitch'),
+      goLiveEntitlementGate({
+        entitlements: basicEntitlements,
+        streaming: { enabledTargetIds: ['youtube', 'twitch'] }
+      }),
+      cloudAiUploadGate(basicEntitlements),
+      videoProfileEntitlementGate({
+        entitlements: basicEntitlements,
+        kind: 'streaming',
+        video: premiumStreamingProfile
+      })
+    ]
+
+    for (const gate of normalLockedGates) {
+      expect(gate).toMatchObject({
+        allowed: false,
+        upgradeUrl: VIDEORC_PREMIUM_URL
+      })
+    }
+  })
 })
