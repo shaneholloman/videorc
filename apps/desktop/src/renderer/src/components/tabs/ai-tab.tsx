@@ -41,6 +41,7 @@ import {
   latestArtifact,
   objectField
 } from '@/lib/format'
+import { VIDEORC_PREMIUM_URL } from '@/lib/premium-upgrade'
 
 export function AiTab({
   selectedSessionId,
@@ -134,7 +135,19 @@ export function AiTab({
                 <Warning weight="fill" />
                 <AlertTitle>Cloud AI requires Videorc Premium</AlertTitle>
                 <AlertDescription>
-                  {cloudAiEntitlementReason} Local audio extraction still works without upload.
+                  <p>
+                    {cloudAiEntitlementReason} Local audio extraction still works without upload.
+                  </p>
+                  <div className="mt-2 flex">
+                    <Button
+                      className="w-fit"
+                      size="xs"
+                      variant="outline"
+                      onClick={() => openExternalUrl(VIDEORC_PREMIUM_URL)}
+                    >
+                      View Premium
+                    </Button>
+                  </div>
                 </AlertDescription>
               </Alert>
             ) : null}
@@ -213,6 +226,16 @@ export function AiTab({
       </div>
     )
   }
+}
+
+function openExternalUrl(url: string): void {
+  const opener = window.videorc?.openOAuthUrl
+  if (opener) {
+    void opener(url)
+    return
+  }
+
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 function ArtifactView({ session }: { session: SessionSummary }): ReactElement {
