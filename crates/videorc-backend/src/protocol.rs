@@ -159,6 +159,27 @@ pub struct EntitlementsSnapshot {
     pub expires_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AccountStatus {
+    SignedOut,
+    SignedIn,
+}
+
+// The desktop's Videorc PRODUCT account (not a YouTube/Twitch/X platform
+// account). Signed-out until real web auth + token storage populate it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VideorcAccountSnapshot {
+    pub status: AccountStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendLogEvent {

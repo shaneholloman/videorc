@@ -86,6 +86,18 @@ export interface EntitlementsSnapshot {
   expiresAt?: string
 }
 
+export type VideorcAccountStatus = 'signed-out' | 'signed-in'
+
+// The desktop's Videorc PRODUCT account (mirrors the Rust VideorcAccountSnapshot).
+// Not a YouTube/Twitch/X platform account; signed-out until real web auth + token
+// storage populate it.
+export interface VideorcAccountSnapshot {
+  status: VideorcAccountStatus
+  username?: string
+  displayName?: string
+  email?: string
+}
+
 export type DeviceKind = 'screen' | 'window' | 'camera' | 'microphone' | 'system-audio'
 export type DeviceStatus = 'available' | 'unavailable' | 'permission-required'
 

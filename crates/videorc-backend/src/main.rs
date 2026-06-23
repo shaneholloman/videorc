@@ -1,3 +1,4 @@
+mod account;
 mod ai;
 mod audio;
 mod camera_capture;
@@ -1653,6 +1654,7 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             );
             ServerResponse::ok(command.id, backend_health(state, &ffmpeg_path).await)
         }
+        "account.get" => ServerResponse::ok(command.id, account::current_account()),
         "entitlements.get" => ServerResponse::ok(command.id, entitlements::current_entitlements()),
         "devices.list" => {
             let ffmpeg_path = resolve_ffmpeg_path_ref(

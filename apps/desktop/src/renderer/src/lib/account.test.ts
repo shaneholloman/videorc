@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   SIGNED_OUT_ACCOUNT,
   accountDisplayName,
+  accountFromSnapshot,
   accountMenuItems,
   entitlementTierLabel,
   isSignOutDisabled,
@@ -60,6 +61,38 @@ describe('account menu items', () => {
     expect(isSignOutDisabled(SIGNED_OUT_ACCOUNT, true)).toBe(false)
     expect(isSignOutDisabled(signedIn, false)).toBe(false)
     expect(isSignOutDisabled(signedIn, true)).toBe(true)
+  })
+})
+
+describe('accountFromSnapshot', () => {
+  it('treats null, signed-out, or username-less snapshots as signed-out', () => {
+    expect(accountFromSnapshot(null)).toBe(SIGNED_OUT_ACCOUNT)
+    expect(accountFromSnapshot(undefined)).toBe(SIGNED_OUT_ACCOUNT)
+    expect(accountFromSnapshot({ status: 'signed-out' })).toBe(SIGNED_OUT_ACCOUNT)
+    // A signed-in snapshot with no username is not a usable account.
+    expect(accountFromSnapshot({ status: 'signed-in' })).toBe(SIGNED_OUT_ACCOUNT)
+  })
+
+  it('maps a signed-in snapshot to the renderer account, defaulting optionals to null', () => {
+    expect(accountFromSnapshot({ status: 'signed-in', username: 'orc_dev' })).toEqual({
+      status: 'signed-in',
+      username: 'orc_dev',
+      displayName: null,
+      email: null
+    })
+    expect(
+      accountFromSnapshot({
+        status: 'signed-in',
+        username: 'orc_dev',
+        displayName: 'Orc Dev',
+        email: 'orc@videorc.com'
+      })
+    ).toEqual({
+      status: 'signed-in',
+      username: 'orc_dev',
+      displayName: 'Orc Dev',
+      email: 'orc@videorc.com'
+    })
   })
 })
 

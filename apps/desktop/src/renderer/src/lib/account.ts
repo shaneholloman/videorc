@@ -1,4 +1,4 @@
-import type { EntitlementTier } from './backend'
+import type { EntitlementTier, VideorcAccountSnapshot } from './backend'
 
 // The Videorc PRODUCT account — not a YouTube/Twitch/X platform account. Real
 // desktop web auth + token storage are out of scope for the first UI slice, so
@@ -16,6 +16,24 @@ export const SIGNED_OUT_ACCOUNT: VideorcAccount = { status: 'signed-out' }
 
 export function isSignedIn(account: VideorcAccount): boolean {
   return account.status === 'signed-in'
+}
+
+// Map the backend account snapshot (account.get) to the renderer account model.
+// Anything that isn't a fully-formed signed-in record — null, signed-out, or a
+// signed-in snapshot missing its username — is treated as signed-out, so the UI
+// never shows a half-populated account.
+export function accountFromSnapshot(
+  snapshot: VideorcAccountSnapshot | null | undefined
+): VideorcAccount {
+  if (!snapshot || snapshot.status !== 'signed-in' || !snapshot.username) {
+    return SIGNED_OUT_ACCOUNT
+  }
+  return {
+    status: 'signed-in',
+    username: snapshot.username,
+    displayName: snapshot.displayName ?? null,
+    email: snapshot.email ?? null
+  }
 }
 
 // Footer trigger label. Signed-out shows the call to action ("Sign in"), never a
