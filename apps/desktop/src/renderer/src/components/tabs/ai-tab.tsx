@@ -74,7 +74,7 @@ export function AiTab({
     return (
       <div className="flex flex-col gap-5">
         <AiHeader />
-        <Empty className="rounded-xl border py-16">
+        <Empty className="rounded-panel border py-16">
           <EmptyMedia variant="icon">
             <Brain weight="duotone" />
           </EmptyMedia>
@@ -400,7 +400,7 @@ function InsightList({
 
         return (
           <li
-            className="flex gap-3 rounded-lg border bg-muted/30 px-3 py-2"
+            className="flex gap-3 rounded-row border bg-muted/30 px-3 py-2"
             key={`${title}-${index}`}
           >
             <LeadingIcon className="mt-0.5 shrink-0 text-muted-foreground" weight="duotone" />
@@ -435,7 +435,7 @@ function ArtifactSection({
   children: ReactNode
 }): ReactElement {
   return (
-    <Collapsible className="rounded-xl border border-border" defaultOpen={defaultOpen}>
+    <Collapsible className="rounded-panel border border-border" defaultOpen={defaultOpen}>
       <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium">
         {title}
       </CollapsibleTrigger>
