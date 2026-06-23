@@ -140,6 +140,11 @@ import {
   pendingCompositorStatusSupersedes,
   type NativePreviewRendererTimingFields
 } from '@/lib/native-preview-present-policy'
+import {
+  isPremiumUpgradeMessage,
+  premiumRequiredIssueMessage,
+  VIDEORC_PREMIUM_URL
+} from '@/lib/premium-upgrade'
 import { effectiveSceneBackground } from '@/lib/background-assets'
 import { useBackgroundAssets } from '@/hooks/use-background-assets'
 import { buildStartSessionParams } from '@/lib/session-params'
@@ -152,6 +157,27 @@ import {
 } from '@/lib/format'
 
 export type { GoLivePartialSetup, GoLiveSetupFailure } from '@/lib/go-live-flow'
+
+function openPremiumUpgradePage(): void {
+  const opener = window.videorc?.openOAuthUrl
+  if (opener) {
+    void opener(VIDEORC_PREMIUM_URL)
+    return
+  }
+
+  window.open(VIDEORC_PREMIUM_URL, '_blank', 'noopener,noreferrer')
+}
+
+function premiumUpgradeToastOptions(description?: string) {
+  return {
+    description,
+    duration: 15000,
+    action: {
+      label: 'View Premium',
+      onClick: openPremiumUpgradePage
+    }
+  }
+}
 
 const NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS = 250
 
@@ -895,6 +921,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const reportError = useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     setLastError(message)
+    if (isPremiumUpgradeMessage(message)) {
+      toast.error(message, premiumUpgradeToastOptions())
+      return
+    }
     toast.error(message)
   }, [])
 
@@ -4018,7 +4048,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setGoLivePreflight(preflight)
       const preflightDecision = decideGoLivePreflight(preflight)
       if (preflightDecision.kind === 'blocked') {
-        toast.error('Resolve Go Live issues before starting.')
+        const premiumIssue = premiumRequiredIssueMessage(preflight)
+        if (premiumIssue) {
+          toast.error(
+            'Premium required for this Go Live setup.',
+            premiumUpgradeToastOptions(premiumIssue)
+          )
+        } else {
+          toast.error('Resolve Go Live issues before starting.')
+        }
         return
       }
       const setup = await prepareOauthTargetsForGoLive()
@@ -4132,9 +4170,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         return
       }
       if (aiConsent && cloudAiEntitlementReason) {
-        toast.error('Cloud AI requires Videorc Premium.', {
-          description: cloudAiEntitlementReason
-        })
+        toast.error(
+          'Cloud AI requires Videorc Premium.',
+          premiumUpgradeToastOptions(cloudAiEntitlementReason)
+        )
         return
       }
 
