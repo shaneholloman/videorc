@@ -9,9 +9,16 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandSeparator
+  CommandSeparator,
+  CommandShortcut
 } from '@/components/ui/command'
-import { STUDIO_PANELS, WORKSPACE_TABS, useWorkspaceNav } from '@/components/workspace-nav'
+import { Kbd } from '@/components/ui/kbd'
+import {
+  STUDIO_PANELS,
+  WORKSPACE_TABS,
+  shortcutDigitFor,
+  useWorkspaceNav
+} from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 
 /** ⌘K command palette: jump anywhere + run the core session/theme actions. Open state is
@@ -42,31 +49,47 @@ export function CommandPalette({
         <CommandEmpty>No results found.</CommandEmpty>
 
         <CommandGroup heading="Go to">
-          {WORKSPACE_TABS.map((tab) => (
-            <CommandItem
-              key={tab.id}
-              value={`Go to ${tab.label}`}
-              onSelect={() => run(() => setActive(tab.id))}
-            >
-              <tab.icon className="size-4" />
-              {tab.label}
-            </CommandItem>
-          ))}
+          {WORKSPACE_TABS.map((tab) => {
+            const digit = shortcutDigitFor(tab.id)
+            return (
+              <CommandItem
+                key={tab.id}
+                value={`Go to ${tab.label}`}
+                onSelect={() => run(() => setActive(tab.id))}
+              >
+                <tab.icon className="size-4" />
+                {tab.label}
+                {digit ? (
+                  <CommandShortcut className="tracking-normal">
+                    <Kbd>⌘{digit}</Kbd>
+                  </CommandShortcut>
+                ) : null}
+              </CommandItem>
+            )
+          })}
         </CommandGroup>
 
         <CommandSeparator />
 
         <CommandGroup heading="Setup">
-          {STUDIO_PANELS.map((panel) => (
-            <CommandItem
-              key={panel.id}
-              value={`Open ${panel.label}`}
-              onSelect={() => run(() => openStudioPanel(panel.id))}
-            >
-              <panel.icon className="size-4" />
-              {panel.label}
-            </CommandItem>
-          ))}
+          {STUDIO_PANELS.map((panel) => {
+            const digit = shortcutDigitFor(panel.id)
+            return (
+              <CommandItem
+                key={panel.id}
+                value={`Open ${panel.label}`}
+                onSelect={() => run(() => openStudioPanel(panel.id))}
+              >
+                <panel.icon className="size-4" />
+                {panel.label}
+                {digit ? (
+                  <CommandShortcut className="tracking-normal">
+                    <Kbd>⌘{digit}</Kbd>
+                  </CommandShortcut>
+                ) : null}
+              </CommandItem>
+            )
+          })}
         </CommandGroup>
 
         <CommandSeparator />

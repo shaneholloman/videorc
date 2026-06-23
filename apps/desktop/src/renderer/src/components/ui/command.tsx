@@ -16,7 +16,7 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
     <CommandPrimitive
       data-slot="command"
       className={cn(
-        'flex size-full flex-col overflow-hidden rounded-2xl bg-popover text-popover-foreground',
+        'flex size-full flex-col overflow-hidden rounded-panel bg-popover text-popover-foreground',
         className
       )}
       {...props}
@@ -40,7 +40,7 @@ function CommandDialog({
   return (
     <Dialog {...props}>
       <DialogContent
-        className={cn('top-1/3 translate-y-0 overflow-hidden rounded-2xl! p-0', className)}
+        className={cn('top-1/3 translate-y-0 overflow-hidden rounded-panel! p-0', className)}
         showCloseButton={showCloseButton}
       >
         <DialogHeader className="sr-only">
@@ -149,7 +149,7 @@ function CommandItem({
         // data-selected ("true" OR "false"), so the match MUST be =true — the
         // bare data-selected: variant highlights every row at once and the
         // keyboard cursor becomes invisible.
-        "group/command-item relative flex min-h-10 cursor-default items-center gap-3 rounded-lg px-2.5 py-1.5 text-sm outline-hidden select-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[selected=true]:bg-accent data-[selected=true]:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 data-[selected=true]:*:[svg]:text-foreground",
+        "group/command-item relative flex min-h-10 cursor-default items-center gap-3 rounded-row px-2.5 py-1.5 text-sm outline-hidden select-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[selected=true]:bg-accent data-[selected=true]:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 data-[selected=true]:*:[svg]:text-foreground",
         className
       )}
       {...props}
