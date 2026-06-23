@@ -179,7 +179,7 @@ export function StreamingTab(): ReactElement {
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
       <div className="flex flex-col gap-4">
         {livestreamingEntitlementReason && !isSessionActive ? (
-          <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground dark:text-warning">
+          <div className="flex items-start gap-2 rounded-row border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground dark:text-warning">
             <WarningCircle className="mt-0.5 size-4 shrink-0" weight="fill" />
             <span>{livestreamingEntitlementReason}</span>
           </div>
@@ -244,7 +244,7 @@ export function StreamingTab(): ReactElement {
 
       <div className="flex flex-col gap-4">
         {compatibilityMessage ? (
-          <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground dark:text-warning">
+          <div className="flex items-start gap-2 rounded-row border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground dark:text-warning">
             <WarningCircle className="mt-0.5 size-4 shrink-0" weight="fill" />
             <span>{compatibilityMessage}</span>
           </div>
@@ -277,7 +277,7 @@ function StreamFailureBanner({
   const skipped = problems.filter((target) => target.state === 'not-configured')
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-warning/40 bg-warning/10 p-3">
+    <div className="flex flex-col gap-3 rounded-row border border-warning/40 bg-warning/10 p-3">
       <div className="flex items-start gap-2.5">
         <WarningCircle className="size-5 shrink-0 text-warning" weight="fill" />
         <div className="flex flex-col gap-1 text-sm">
@@ -468,7 +468,7 @@ function DestinationCard({
 
   return (
     <section
-      className="flex flex-col gap-4 rounded-xl border border-border p-4"
+      className="flex flex-col gap-4 rounded-panel border border-border p-4"
       data-slot="destination-card"
     >
       {/* The reference row anatomy: vivid platform tile · title · account
@@ -720,7 +720,7 @@ function DestinationCard({
                 </DialogDescription>
               </DialogHeader>
               {pendingKeySave?.warning ? (
-                <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
+                <div className="flex items-start gap-2 rounded-row border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground dark:text-warning">
                   <Warning className="mt-0.5 shrink-0" />
                   <span>{pendingKeySave.warning}</span>
                 </div>
@@ -865,7 +865,7 @@ function OAuthAccountPanel({
   if (!account) {
     const connectDisabled = disabled || credentials?.ready === false
     return (
-      <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
+      <div className="flex flex-col gap-2 rounded-row border bg-muted/30 p-3">
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm font-medium">No account connected</span>
           <Button
@@ -905,7 +905,7 @@ function OAuthAccountPanel({
       : youtubeChannels
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
+    <div className="flex flex-col gap-2 rounded-row border bg-muted/30 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate text-sm font-medium">{account.accountLabel}</span>
@@ -918,7 +918,7 @@ function OAuthAccountPanel({
         </Badge>
       </div>
       {validation ? (
-        <div className="flex flex-col gap-1 rounded-md bg-background/60 px-2 py-1.5">
+        <div className="flex flex-col gap-1 rounded-row bg-background/60 px-2 py-1.5">
           <Badge className="w-fit" variant={validationBadge(validation).tone}>
             {validationBadge(validation).label}
           </Badge>
@@ -979,7 +979,7 @@ function OAuthAccountPanel({
         </Field>
       ) : null}
       {platform === 'x' ? (
-        <div className="flex flex-col gap-2 rounded-md bg-background/60 px-2 py-1.5">
+        <div className="flex flex-col gap-2 rounded-row bg-background/60 px-2 py-1.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Badge
               className="w-fit"
@@ -1150,7 +1150,7 @@ function MetadataEditor({
           <Field>
             <FieldLabel htmlFor="stream-description">Description</FieldLabel>
             <textarea
-              className="min-h-24 w-full resize-y rounded-lg border border-transparent bg-input/50 px-3 py-2 text-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
+              className="min-h-24 w-full resize-y rounded-row border border-transparent bg-input/50 px-3 py-2 text-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={disabled}
               id="stream-description"
               placeholder="Optional"
@@ -1198,7 +1198,7 @@ function MetadataEditor({
           </div>
 
           {validation && !validation.valid ? (
-            <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
+            <div className="rounded-row border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
               {validation.issues.length} metadata warning{validation.issues.length === 1 ? '' : 's'}{' '}
               before Go Live.
             </div>
@@ -1290,7 +1290,7 @@ function MetadataOverride({
       <Field>
         <FieldLabel htmlFor={`${override.platform}-metadata-description`}>Description</FieldLabel>
         <textarea
-          className="min-h-20 w-full resize-y rounded-lg border border-transparent bg-input/50 px-3 py-2 text-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
+          className="min-h-20 w-full resize-y rounded-row border border-transparent bg-input/50 px-3 py-2 text-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={fieldsDisabled || twitch}
           id={`${override.platform}-metadata-description`}
           placeholder={
