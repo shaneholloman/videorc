@@ -88,7 +88,7 @@ export function LayoutTab(): ReactElement {
   return (
     <div className="flex flex-col gap-5">
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
-        <div className="flex flex-col gap-5">
+        <div className="flex min-w-0 flex-col gap-5">
           <PanelSection
             description="Pick how the screen and camera are composed."
             icon={Layout}
@@ -256,7 +256,7 @@ export function LayoutTab(): ReactElement {
           </PanelSection>
         </div>
 
-        <PanelSection icon={SlidersHorizontal} title="Camera framing">
+        <PanelSection className="min-w-0" icon={SlidersHorizontal} title="Camera framing">
           {isScreenOnly ? (
             <p className="text-sm text-muted-foreground">
               Screen only records just the screen or window — no camera is captured, so there is
@@ -551,7 +551,7 @@ function SourceRow({
         onClick={() => onSelect(source.id)}
       >
         <div className="truncate text-sm font-medium">{source.name}</div>
-        <div className="text-xs text-muted-foreground capitalize">
+        <div className="truncate text-xs text-muted-foreground capitalize">
           {source.kind}
           {source.deviceId ? ` · ${source.deviceId}` : ''}
         </div>
