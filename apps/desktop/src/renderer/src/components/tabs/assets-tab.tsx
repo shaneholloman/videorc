@@ -10,6 +10,7 @@ import {
 import { useMemo, useState, type ComponentProps, type ReactElement } from 'react'
 import { toast } from 'sonner'
 
+import { Gallery } from '@/components/page'
 import { PanelSection } from '@/components/panel-section'
 import { PowerSlider } from '@/components/power-slider'
 import { Badge } from '@/components/ui/badge'
@@ -144,7 +145,7 @@ export function AssetsTab(): ReactElement {
         </p>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex flex-col gap-4">
           <PanelSection
             title="Background presets"
@@ -162,7 +163,7 @@ export function AssetsTab(): ReactElement {
               </Button>
             }
           >
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Gallery className="gap-3">
               {registry.slots.map((slot) => (
                 <PresetTile
                   key={slot.id}
@@ -176,7 +177,7 @@ export function AssetsTab(): ReactElement {
                   onMissing={() => markMissing(slot.id)}
                 />
               ))}
-            </div>
+            </Gallery>
           </PanelSection>
 
           <CurrentSceneBackground registry={registry} onMissing={markMissing} />

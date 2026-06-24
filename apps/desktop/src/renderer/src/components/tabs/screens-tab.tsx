@@ -9,6 +9,7 @@ import {
 } from '@phosphor-icons/react'
 import { useEffect, useState, type ReactElement } from 'react'
 
+import { Gallery } from '@/components/page'
 import { PanelSection } from '@/components/panel-section'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -60,7 +61,7 @@ export function ScreensTab(): ReactElement {
       ) : (
         // Bounded section: this grid lives inside the Scene page now.
         <ScrollArea className="max-h-[28rem] overflow-y-auto pr-3">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <Gallery className="gap-3">
             {screens.map((screen, index) => (
               <ScreenTile
                 active={activeScreen?.id === screen.id}
@@ -80,7 +81,7 @@ export function ScreensTab(): ReactElement {
                 onRename={(name) => void renameScreen(screen.id, name)}
               />
             ))}
-          </div>
+          </Gallery>
         </ScrollArea>
       )}
     </PanelSection>
