@@ -174,17 +174,22 @@ export function Sidebar({
 
         <div className="flex flex-col gap-0.5">
           <GroupLabel>System</GroupLabel>
-          {tabsIn('system').map((tab) => (
-            <NavRow
-              key={tab.id}
-              icon={tab.icon}
-              label={tab.label}
-              isActive={active === tab.id}
-              triggerId={tab.id}
-              shortcutDigit={shortcutDigitFor(tab.id)}
-              onClick={() => onSelect(tab.id)}
-            />
-          ))}
+          {/* Health (Diagnostics) is mostly dev/forensic — keep it out of the
+              sidebar for users (still reachable via ⌘K, ⌘9, and the account
+              menu; the support-bundle export lives in Settings). */}
+          {tabsIn('system')
+            .filter((tab) => import.meta.env.DEV || tab.id !== 'diagnostics')
+            .map((tab) => (
+              <NavRow
+                key={tab.id}
+                icon={tab.icon}
+                label={tab.label}
+                isActive={active === tab.id}
+                triggerId={tab.id}
+                shortcutDigit={shortcutDigitFor(tab.id)}
+                onClick={() => onSelect(tab.id)}
+              />
+            ))}
         </div>
       </nav>
 

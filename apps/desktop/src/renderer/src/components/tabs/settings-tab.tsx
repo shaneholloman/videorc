@@ -1,5 +1,6 @@
 import {
   ArrowClockwise,
+  Bug,
   CaretDown,
   CheckCircle,
   Database,
@@ -46,7 +47,9 @@ export function SettingsTab({
     applyVideoPreset,
     applyRtmpPreset,
     openSystemPermission,
-    entitlements
+    entitlements,
+    exportSupportBundle,
+    supportBundleExportPending
   } = useStudio()
   const { theme, setTheme } = useTheme()
   const defaultProfileGate = videoProfileEntitlementGate({
@@ -222,11 +225,26 @@ export function SettingsTab({
             </ToggleGroup>
           </Field>
         </FieldGroup>
-        <div>
-          <Button size="sm" variant="outline" onClick={onResetOnboarding}>
-            <ArrowClockwise data-icon="inline-start" />
-            Replay onboarding
-          </Button>
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={onResetOnboarding}>
+              <ArrowClockwise data-icon="inline-start" />
+              Replay onboarding
+            </Button>
+            <Button
+              disabled={supportBundleExportPending}
+              size="sm"
+              variant="outline"
+              onClick={() => void exportSupportBundle()}
+            >
+              <Bug data-icon="inline-start" />
+              {supportBundleExportPending ? 'Exporting…' : 'Export support bundle'}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Reporting a problem? Export a support bundle (redacted logs + diagnostics) to share with
+            us.
+          </p>
         </div>
       </PanelSection>
 
