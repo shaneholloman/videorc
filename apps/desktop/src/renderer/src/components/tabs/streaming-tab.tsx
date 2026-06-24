@@ -243,9 +243,7 @@ export function StreamingTab(): ReactElement {
         />
       </div>
 
-      {/* Pinned readiness (L5): video + chat readiness stays visible while the
-          destination cards scroll. */}
-      <div className="flex flex-col gap-5 lg:sticky lg:top-8 lg:self-start">
+      <div className="flex flex-col gap-5">
         {compatibilityMessage ? (
           <div className="flex items-start gap-2 rounded-row border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground dark:text-warning">
             <WarningCircle className="mt-0.5 size-4 shrink-0" weight="fill" />

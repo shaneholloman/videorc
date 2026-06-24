@@ -145,13 +145,7 @@ export function LayoutTab(): ReactElement {
             ) : null}
           </PanelSection>
 
-          {/* Bench archetype: the preview stays visible while the controls
-              scroll. Solid bg at lg so content passing behind it stays hidden. */}
-          <PanelSection
-            className="lg:sticky lg:top-8 lg:z-10 lg:bg-card"
-            icon={FrameCorners}
-            title="Preview"
-          >
+          <PanelSection icon={FrameCorners} title="Preview">
             <PreviewStage
               onOpenPermissions={openPreviewPermissions}
               onRetry={refreshPreview}
