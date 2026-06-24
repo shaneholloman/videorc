@@ -817,14 +817,17 @@ describe('videoProfileCompatibility', () => {
     })
   })
 
-  it('blocks 4K livestreaming in the v1 shared-output UI path without a split profile', () => {
+  it('routes a shared-output 4K stream to the YouTube 4K30 path (no stale v1 block)', () => {
     const result = videoProfileCompatibility({
       recordEnabled: true,
       streamEnabled: true,
       video: videoPresets['record-4k30']
     })
 
-    expect(result.blockingReason).toContain('4K livestreaming is not available')
+    // 4K livestreaming ships now (YouTube 4K30); the old "not available in v1"
+    // block is gone, so the user gets the real requirement instead.
+    expect(result.blockingReason).not.toContain('not available in v1')
+    expect(result.blockingReason).toContain('YouTube destination')
   })
 
   it('allows YouTube-only 4K30 streaming with local 4K recording enabled', () => {

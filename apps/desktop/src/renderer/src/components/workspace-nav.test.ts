@@ -41,7 +41,7 @@ describe('workspace navigation', () => {
     })
   })
 
-  it('maps ⌘1–⌘8 to the workflow pages in sidebar order, ending with Settings', () => {
+  it('maps ⌘1–⌘9 to the workflow pages in sidebar order (AI ⌘8, Settings ⌘9)', () => {
     expect(WORKSPACE_SHORTCUTS.map((entry) => [entry.digit, entry.tab])).toEqual([
       ['1', 'studio'],
       ['2', 'sources'],
@@ -50,20 +50,21 @@ describe('workspace navigation', () => {
       ['5', 'live'],
       ['6', 'recording'],
       ['7', 'library'],
-      ['8', 'settings']
+      ['8', 'ai'],
+      ['9', 'settings']
     ])
   })
 
-  it('puts Settings on ⌘8 and never duplicates a key', () => {
-    expect(shortcutDigitFor('settings')).toBe('8')
+  it('puts Settings on ⌘9 and never duplicates a key', () => {
+    expect(shortcutDigitFor('settings')).toBe('9')
     expect(WORKSPACE_SHORTCUTS.filter((entry) => entry.tab === 'settings')).toHaveLength(1)
 
     const keys = WORKSPACE_SHORTCUTS.map((entry) => entry.digit)
     expect(new Set(keys).size).toBe(keys.length)
   })
 
-  it('gives every reachable page a digit except AI and Health (⌘K-only)', () => {
-    const noDigit: WorkspaceTab[] = ['ai', 'diagnostics']
+  it('gives every reachable page a digit except Health (⌘K-only)', () => {
+    const noDigit: WorkspaceTab[] = ['diagnostics']
     const reachable: WorkspaceTab[] = [
       ...WORKSPACE_TABS.map((tab) => tab.id),
       ...STUDIO_PANELS.map((panel) => panel.id)

@@ -309,7 +309,6 @@ export function videoProfileCompatibility(
 ): VideoProfileCompatibility {
   const { recordEnabled, streamEnabled, video, streaming } = config
   const streamVideo = streamEnabled ? streamOutputVideoSettings(video, streaming) : video
-  const splitStreamOutput = streamEnabled && Boolean(streaming?.enabled)
   const streamTargets = streaming?.targets.filter((target) => target.enabled) ?? []
   const targetOutputs =
     streamEnabled && streamTargets.length > 0
@@ -322,14 +321,6 @@ export function videoProfileCompatibility(
   if (streamEnabled && is4kVideo(video) && !recordEnabled) {
     return {
       blockingReason: '4K profiles require local recording to be enabled.',
-      warning: null
-    }
-  }
-
-  if (streamEnabled && is4kVideo(video) && !splitStreamOutput) {
-    return {
-      blockingReason:
-        '4K livestreaming is not available in v1. Disable livestreaming for 4K local recording or choose a stream-safe 1080p profile.',
       warning: null
     }
   }

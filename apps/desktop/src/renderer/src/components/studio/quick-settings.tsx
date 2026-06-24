@@ -238,7 +238,7 @@ export function QuickSettings(): ReactElement {
             }
           }}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger className="w-full rounded-row border-border bg-background hover:bg-accent data-[state=open]:bg-accent">
             <SelectValue placeholder="Custom" />
           </SelectTrigger>
           <SelectContent>
