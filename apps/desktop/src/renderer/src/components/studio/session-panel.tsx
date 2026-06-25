@@ -99,7 +99,7 @@ export function SessionPanel({
 
       <div className="flex flex-col gap-2 rounded-row border bg-muted/20 p-3">
         <span className="text-xs font-medium text-muted-foreground">Session controls</span>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex gap-2">
           {active ? (
             <Button disabled={!canStop} size="sm" variant="destructive" onClick={onStop}>
               <StopCircle data-icon="inline-start" weight="fill" />
@@ -126,7 +126,7 @@ export function SessionPanel({
                 onClick={onLiveStream}
               >
                 <Broadcast data-icon="inline-start" weight="fill" />
-                Start streaming
+                Stream
               </Button>
             </>
           )}

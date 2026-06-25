@@ -53,7 +53,7 @@ export function LibraryTab({
         </Empty>
       ) : (
         <ScrollArea className="h-[calc(100vh-12rem)] pr-3">
-          <div className="flex flex-col gap-2">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {sessions.map((session) => (
               <SessionRow
                 key={session.id}
