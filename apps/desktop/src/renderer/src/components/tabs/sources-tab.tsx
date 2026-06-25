@@ -1,7 +1,6 @@
 import {
   ArrowCounterClockwise,
   ArrowsClockwise,
-  CaretDown,
   Check,
   Monitor,
   SpeakerHigh,
@@ -21,9 +20,6 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { PowerSlider } from '@/components/power-slider'
 import { Button } from '@/components/ui/button'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Empty, EmptyDescription, EmptyTitle } from '@/components/ui/empty'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import { useStudio } from '@/hooks/use-studio'
 import {
@@ -40,15 +36,9 @@ import {
   resetAudioSyncCalibration,
   type AudioSyncRecommendationReport
 } from '@/lib/capture'
-import type { Device, DeviceStatus, SourceSelection } from '@/lib/backend'
+import type { SourceSelection } from '@/lib/backend'
 import { formatDb } from '@/lib/format'
 import { cn } from '@/lib/utils'
-
-const STATUS_TONE: Record<DeviceStatus, StatusTone> = {
-  available: 'good',
-  unavailable: 'neutral',
-  'permission-required': 'warn'
-}
 
 // Live chip for a capture source (UI rewrite V3): what the preview pipeline says
 // about the source RIGHT NOW. A live source whose newest frame is old is reported
@@ -130,10 +120,6 @@ export function SourcesTab(): ReactElement {
     revealPermissionTarget,
     runtimeInfo
   } = useStudio()
-
-  const problemDeviceCount = deviceList.devices.filter(
-    (device) => device.status !== 'available'
-  ).length
   const captureDevices = capturePickerDevices(deviceList.devices)
   const cameras = deviceList.devices.filter((device) => device.kind === 'camera')
   const microphones = deviceList.devices.filter((device) => device.kind === 'microphone')
@@ -375,6 +361,7 @@ export function SourcesTab(): ReactElement {
       </PanelSection>
 
       <PanelSection
+        className="lg:col-span-2"
         description="Native CoreAudio meter with manual source gain. No automatic processing is applied."
         icon={Waveform}
         title="Microphone mixer"
@@ -566,58 +553,6 @@ export function SourcesTab(): ReactElement {
           {audioMeterLoading ? 'Checking...' : 'Check mic'}
         </Button>
       </PanelSection>
-
-      <PanelSection
-        description="All devices discovered by the backend and their permission state."
-        icon={Monitor}
-        title="Diagnostics"
-      >
-        {deviceList.devices.length === 0 ? (
-          <Empty className="border-0 py-6">
-            <EmptyTitle>No devices yet</EmptyTitle>
-            <EmptyDescription>Refresh to query the backend for capture devices.</EmptyDescription>
-          </Empty>
-        ) : (
-          // Closed by default: this list is forensics, not status — permission
-          // problems already surface in the warnings alert above. The ScrollArea
-          // cap keeps an expanded list from growing the page (ux-ia plan).
-          <Collapsible>
-            <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-row px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
-              <CaretDown className="size-3.5 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-              <span>Device diagnostics · {deviceList.devices.length}</span>
-              {problemDeviceCount > 0 ? (
-                <Badge variant="outline" className="ml-1">
-                  {problemDeviceCount} need attention
-                </Badge>
-              ) : null}
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <ScrollArea className="max-h-72 overflow-y-auto pt-1.5">
-                <div className="flex flex-col gap-1.5 pr-3">
-                  {deviceList.devices.map((device) => (
-                    <DiagnosticRow device={device} key={`${device.kind}-${device.id}`} />
-                  ))}
-                </div>
-              </ScrollArea>
-            </CollapsibleContent>
-          </Collapsible>
-        )}
-      </PanelSection>
     </ConfigGrid>
-  )
-}
-
-function DiagnosticRow({ device }: { device: Device }): ReactElement {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-row border bg-muted/30 px-3 py-2">
-      <div className="flex min-w-0 flex-col">
-        <span className="truncate text-sm font-medium">{device.name}</span>
-        <span className="text-xs text-muted-foreground capitalize">
-          {device.kind}
-          {device.detail ? ` · ${device.detail}` : ''}
-        </span>
-      </div>
-      <StatusBadge label="" tone={STATUS_TONE[device.status]} value={device.status} />
-    </div>
   )
 }
