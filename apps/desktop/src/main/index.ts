@@ -1751,8 +1751,28 @@ function previewLayerSnapshotWidth(
     : requestedWidth
 }
 
+// Diagnostic (env-gated): pin why a preview frame renders low-res. Enable with
+// VIDEORC_DEBUG_PREVIEW=1 and read [videorc-preview-sizing] lines: drawable=none
+// means bounds never reached the surface (backend falls back to its 640/960
+// default → blocky); a scale of 1 on a Retina panel halves the effective res; a
+// small maxWidth on a full-frame source means the layer fraction collapsed it.
+const previewSizingDebugLast = new Map<string, string>()
+function logPreviewFrameSizing(kind: string, maxWidth: number | undefined): void {
+  if (process.env.VIDEORC_DEBUG_PREVIEW !== '1') {
+    return
+  }
+  const bounds = nativePreviewSurfaceStatus.bounds
+  const line = `kind=${kind} maxWidth=${maxWidth ?? 'default'} drawable=${previewDrawableWidth() ?? 'none'} boundsW=${bounds?.width ?? 'none'} scale=${bounds?.scaleFactor ?? 'none'}`
+  if (previewSizingDebugLast.get(kind) === line) {
+    return
+  }
+  previewSizingDebugLast.set(kind, line)
+  console.log(`[videorc-preview-sizing] ${line}`)
+}
+
 function previewLayerFrameUrl(source: SceneSource): string | undefined {
   const maxWidth = previewLayerSnapshotWidth(source.transform)
+  logPreviewFrameSizing(source.kind, maxWidth)
   if (source.kind === 'camera') {
     return backendPreviewFrameUrl('/preview/camera/live.png', maxWidth)
   }
