@@ -95,6 +95,10 @@ export function isStudioPanel(value: unknown): value is StudioPanel {
   return STUDIO_PANELS.some((panel) => panel.id === value)
 }
 
+export function isWorkspaceTab(value: unknown): value is WorkspaceTab {
+  return WORKSPACE_TABS.some((tab) => tab.id === value) || isStudioPanel(value)
+}
+
 type WorkspaceNavValue = {
   active: WorkspaceTab
   setActive: (tab: WorkspaceTab) => void

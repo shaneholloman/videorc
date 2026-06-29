@@ -2478,8 +2478,9 @@ fn enqueue_post_recording_gate(
 
         match run_quality_gate(ffmpeg_path, path_str, expectations, cancel_token).await {
             Ok(status) => {
-                emit_gate_health(&state, Some(&session_id), &status);
                 job.complete_with_gate(&status, Utc::now().to_rfc3339());
+                let _ = state.database.upsert_repair_job(&job);
+                emit_gate_health(&state, Some(&session_id), &status);
             }
             Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
                 job.defer(
@@ -2650,8 +2651,9 @@ pub async fn resume_pending_repair_jobs(state: AppState) {
             );
             match gate.await {
                 Ok(status) => {
-                    emit_gate_health(&state, None, &status);
                     job.complete_with_gate(&status, Utc::now().to_rfc3339());
+                    let _ = state.database.upsert_repair_job(&job);
+                    emit_gate_health(&state, None, &status);
                 }
                 Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
                     job.defer(

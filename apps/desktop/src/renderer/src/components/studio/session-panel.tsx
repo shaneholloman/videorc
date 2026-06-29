@@ -79,7 +79,7 @@ export function SessionPanel({
         />
         <SessionRow
           icon={Aperture}
-          label="Recording quality"
+          label="Output profile"
           value={recordingQuality(video)}
           onNavigate={() => openStudioPanel('recording')}
         />

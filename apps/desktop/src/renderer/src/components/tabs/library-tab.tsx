@@ -27,6 +27,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useStudio } from '@/hooks/use-studio'
 import type { FileAssessment, GateStatus, SessionSummary } from '@/lib/backend'
 import { dayLabel, durationMsLabel, isActiveRecordingState } from '@/lib/format'
+import { recordingQualityState, type RecordingQualityState } from '@/lib/recording-quality'
 
 export function LibraryTab({
   onOpenInAi
@@ -145,9 +146,15 @@ function SessionActions({
   const disconnected = wsStatus !== 'connected'
   const captureProtected = isActiveRecordingState(recording.state)
   const canRepair = assessment?.repairable ?? false
+  const persistedRepaired = session.qualityStatus?.status === 'repaired'
   const canExportMp4 = Boolean(
     session.status === 'completed' && session.outputPath?.endsWith('.mkv') && !session.mp4Path
   )
+  const quality = recordingQualityState({
+    qualityStatus: session.qualityStatus,
+    assessment,
+    result
+  })
 
   const runCheck = async (): Promise<void> => {
     setPhase('checking')
@@ -204,8 +211,6 @@ function SessionActions({
     }
   }
 
-  const reasons = repairReasons(result, assessment)
-
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -215,7 +220,7 @@ function SessionActions({
         </Button>
         <div className="ml-auto flex items-center gap-2">
           {captureProtected ? <Badge variant="outline">Deferred while recording</Badge> : null}
-          <RepairBadge assessment={assessment} result={result} />
+          <RepairBadge quality={quality} />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -254,7 +259,7 @@ function SessionActions({
                   {phase === 'repairing' ? 'Repairing…' : 'Repair & fix'}
                 </DropdownMenuItem>
               ) : null}
-              {hasBackup ? (
+              {hasBackup || persistedRepaired ? (
                 <DropdownMenuItem
                   disabled={busy || captureProtected}
                   onClick={() => void runRestore()}
@@ -267,17 +272,13 @@ function SessionActions({
           </DropdownMenu>
         </div>
       </div>
-      {reasons.length > 0 ? (
-        <Alert variant={result?.status === 'failed' ? 'destructive' : 'warning'}>
+      {quality && quality.reasons.length > 0 ? (
+        <Alert variant={quality.alertVariant ?? 'warning'}>
           <WarningCircle />
-          <AlertTitle>
-            {result?.status === 'failed'
-              ? 'The quality check could not run'
-              : 'Why this is not 100%'}
-          </AlertTitle>
+          <AlertTitle>{quality.alertTitle ?? 'Recording quality'}</AlertTitle>
           <AlertDescription>
             <ul className="list-disc pl-4">
-              {reasons.map((reason) => (
+              {quality.reasons.map((reason) => (
                 <li key={reason}>{reason}</li>
               ))}
             </ul>
@@ -288,53 +289,9 @@ function SessionActions({
   )
 }
 
-function repairReasons(result: GateStatus | null, assessment: FileAssessment | null): string[] {
-  if (result) {
-    if (result.status === 'not-hundred-percent') {
-      return result.reasons
-    }
-    if (result.status === 'failed') {
-      return [result.reason]
-    }
-    return []
+function RepairBadge({ quality }: { quality: RecordingQualityState | null }): ReactElement | null {
+  if (!quality) {
+    return null
   }
-  if (assessment && assessment.verdict !== 'clean') {
-    return assessment.reasons
-  }
-  return []
-}
-
-function RepairBadge({
-  assessment,
-  result
-}: {
-  assessment: FileAssessment | null
-  result: GateStatus | null
-}): ReactElement | null {
-  if (result) {
-    if (result.status === 'ready') {
-      return <Badge variant="success">100%</Badge>
-    }
-    if (result.status === 'repaired') {
-      return (
-        <Badge variant="success">
-          {result.interpolated ? 'Repaired · interpolated' : 'Repaired'}
-        </Badge>
-      )
-    }
-    if (result.status === 'not-hundred-percent') {
-      return <Badge variant="warning">Not 100%</Badge>
-    }
-    return <Badge variant="destructive">Check failed</Badge>
-  }
-  if (assessment) {
-    if (assessment.verdict === 'clean') {
-      return <Badge variant="success">100%</Badge>
-    }
-    if (assessment.verdict === 'repairable') {
-      return <Badge variant="warning">Needs repair</Badge>
-    }
-    return <Badge variant="destructive">Not 100%</Badge>
-  }
-  return null
+  return <Badge variant={quality.badgeVariant}>{quality.label}</Badge>
 }

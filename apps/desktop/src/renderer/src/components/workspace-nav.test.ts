@@ -5,6 +5,7 @@ import {
   WORKSPACE_SHORTCUTS,
   WORKSPACE_TABS,
   isStudioPanel,
+  isWorkspaceTab,
   shortcutDigitFor,
   workspaceTabLabel,
   type WorkspaceTab
@@ -82,6 +83,9 @@ describe('workspace navigation', () => {
   it('classifies Assets as a Studio panel and labels it', () => {
     expect(isStudioPanel('assets')).toBe(true)
     expect(isStudioPanel('studio')).toBe(false)
+    expect(isWorkspaceTab('assets')).toBe(true)
+    expect(isWorkspaceTab('library')).toBe(true)
+    expect(isWorkspaceTab('missing')).toBe(false)
     expect(workspaceTabLabel('assets')).toBe('Assets')
   })
 })

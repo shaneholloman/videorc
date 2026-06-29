@@ -21,6 +21,7 @@ import {
   WORKSPACE_SHORTCUTS,
   WorkspaceNavContext,
   isStudioPanel,
+  isWorkspaceTab,
   workspaceTabLabel,
   type StudioPanel,
   type WorkspaceTab
@@ -124,6 +125,17 @@ export function AppShell(): ReactElement {
       }
     })
     return off
+  }, [])
+
+  useEffect(() => {
+    const onWorkspaceNavigate = (event: Event): void => {
+      const tab = (event as CustomEvent<{ tab?: unknown }>).detail?.tab
+      if (isWorkspaceTab(tab)) {
+        setActive(tab)
+      }
+    }
+    window.addEventListener('videorc:navigate-workspace', onWorkspaceNavigate)
+    return () => window.removeEventListener('videorc:navigate-workspace', onWorkspaceNavigate)
   }, [])
 
   const live = recording.state === 'recording' || recording.state === 'streaming'

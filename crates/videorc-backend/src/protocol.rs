@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::repair::GateStatus;
 use crate::source_registry::SourceRegistrySnapshot;
 use crate::streaming::StreamingSettings;
 
@@ -1935,6 +1936,8 @@ pub struct SessionSummary {
     pub stream_preset: Option<String>,
     pub container: Option<String>,
     pub duration_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_status: Option<GateStatus>,
     pub layout: LayoutSettings,
     pub sources: SourceSelection,
     pub health_events: Vec<HealthEvent>,

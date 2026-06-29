@@ -1683,6 +1683,7 @@ export interface SessionSummary {
   streamPreset?: string
   container?: RecordingContainer
   durationMs?: number
+  qualityStatus?: GateStatus | null
   layout: LayoutSettings
   sources: SourceSelection
   healthEvents: HealthEvent[]

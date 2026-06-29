@@ -1672,7 +1672,7 @@ pub fn write_repair_reports(
 /// The post-recording quality-gate result for one finalized file. This is the backend
 /// decision; the renderer-facing status strings (`checking`/`repairing`/`ready`/
 /// `not-100%`/`cancelled`) are mapped in the protocol slice.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum GateStatus {
     /// Passed every objective gate as-is.
@@ -1875,6 +1875,7 @@ impl RepairJob {
     pub fn complete(&mut self, outcome: &RepairOutcome, now: String) {
         self.status = RepairJobStatus::Completed;
         self.outcome = serde_json::to_value(outcome).ok();
+        self.reason = None;
         self.updated_at = now;
     }
 
@@ -1884,6 +1885,7 @@ impl RepairJob {
     pub fn complete_with_gate(&mut self, status: &GateStatus, now: String) {
         self.status = RepairJobStatus::Completed;
         self.outcome = serde_json::to_value(status).ok();
+        self.reason = None;
         self.updated_at = now;
     }
 

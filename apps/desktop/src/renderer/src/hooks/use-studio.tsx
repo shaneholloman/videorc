@@ -184,6 +184,19 @@ function premiumUpgradeToastOptions(description?: string) {
 }
 
 const NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS = 250
+const WORKSPACE_NAVIGATE_EVENT = 'videorc:navigate-workspace'
+
+function isRecordingQualityEvent(code: string): boolean {
+  return code.startsWith('recording-quality-')
+}
+
+function openLibraryFromQualityToast(sessionId?: string): void {
+  window.dispatchEvent(
+    new CustomEvent(WORKSPACE_NAVIGATE_EVENT, {
+      detail: { tab: 'library', sessionId: sessionId ?? null }
+    })
+  )
+}
 
 // Steady-state telemetry (surface counters, diagnostics stats) commits to
 // React state at most once a second. Every commit re-renders the entire
@@ -1830,6 +1843,28 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
               : session
           )
         )
+        if (isRecordingQualityEvent(event.code)) {
+          void refreshSessions(nextClient)
+        }
+        if (event.code === 'recording-quality-not-100') {
+          toast.warning('Recording is not 100%', {
+            description: event.message,
+            duration: 15000,
+            action: {
+              label: 'Open Library',
+              onClick: () => openLibraryFromQualityToast(event.sessionId)
+            }
+          })
+        } else if (event.code === 'recording-quality-check-failed') {
+          toast.error('Recording quality check failed', {
+            description: event.message,
+            duration: 15000,
+            action: {
+              label: 'Open Library',
+              onClick: () => openLibraryFromQualityToast(event.sessionId)
+            }
+          })
+        }
       }),
       nextClient.on('session.log', (payload) => {
         const entry = payload as SessionLogEntry

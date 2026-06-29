@@ -14,7 +14,7 @@ use crate::protocol::{
     OutputSettings, SessionLogEntry, SessionSummary, SourceSelection, StreamScreen,
     StreamScreenStatus,
 };
-use crate::repair::{RepairJob, RepairJobStatus};
+use crate::repair::{GateStatus, RepairJob, RepairJobStatus};
 use crate::streaming::{
     PlatformAccount, PlatformAccountStatus, StreamMetadataDraft, StreamPlatform,
     UpsertPlatformAccount, default_stream_metadata_draft, stream_platform_from_id,
@@ -328,6 +328,11 @@ impl Database {
                 health_events: self.health_events_for_session_locked(&conn, &id)?,
                 session_logs: self.session_logs_for_session_locked(&conn, &id)?,
                 ai_artifacts: self.ai_artifacts_for_session_locked(&conn, &id)?,
+                quality_status: self.latest_quality_status_for_session_locked(
+                    &conn,
+                    output_path.as_deref(),
+                    mp4_path.as_deref(),
+                )?,
                 id,
                 title,
                 started_at,
@@ -1048,6 +1053,35 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    fn latest_quality_status_for_session_locked(
+        &self,
+        conn: &Connection,
+        output_path: Option<&str>,
+        mp4_path: Option<&str>,
+    ) -> Result<Option<GateStatus>> {
+        let mut latest: Option<(String, GateStatus)> = None;
+        let mut seen_paths = HashSet::new();
+
+        for path in [mp4_path, output_path].into_iter().flatten() {
+            if !seen_paths.insert(path) {
+                continue;
+            }
+            let Some((updated_at, status)) = latest_quality_status_for_path_locked(conn, path)?
+            else {
+                continue;
+            };
+            let replace = latest
+                .as_ref()
+                .map(|(current_updated_at, _)| updated_at.as_str() > current_updated_at.as_str())
+                .unwrap_or(true);
+            if replace {
+                latest = Some((updated_at, status));
+            }
+        }
+
+        Ok(latest.map(|(_, status)| status))
+    }
+
     fn health_events_for_session_locked(
         &self,
         conn: &Connection,
@@ -1141,6 +1175,44 @@ fn query_repair_jobs(conn: &Connection, filter: &str) -> Result<Vec<RepairJob>> 
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn latest_quality_status_for_path_locked(
+    conn: &Connection,
+    file_path: &str,
+) -> Result<Option<(String, GateStatus)>> {
+    let mut stmt = conn.prepare(
+        "SELECT outcome_json, reason, updated_at
+         FROM repair_jobs
+         WHERE file_path = ?1
+           AND status = 'completed'
+           AND outcome_json IS NOT NULL
+         ORDER BY updated_at DESC, created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![file_path], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (outcome_json, reason, updated_at) = row?;
+        if let Ok(status) = serde_json::from_str::<GateStatus>(&outcome_json) {
+            if reason.as_deref().is_some_and(|value| !value.is_empty())
+                && matches!(
+                    status,
+                    GateStatus::Ready { .. } | GateStatus::Repaired { .. }
+                )
+            {
+                continue;
+            }
+            return Ok(Some((updated_at, status)));
+        }
+    }
+
+    Ok(None)
 }
 
 fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
@@ -1557,6 +1629,116 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("/tmp/videorc-test.mp4")
+        );
+    }
+
+    #[test]
+    fn session_summary_includes_latest_completed_quality_gate_for_recording_file() {
+        use crate::repair::{GateStatus, QualityExpectations, RepairOutcome};
+
+        let database = test_database();
+        database
+            .create_session(&sample_session("session-1"))
+            .unwrap();
+        database
+            .finish_session(
+                "session-1",
+                "completed",
+                None,
+                Some("/tmp/videorc-test.mp4".to_string()),
+                Some(1000),
+            )
+            .unwrap();
+
+        let expectations = QualityExpectations {
+            intended_fps: Some(30.0),
+            expect_audio: true,
+        };
+        let mut older_output_job = RepairJob::pending(
+            "job-output-ready".to_string(),
+            "/tmp/videorc-test.mkv".to_string(),
+            &expectations,
+            "t0".to_string(),
+        );
+        older_output_job.complete_with_gate(
+            &GateStatus::Ready {
+                path: "/tmp/videorc-test.mkv".to_string(),
+            },
+            "t1".to_string(),
+        );
+        let mut latest_mp4_gate = RepairJob::pending(
+            "job-mp4-not-100".to_string(),
+            "/tmp/videorc-test.mp4".to_string(),
+            &expectations,
+            "t0".to_string(),
+        );
+        latest_mp4_gate.complete_with_gate(
+            &GateStatus::NotHundredPercent {
+                path: "/tmp/videorc-test.mp4".to_string(),
+                reasons: vec!["Frozen video segment detected.".to_string()],
+            },
+            "t2".to_string(),
+        );
+        database.upsert_repair_job(&older_output_job).unwrap();
+        database.upsert_repair_job(&latest_mp4_gate).unwrap();
+
+        let sessions = database.list_sessions(1).unwrap();
+        assert_eq!(
+            sessions[0].quality_status,
+            Some(GateStatus::NotHundredPercent {
+                path: "/tmp/videorc-test.mp4".to_string(),
+                reasons: vec!["Frozen video segment detected.".to_string()],
+            })
+        );
+
+        let mut stale_repair_outcome = RepairJob::pending(
+            "job-stale-repaired".to_string(),
+            "/tmp/videorc-test.mp4".to_string(),
+            &expectations,
+            "t0".to_string(),
+        );
+        stale_repair_outcome.complete(
+            &RepairOutcome::Repaired {
+                path: "/tmp/videorc-test.mp4".to_string(),
+                interpolated: true,
+            },
+            "t3".to_string(),
+        );
+        stale_repair_outcome.reason =
+            Some("quality check deferred because capture started".to_string());
+        database.upsert_repair_job(&stale_repair_outcome).unwrap();
+
+        let sessions = database.list_sessions(1).unwrap();
+        assert_eq!(
+            sessions[0].quality_status,
+            Some(GateStatus::NotHundredPercent {
+                path: "/tmp/videorc-test.mp4".to_string(),
+                reasons: vec!["Frozen video segment detected.".to_string()],
+            })
+        );
+
+        let mut newer_repair_outcome = RepairJob::pending(
+            "job-newer-repaired".to_string(),
+            "/tmp/videorc-test.mp4".to_string(),
+            &expectations,
+            "t0".to_string(),
+        );
+        newer_repair_outcome.complete(
+            &RepairOutcome::Repaired {
+                path: "/tmp/videorc-test.mp4".to_string(),
+                interpolated: true,
+            },
+            "t4".to_string(),
+        );
+        database.upsert_repair_job(&newer_repair_outcome).unwrap();
+
+        let sessions = database.list_sessions(1).unwrap();
+        assert_eq!(
+            sessions[0].quality_status,
+            Some(GateStatus::Repaired {
+                path: "/tmp/videorc-test.mp4".to_string(),
+                interpolated: true,
+            })
         );
     }
 
