@@ -14,9 +14,9 @@
 // parsing logic is unit-testable without spawning anything, and the runners are
 // integration-tested against synthetic fixtures with known ground-truth defects.
 //
-// Mirrors the proven freezedetect/ffprobe parsing in crates/videorc-backend/src/repair.rs,
-// but applies strict OBS thresholds instead of repair.rs's loose post-hoc ones, and adds
-// repeated-frame-burst, per-frame pacing, and audio-gap detection that do not exist there.
+// Mirrors the proven freezedetect/ffprobe parsing in crates/videorc-backend/src/repair.rs.
+// The backend post-recording gate intentionally keeps these strict thresholds in sync
+// so app status cannot drift from the artifact analyzer.
 
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'

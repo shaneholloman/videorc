@@ -19,6 +19,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub const MAINTENANCE_CANCELLED: &str = "maintenance cancelled";
+pub const STRICT_AV_SKEW_HARD_FAIL_MS: f64 = 150.0;
+pub const STRICT_MAX_AUDIO_GAP_MS: f64 = 20.0;
+pub const STRICT_AUDIO_GAP_TOLERANCE_MS: f64 = 5.0;
+pub const STRICT_MAX_REPEATED_FRAME_RUN: usize = 2;
+pub const STRICT_MAX_FREEZE_SECONDS: f64 = 0.100;
 
 // --- Raw FFprobe JSON ---
 
@@ -275,7 +280,7 @@ fn parse_u64(value: &str) -> Option<u64> {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QualityThresholds {
-    /// Maximum tolerable A/V skew before flagging a resync (ms).
+    /// Maximum tolerable A/V skew before hard-failing the recording (ms).
     pub av_skew_ms: f64,
     /// Relative difference between average and nominal fps that counts as variable
     /// frame rate (e.g. 0.01 = 1%).
@@ -285,18 +290,27 @@ pub struct QualityThresholds {
     pub frame_count_tolerance: f64,
     /// RMS level (dB) at or below which an audio channel counts as silent.
     pub silence_db: f64,
-    /// Minimum freeze duration (seconds) that counts as a user-visible long freeze.
+    /// Minimum freeze duration (seconds) that counts as a user-visible freeze.
     pub min_freeze_seconds: f64,
+    /// Maximum allowed exact decoded-frame run before repeated frames fail the gate.
+    pub max_repeated_frame_run: usize,
+    /// Maximum allowed audio packet PTS gap before audio fails the gate.
+    pub max_audio_gap_ms: f64,
+    /// Tolerance for normal packet-duration rounding jitter in audio PTS gap checks.
+    pub audio_gap_tolerance_ms: f64,
 }
 
 impl Default for QualityThresholds {
     fn default() -> Self {
         Self {
-            av_skew_ms: 250.0,
+            av_skew_ms: STRICT_AV_SKEW_HARD_FAIL_MS,
             vfr_tolerance: 0.01,
             frame_count_tolerance: 0.02,
             silence_db: -70.0,
-            min_freeze_seconds: 2.0,
+            min_freeze_seconds: STRICT_MAX_FREEZE_SECONDS,
+            max_repeated_frame_run: STRICT_MAX_REPEATED_FRAME_RUN,
+            max_audio_gap_ms: STRICT_MAX_AUDIO_GAP_MS,
+            audio_gap_tolerance_ms: STRICT_AUDIO_GAP_TOLERANCE_MS,
         }
     }
 }
@@ -346,6 +360,16 @@ pub enum QualityIssue {
     FrozenSegments {
         count: usize,
         longest_seconds: f64,
+    },
+    /// One or more exact decoded-frame repeat bursts.
+    RepeatedFrames {
+        bursts: usize,
+        max_run: usize,
+    },
+    /// A packet timestamp gap in the final audio stream.
+    AudioGap {
+        count: usize,
+        max_ms: f64,
     },
 }
 
@@ -444,13 +468,15 @@ pub fn classify_quality(
 /// A/V skew in milliseconds, preferring stream start-time offset, falling back to a
 /// duration mismatch.
 fn av_skew_ms(video: &VideoStreamInfo, audio: &AudioStreamInfo) -> Option<f64> {
+    let mut skew: Option<f64> = None;
     if let (Some(video_start), Some(audio_start)) = (video.start_time, audio.start_time) {
-        return Some((video_start - audio_start).abs() * 1000.0);
+        skew = Some((video_start - audio_start).abs() * 1000.0);
     }
     if let (Some(video_duration), Some(audio_duration)) = (video.duration, audio.duration) {
-        return Some((video_duration - audio_duration).abs() * 1000.0);
+        let duration_skew = (video_duration - audio_duration).abs() * 1000.0;
+        skew = Some(skew.map_or(duration_skew, |current| current.max(duration_skew)));
     }
-    None
+    skew
 }
 
 // --- Audio channel balance (slice 2: one-sided mic detection) ---
@@ -571,11 +597,11 @@ pub fn parse_freezedetect(output: &str) -> Vec<FreezeSegment> {
     segments
 }
 
-/// Freezes at or beyond `min_freeze_seconds` — the user-visible long freezes.
+/// Freezes over `min_freeze_seconds` — the user-visible long freezes.
 pub fn long_freezes(segments: &[FreezeSegment], min_freeze_seconds: f64) -> Vec<FreezeSegment> {
     segments
         .iter()
-        .filter(|segment| segment.duration >= min_freeze_seconds)
+        .filter(|segment| segment.duration > min_freeze_seconds)
         .copied()
         .collect()
 }
@@ -625,6 +651,177 @@ pub fn detect_freezes_cancellable(
     let output = run_output_cancellable(&mut command, is_cancelled)
         .map_err(|error| format!("could not run freezedetect: {error}"))?;
     Ok(parse_freezedetect(&String::from_utf8_lossy(&output.stderr)))
+}
+
+/// Parse FFmpeg `-f framemd5` output into an ordered sequence of decoded-frame hashes.
+pub fn parse_framemd5_hashes(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            line.split(',')
+                .next_back()
+                .map(|hash| hash.trim().to_string())
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepeatedFrameSummary {
+    pub max_run: usize,
+    pub bursts: usize,
+}
+
+pub fn repeated_frame_summary(hashes: &[String], threshold: usize) -> RepeatedFrameSummary {
+    if hashes.is_empty() {
+        return RepeatedFrameSummary {
+            max_run: 0,
+            bursts: 0,
+        };
+    }
+
+    let mut max_run = 1;
+    let mut current_run = 1;
+    let mut bursts = 0;
+    for index in 1..hashes.len() {
+        if hashes[index] == hashes[index - 1] {
+            current_run += 1;
+        } else {
+            if current_run > threshold {
+                bursts += 1;
+            }
+            max_run = max_run.max(current_run);
+            current_run = 1;
+        }
+    }
+    if current_run > threshold {
+        bursts += 1;
+    }
+    max_run = max_run.max(current_run);
+
+    RepeatedFrameSummary { max_run, bursts }
+}
+
+pub fn detect_repeated_frames_cancellable(
+    ffmpeg_path: &str,
+    file_path: &str,
+    threshold: usize,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<RepeatedFrameSummary, String> {
+    let mut command = Command::new(ffmpeg_path);
+    command.args([
+        "-hide_banner",
+        "-nostats",
+        "-threads",
+        "1",
+        "-i",
+        file_path,
+        "-an",
+        "-map",
+        "0:v:0",
+        "-f",
+        "framemd5",
+        "-",
+    ]);
+    let output = run_output_cancellable(&mut command, is_cancelled)
+        .map_err(|error| format!("could not run framemd5: {error}"))?;
+    if !output.status.success() && output.stdout.is_empty() {
+        return Err(format!(
+            "framemd5 failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(repeated_frame_summary(
+        &parse_framemd5_hashes(&String::from_utf8_lossy(&output.stdout)),
+        threshold,
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioPacket {
+    pub pts_time: f64,
+    pub duration_time: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioGapSummary {
+    pub count: usize,
+    pub max_gap_ms: f64,
+}
+
+pub fn parse_audio_packets(output: &str) -> Vec<AudioPacket> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let mut fields = line.split(',');
+            let pts_time = fields.next()?.trim().parse::<f64>().ok()?;
+            let duration_time = fields.next()?.trim().parse::<f64>().ok()?;
+            (pts_time.is_finite() && duration_time.is_finite()).then_some(AudioPacket {
+                pts_time,
+                duration_time,
+            })
+        })
+        .collect()
+}
+
+pub fn audio_gap_summary(packets: &[AudioPacket], tolerance_ms: f64) -> AudioGapSummary {
+    let mut packets = packets.to_vec();
+    packets.sort_by(|left, right| left.pts_time.total_cmp(&right.pts_time));
+
+    let mut count = 0;
+    let mut max_gap_ms = 0.0_f64;
+    for index in 1..packets.len() {
+        let previous = packets[index - 1];
+        let current = packets[index];
+        let expected = previous.duration_time.max(0.0);
+        let actual = current.pts_time - previous.pts_time;
+        let gap_ms = (actual - expected) * 1000.0;
+        if gap_ms > tolerance_ms {
+            count += 1;
+            max_gap_ms = max_gap_ms.max(gap_ms);
+        }
+    }
+
+    AudioGapSummary { count, max_gap_ms }
+}
+
+pub fn detect_audio_gaps_cancellable(
+    ffprobe_path: &str,
+    file_path: &str,
+    tolerance_ms: f64,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<AudioGapSummary, String> {
+    let mut command = Command::new(ffprobe_path);
+    command.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "packet=pts_time,duration_time",
+        "-of",
+        "csv=p=0",
+        file_path,
+    ]);
+    let output = run_output_cancellable(&mut command, is_cancelled)
+        .map_err(|error| format!("could not run ffprobe audio packet scan: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "audio packet scan failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(audio_gap_summary(
+        &parse_audio_packets(&String::from_utf8_lossy(&output.stdout)),
+        tolerance_ms,
+    ))
 }
 
 // --- Repair strategy selection (slice 5) ---
@@ -684,7 +881,9 @@ pub fn select_repair_plan(
 
     for issue in &report.issues {
         match issue {
-            QualityIssue::DroppedFrames { .. } | QualityIssue::FrozenSegments { .. } => {
+            QualityIssue::DroppedFrames { .. }
+            | QualityIssue::FrozenSegments { .. }
+            | QualityIssue::RepeatedFrames { .. } => {
                 video = VideoRepair::Interpolate;
                 repairable = true;
             }
@@ -709,7 +908,9 @@ pub fn select_repair_plan(
                 repairable = true;
             }
             // FFmpeg-only repair cannot synthesise a missing stream.
-            QualityIssue::MissingVideo | QualityIssue::MissingAudio => {}
+            QualityIssue::MissingVideo
+            | QualityIssue::MissingAudio
+            | QualityIssue::AudioGap { .. } => {}
         }
     }
 
@@ -901,8 +1102,8 @@ pub fn restore_from_backup(original: &Path) -> Result<bool, SafeReplaceError> {
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "m4v"];
 
-/// Recomputes a verdict from a full issue list (missing streams need review; any other
-/// issue is repairable; none is clean).
+/// Recomputes a verdict from a full issue list. Missing streams and audio packet
+/// gaps need review; video cadence issues and one-sided audio are repairable.
 fn verdict_for(issues: &[QualityIssue]) -> QualityVerdict {
     if issues.is_empty() {
         return QualityVerdict::Clean;
@@ -910,7 +1111,7 @@ fn verdict_for(issues: &[QualityIssue]) -> QualityVerdict {
     let needs_review = issues.iter().any(|issue| {
         matches!(
             issue,
-            QualityIssue::MissingVideo | QualityIssue::MissingAudio
+            QualityIssue::MissingVideo | QualityIssue::MissingAudio | QualityIssue::AudioGap { .. }
         )
     });
     if needs_review {
@@ -926,6 +1127,9 @@ pub fn combine_report(
     mut base: QualityReport,
     one_sided_silent_channel: Option<usize>,
     long_freeze_segments: &[FreezeSegment],
+    repeated_frames: Option<RepeatedFrameSummary>,
+    audio_gaps: Option<AudioGapSummary>,
+    thresholds: &QualityThresholds,
 ) -> QualityReport {
     if let Some(silent_channel) = one_sided_silent_channel {
         base.issues
@@ -939,6 +1143,22 @@ pub fn combine_report(
         base.issues.push(QualityIssue::FrozenSegments {
             count: long_freeze_segments.len(),
             longest_seconds: longest,
+        });
+    }
+    if let Some(repeated_frames) = repeated_frames
+        && repeated_frames.max_run > thresholds.max_repeated_frame_run
+    {
+        base.issues.push(QualityIssue::RepeatedFrames {
+            bursts: repeated_frames.bursts,
+            max_run: repeated_frames.max_run,
+        });
+    }
+    if let Some(audio_gaps) = audio_gaps
+        && audio_gaps.max_gap_ms > thresholds.max_audio_gap_ms
+    {
+        base.issues.push(QualityIssue::AudioGap {
+            count: audio_gaps.count,
+            max_ms: audio_gaps.max_gap_ms,
         });
     }
     base.verdict = verdict_for(&base.issues);
@@ -1016,24 +1236,47 @@ pub fn analyze_recording_cancellable(
         };
         detect_one_sided_audio(&levels, thresholds.silence_db)
     };
+    let audio_gaps = if probe.audio.is_empty() {
+        None
+    } else {
+        Some(detect_audio_gaps_cancellable(
+            ffprobe_path,
+            file_path,
+            thresholds.audio_gap_tolerance_ms,
+            is_cancelled,
+        )?)
+    };
     let freezes = if probe.video.is_some() {
-        let segments = match detect_freezes_cancellable(
+        let segments = detect_freezes_cancellable(
             ffmpeg_path,
             file_path,
             -60.0,
             thresholds.min_freeze_seconds,
             is_cancelled,
-        ) {
-            Ok(segments) => segments,
-            Err(error) if error.contains(MAINTENANCE_CANCELLED) => return Err(error),
-            Err(_) => Vec::new(),
-        };
+        )?;
         long_freezes(&segments, thresholds.min_freeze_seconds)
     } else {
         Vec::new()
     };
+    let repeated_frames = if probe.video.is_some() {
+        Some(detect_repeated_frames_cancellable(
+            ffmpeg_path,
+            file_path,
+            thresholds.max_repeated_frame_run,
+            is_cancelled,
+        )?)
+    } else {
+        None
+    };
 
-    let report = combine_report(base, one_sided, &freezes);
+    let report = combine_report(
+        base,
+        one_sided,
+        &freezes,
+        repeated_frames,
+        audio_gaps,
+        thresholds,
+    );
     Ok((probe, report))
 }
 
@@ -1341,6 +1584,12 @@ fn describe_issue(issue: &QualityIssue) -> String {
             count,
             longest_seconds,
         } => format!("{count} long freeze segment(s), longest {longest_seconds:.1}s"),
+        QualityIssue::RepeatedFrames { bursts, max_run } => {
+            format!("{bursts} repeated-frame burst(s), max run {max_run}")
+        }
+        QualityIssue::AudioGap { count, max_ms } => {
+            format!("{count} audio packet gap(s), largest {max_ms:.0} ms")
+        }
     }
 }
 
@@ -1687,6 +1936,22 @@ mod tests {
     }
 
     #[test]
+    fn default_thresholds_match_strict_final_file_gate() {
+        let thresholds = thresholds();
+        assert_eq!(thresholds.av_skew_ms, STRICT_AV_SKEW_HARD_FAIL_MS);
+        assert_eq!(thresholds.max_audio_gap_ms, STRICT_MAX_AUDIO_GAP_MS);
+        assert_eq!(
+            thresholds.audio_gap_tolerance_ms,
+            STRICT_AUDIO_GAP_TOLERANCE_MS
+        );
+        assert_eq!(
+            thresholds.max_repeated_frame_run,
+            STRICT_MAX_REPEATED_FRAME_RUN
+        );
+        assert_eq!(thresholds.min_freeze_seconds, STRICT_MAX_FREEZE_SECONDS);
+    }
+
+    #[test]
     fn parses_clean_probe() {
         let probe = parse_ffprobe_json(CLEAN_JSON).unwrap();
         assert_eq!(probe.format_duration, Some(10.0));
@@ -1756,7 +2021,7 @@ mod tests {
 
     #[test]
     fn av_skew_above_threshold_is_repairable() {
-        // Audio starts 500 ms after video → 500 ms skew > 250 ms.
+        // Audio starts 500 ms after video → 500 ms skew > 150 ms.
         let json = r#"{"streams":[
             {"codec_type":"video","codec_name":"h264","width":1280,"height":720,
              "r_frame_rate":"30/1","avg_frame_rate":"30/1","duration":"10.0","nb_frames":"300","start_time":"0.0"},
@@ -1773,7 +2038,7 @@ mod tests {
 
     #[test]
     fn small_av_skew_passes() {
-        // 100 ms skew is under the 250 ms gate.
+        // 100 ms skew is under the 150 ms hard-fail gate.
         let json = r#"{"streams":[
             {"codec_type":"video","codec_name":"h264","width":1280,"height":720,
              "r_frame_rate":"30/1","avg_frame_rate":"30/1","duration":"10.0","nb_frames":"300","start_time":"0.0"},
@@ -1782,6 +2047,23 @@ mod tests {
         let probe = parse_ffprobe_json(json).unwrap();
         let report = classify_quality(&probe, &thresholds(), &QualityExpectations::default());
         assert_eq!(report.verdict, QualityVerdict::Clean);
+    }
+
+    #[test]
+    fn duration_skew_is_not_hidden_by_equal_start_times() {
+        let json = r#"{"streams":[
+            {"codec_type":"video","codec_name":"h264","width":1280,"height":720,
+             "r_frame_rate":"30/1","avg_frame_rate":"30/1","duration":"14.300","nb_frames":"429","start_time":"0.0"},
+            {"codec_type":"audio","codec_name":"aac","channels":2,"duration":"13.909","start_time":"0.0"}
+        ]}"#;
+        let probe = parse_ffprobe_json(json).unwrap();
+        let report = classify_quality(&probe, &thresholds(), &QualityExpectations::default());
+
+        assert_eq!(report.verdict, QualityVerdict::Repairable);
+        assert!(report.issues.iter().any(|issue| matches!(
+            issue,
+            QualityIssue::AvSkew { ms } if (*ms - 391.0).abs() < 1.0
+        )));
     }
 
     #[test]
@@ -1926,6 +2208,57 @@ mod tests {
         assert_eq!(long[0].duration, 3.5);
     }
 
+    #[test]
+    fn strict_freeze_threshold_flags_sub_two_second_freezes() {
+        let base = QualityReport {
+            verdict: QualityVerdict::Clean,
+            issues: vec![],
+        };
+        let freezes = [FreezeSegment {
+            start: 0.5,
+            duration: 1.6,
+        }];
+        let report = combine_report(base, None, &freezes, None, None, &thresholds());
+
+        assert_eq!(report.verdict, QualityVerdict::Repairable);
+        assert!(report.issues.iter().any(|issue| matches!(
+            issue,
+            QualityIssue::FrozenSegments {
+                count: 1,
+                longest_seconds
+            } if (*longest_seconds - 1.6).abs() < 0.001
+        )));
+    }
+
+    #[test]
+    fn parses_framemd5_and_summarizes_repeated_frame_bursts() {
+        let output = "#format: frame checksums\n\
+            0, 0, 0, 1, 1, aaa\n\
+            0, 1, 1, 1, 1, aaa\n\
+            0, 2, 2, 1, 1, aaa\n\
+            0, 3, 3, 1, 1, bbb\n";
+        let hashes = parse_framemd5_hashes(output);
+        assert_eq!(hashes, vec!["aaa", "aaa", "aaa", "bbb"]);
+        assert_eq!(
+            repeated_frame_summary(&hashes, STRICT_MAX_REPEATED_FRAME_RUN),
+            RepeatedFrameSummary {
+                max_run: 3,
+                bursts: 1
+            }
+        );
+    }
+
+    #[test]
+    fn audio_gap_summary_detects_packet_pts_gaps() {
+        let packets = parse_audio_packets(
+            "0.000000,0.021000\n0.021000,0.021000\n0.300000,0.021000\n0.321000,0.021000\n",
+        );
+        let gaps = audio_gap_summary(&packets, STRICT_AUDIO_GAP_TOLERANCE_MS);
+
+        assert_eq!(gaps.count, 1);
+        assert!(gaps.max_gap_ms > 250.0);
+    }
+
     fn probe_for_strategy() -> MediaProbe {
         MediaProbe {
             format_duration: Some(10.0),
@@ -1992,6 +2325,22 @@ mod tests {
     }
 
     #[test]
+    fn repeated_frames_select_interpolation() {
+        let report = report_with(vec![QualityIssue::RepeatedFrames {
+            bursts: 1,
+            max_run: 7,
+        }]);
+        let plan = select_repair_plan(
+            &report,
+            &probe_for_strategy(),
+            &QualityExpectations::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.video, VideoRepair::Interpolate);
+        assert!(plan.interpolated);
+    }
+
+    #[test]
     fn one_sided_audio_centers_active_channel() {
         // Silent astats channel 2 -> active source channel c0.
         let report = report_with(vec![QualityIssue::OneSidedAudio { silent_channel: 2 }]);
@@ -2042,6 +2391,22 @@ mod tests {
         assert!(
             select_repair_plan(
                 &missing,
+                &probe_for_strategy(),
+                &QualityExpectations::default()
+            )
+            .is_none()
+        );
+
+        let audio_gap = QualityReport {
+            verdict: QualityVerdict::NeedsReview,
+            issues: vec![QualityIssue::AudioGap {
+                count: 1,
+                max_ms: 80.0,
+            }],
+        };
+        assert!(
+            select_repair_plan(
+                &audio_gap,
                 &probe_for_strategy(),
                 &QualityExpectations::default()
             )
@@ -2167,7 +2532,7 @@ mod tests {
             start: 5.0,
             duration: 3.5,
         }];
-        let report = combine_report(base, Some(2), &freezes);
+        let report = combine_report(base, Some(2), &freezes, None, None, &thresholds());
         assert_eq!(report.verdict, QualityVerdict::Repairable);
         assert!(
             report
@@ -2189,9 +2554,43 @@ mod tests {
             verdict: QualityVerdict::Clean,
             issues: vec![],
         };
-        let report = combine_report(base, None, &[]);
+        let report = combine_report(base, None, &[], None, None, &thresholds());
         assert_eq!(report.verdict, QualityVerdict::Clean);
         assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn combine_report_folds_repeated_frames_and_audio_gaps() {
+        let base = QualityReport {
+            verdict: QualityVerdict::Clean,
+            issues: vec![],
+        };
+        let report = combine_report(
+            base,
+            None,
+            &[],
+            Some(RepeatedFrameSummary {
+                max_run: 7,
+                bursts: 1,
+            }),
+            Some(AudioGapSummary {
+                count: 1,
+                max_gap_ms: 80.0,
+            }),
+            &thresholds(),
+        );
+
+        assert_eq!(report.verdict, QualityVerdict::NeedsReview);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| matches!(issue, QualityIssue::RepeatedFrames { max_run: 7, .. }))
+        );
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| matches!(issue, QualityIssue::AudioGap { max_ms, .. } if (*max_ms - 80.0).abs() < 0.001)));
     }
 
     #[test]
