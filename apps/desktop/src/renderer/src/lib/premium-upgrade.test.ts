@@ -8,7 +8,7 @@ import {
 
 describe('premium upgrade helpers', () => {
   it('uses the public Videorc premium URL', () => {
-    expect(VIDEORC_PREMIUM_URL).toBe('https://videorc.com/premium')
+    expect(VIDEORC_PREMIUM_URL).toBe('https://videorc-web.vercel.app/premium')
   })
 
   it('detects premium blocker copy', () => {

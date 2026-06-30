@@ -99,16 +99,16 @@ describe('accountFromSnapshot', () => {
 describe('videorc web links', () => {
   it('points the account links at the Videorc web origin', () => {
     expect(VIDEORC_WEB_LINKS).toEqual({
-      account: 'https://videorc.com/account',
-      login: 'https://videorc.com/login',
-      desktopAuthorize: 'https://videorc.com/desktop/authorize',
-      premium: 'https://videorc.com/premium',
-      billing: 'https://videorc.com/account/billing'
+      account: 'https://videorc-web.vercel.app/account',
+      login: 'https://videorc-web.vercel.app/login',
+      desktopAuthorize: 'https://videorc-web.vercel.app/desktop/authorize',
+      premium: 'https://videorc-web.vercel.app/premium',
+      billing: 'https://videorc-web.vercel.app/account/billing'
     })
   })
 
   it('keeps VIDEORC_PREMIUM_URL value-compatible with premium-upgrade callers', () => {
-    expect(VIDEORC_PREMIUM_URL).toBe('https://videorc.com/premium')
+    expect(VIDEORC_PREMIUM_URL).toBe('https://videorc-web.vercel.app/premium')
     expect(VIDEORC_PREMIUM_URL).toBe(VIDEORC_WEB_LINKS.premium)
   })
 })

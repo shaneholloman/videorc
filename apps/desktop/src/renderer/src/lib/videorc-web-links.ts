@@ -5,12 +5,16 @@
 // Dev builds default to a local videorc-web (matching the Rust API base URL) so
 // sign-in testing is zero-config; override with VITE_VIDEORC_WEB_ORIGIN. Packaged
 // builds always use production.
+//
+// BETA: the live web app (account, auth bridge, premium, updates feed) is the
+// Vercel host; videorc.com is only a teaser landing page until launch. Switch
+// this to https://videorc.com when we ship.
 const DEV_ORIGIN_OVERRIDE = (import.meta.env as Record<string, string | undefined>)
   .VITE_VIDEORC_WEB_ORIGIN
 const VIDEORC_WEB_ORIGIN =
   import.meta.env.MODE === 'development'
     ? (DEV_ORIGIN_OVERRIDE ?? 'http://localhost:3000')
-    : 'https://videorc.com'
+    : 'https://videorc-web.vercel.app'
 
 export const VIDEORC_WEB_LINKS = {
   account: `${VIDEORC_WEB_ORIGIN}/account`,
