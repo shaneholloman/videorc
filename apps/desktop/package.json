@@ -11,7 +11,7 @@
     "package": "pnpm build && electron-builder --dir --config.mac.identity=null --config.mac.notarize=false",
     "dist": "pnpm build && electron-builder --config.mac.identity=null --config.mac.notarize=false --config.dmg.sign=false",
     "dist:signed": "pnpm build && electron-builder --mac dmg",
-    "dist:release": "pnpm build && electron-builder --publish never",
+    "dist:release": "pnpm build && APPLE_TEAM_ID=C2PA37RB58 electron-builder --publish never",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run"
   },

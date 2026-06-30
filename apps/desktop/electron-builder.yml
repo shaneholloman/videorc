@@ -59,14 +59,15 @@ mac:
   entitlementsInherit: build-resources/entitlements.mac.plist
   # Signed + notarized for Developer ID distribution. The cert is the keychain's
   # "Developer ID Application: Uros Miric (C2PA37RB58)" — electron-builder
-  # auto-detects it. teamId is not a secret. notarytool additionally needs
-  # Apple-account creds in the environment when running `pnpm dist:release`:
+  # auto-detects it. In electron-builder 26 `notarize` is a boolean; the notary
+  # credentials come from the environment (the `dist:release` script bakes
+  # APPLE_TEAM_ID; you supply the other two):
+  #   APPLE_TEAM_ID                C2PA37RB58 (set by dist:release)
   #   APPLE_ID                     your Apple ID email
   #   APPLE_APP_SPECIFIC_PASSWORD  appleid.apple.com -> Sign-In and Security
   #                                -> App-Specific Passwords
-  # The unsigned `dist`/`package` scripts skip signing + notarization entirely.
-  notarize:
-    teamId: C2PA37RB58
+  # The unsigned `dist`/`package` scripts override this to false.
+  notarize: true
   extendInfo:
     NSCameraUsageDescription: Videorc uses the camera for creator overlays when you select a camera source.
     NSMicrophoneUsageDescription: Videorc uses the microphone when you select a microphone for recording or streaming.
