@@ -16,6 +16,7 @@ describe('runtime info helpers', () => {
 
   it('keeps Electron development paths and names the permission target Electron', () => {
     const info = buildRuntimeInfo({
+      appVersion: '9.9.9-test',
       execPath: '/Applications/Electron.app/Contents/MacOS/Electron',
       env: {}
     })
@@ -31,6 +32,7 @@ describe('runtime info helpers', () => {
 
   it('reports the backend helper as the capture permission target when provided', () => {
     const info = buildRuntimeInfo({
+      appVersion: '9.9.9-test',
       execPath: '/Applications/Electron.app/Contents/MacOS/Electron',
       captureExecPath: '/Users/orcdev/projects/videogre/target/debug/videorc-backend',
       env: {}
@@ -47,6 +49,7 @@ describe('runtime info helpers', () => {
 
   it('reports the packaged backend helper as the capture permission target', () => {
     const info = buildRuntimeInfo({
+      appVersion: '9.9.9-test',
       execPath: '/Applications/Videorc.app/Contents/MacOS/Videorc',
       captureExecPath: '/Applications/Videorc.app/Contents/Resources/videorc-backend',
       env: {}
@@ -63,6 +66,7 @@ describe('runtime info helpers', () => {
 
   it('reflects main-process env flags without renderer process access', () => {
     const info = buildRuntimeInfo({
+      appVersion: '9.9.9-test',
       execPath: '/Applications/Videorc.app/Contents/MacOS/Videorc',
       env: {
         VIDEORC_NATIVE_PREVIEW_SURFACE: '0',
@@ -89,6 +93,7 @@ describe('runtime info helpers', () => {
 
   it('enables Notes and recording overlay by default after the artifact gate', () => {
     const info = buildRuntimeInfo({
+      appVersion: '9.9.9-test',
       execPath: '/Applications/Videorc.app/Contents/MacOS/Videorc',
       env: {}
     })
@@ -101,6 +106,7 @@ describe('runtime info helpers', () => {
 
   it('allows Notes and recording overlay to be disabled by env kill switches', () => {
     const info = buildRuntimeInfo({
+      appVersion: '9.9.9-test',
       execPath: '/Applications/Videorc.app/Contents/MacOS/Videorc',
       env: {
         VIDEORC_NOTES_WINDOW: '0',
@@ -112,6 +118,16 @@ describe('runtime info helpers', () => {
       notesWindowEnabled: false,
       notesWindowRecordingOverlayAllowed: false
     })
+  })
+
+  it('surfaces the running app version', () => {
+    const info = buildRuntimeInfo({
+      appVersion: '1.2.3',
+      execPath: '/Applications/Videorc.app/Contents/MacOS/Videorc',
+      env: {}
+    })
+
+    expect(info.version).toBe('1.2.3')
   })
 
   it('rejects permission shortcuts outside macOS', () => {

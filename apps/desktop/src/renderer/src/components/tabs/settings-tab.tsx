@@ -3,10 +3,13 @@ import {
   Bug,
   CaretDown,
   CheckCircle,
+  CircleNotch,
   Database,
+  DownloadSimple,
   FolderOpen,
   GearSix,
   LockKey,
+  Sparkle,
   Warning
 } from '@phosphor-icons/react'
 import { useTheme } from 'next-themes'
@@ -30,9 +33,12 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { VideoPresetSelectItems } from '@/components/video-preset-select-items'
 import { useStudio } from '@/hooks/use-studio'
-import type { RtmpPreset, SystemPermissionPane, VideoPreset } from '@/lib/backend'
+import { useUpdater } from '@/hooks/use-updater'
+import type { RtmpPreset, SystemPermissionPane, UpdateStatus, VideoPreset } from '@/lib/backend'
 import { videoProfileEntitlementGate } from '@/lib/entitlement-ui'
+import { isActiveRecordingState } from '@/lib/format'
 import { VIDEORC_PREMIUM_URL } from '@/lib/premium-upgrade'
+import { isUpdateInstallable } from '@/lib/update-ui'
 
 export function SettingsTab({
   onResetOnboarding
@@ -267,8 +273,147 @@ export function SettingsTab({
           ))}
         </div>
       </PanelSection>
+
+      <AboutAndUpdates />
     </ConfigGrid>
   )
+}
+
+function AboutAndUpdates(): ReactElement {
+  const { runtimeInfo, recording } = useStudio()
+  const { status, check, install } = useUpdater()
+  const captureActive = isActiveRecordingState(recording.state)
+
+  return (
+    <PanelSection
+      className="lg:col-span-2"
+      description="Check for new versions of Videorc and install them."
+      icon={Sparkle}
+      title="About & updates"
+    >
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-muted-foreground">Current version</span>
+          <span className="font-mono text-sm text-foreground">{runtimeInfo?.version ?? '—'}</span>
+        </div>
+        <UpdateControl
+          captureActive={captureActive}
+          status={status}
+          onCheck={check}
+          onInstall={install}
+        />
+      </div>
+    </PanelSection>
+  )
+}
+
+function UpdateControl({
+  status,
+  captureActive,
+  onCheck,
+  onInstall
+}: {
+  status: UpdateStatus
+  captureActive: boolean
+  onCheck: () => void
+  onInstall: () => void
+}): ReactElement {
+  switch (status.phase) {
+    case 'unsupported':
+      return (
+        <p className="text-xs text-muted-foreground">
+          Updates apply to the installed app — not to development builds.
+        </p>
+      )
+    case 'checking':
+      return (
+        <Button disabled className="w-fit" size="sm" variant="outline">
+          <CircleNotch className="animate-spin" data-icon="inline-start" />
+          Checking for updates…
+        </Button>
+      )
+    case 'available':
+      return (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <DownloadSimple className="size-4 shrink-0" />
+          <span>Version {status.version} available — starting download…</span>
+        </div>
+      )
+    case 'downloading':
+      return (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Downloading update…</span>
+            <span className="font-mono">{status.percent}%</span>
+          </div>
+          <div
+            aria-label="Update download progress"
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={status.percent}
+            className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+          >
+            <div
+              className="h-full rounded-full bg-primary transition-[width] duration-200"
+              style={{ width: `${status.percent}%` }}
+            />
+          </div>
+        </div>
+      )
+    case 'downloaded':
+      return (
+        <div className="flex flex-col gap-2">
+          <Button
+            className="w-fit"
+            disabled={!isUpdateInstallable(status, captureActive)}
+            size="sm"
+            onClick={onInstall}
+          >
+            <ArrowClockwise data-icon="inline-start" />
+            Restart &amp; install {status.version}
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            {captureActive
+              ? 'Finish your recording first — installing restarts Videorc.'
+              : 'Videorc will restart to finish updating.'}
+          </p>
+        </div>
+      )
+    case 'not-available':
+      return (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <CheckCircle className="size-3.5 shrink-0 text-success" weight="fill" />
+            <span>You’re on the latest version ({status.currentVersion}).</span>
+          </div>
+          <Button className="w-fit" size="sm" variant="outline" onClick={onCheck}>
+            <ArrowClockwise data-icon="inline-start" />
+            Check again
+          </Button>
+        </div>
+      )
+    case 'error':
+      return (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-start gap-1.5 text-xs text-warning-foreground dark:text-warning">
+            <Warning className="size-3.5 shrink-0" weight="fill" />
+            <span>Couldn’t check for updates: {status.message}</span>
+          </div>
+          <Button className="w-fit" size="sm" variant="outline" onClick={onCheck}>
+            <ArrowClockwise data-icon="inline-start" />
+            Try again
+          </Button>
+        </div>
+      )
+    default:
+      return (
+        <Button className="w-fit" size="sm" variant="outline" onClick={onCheck}>
+          <ArrowClockwise data-icon="inline-start" />
+          Check for updates
+        </Button>
+      )
+  }
 }
 
 function openExternalUrl(url: string): void {

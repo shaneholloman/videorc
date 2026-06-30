@@ -9,6 +9,7 @@ import type {
   NotesDocument,
   NotesWindowState,
   PreviewWindowState,
+  UpdateStatus,
   VideorcApi
 } from '../shared/backend'
 
@@ -155,6 +156,16 @@ const api: VideorcApi = {
     }
     ipcRenderer.on('glass:geometry', listener)
     return () => ipcRenderer.removeListener('glass:geometry', listener)
+  },
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  downloadUpdate: () => ipcRenderer.invoke('updates:download'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
+  getUpdateStatus: () => ipcRenderer.invoke('updates:get-status'),
+  onUpdateStatus: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: UpdateStatus): void =>
+      callback(status)
+    ipcRenderer.on('app:update-status', listener)
+    return () => ipcRenderer.removeListener('app:update-status', listener)
   }
 }
 

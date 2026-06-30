@@ -46,7 +46,7 @@ import {
 } from './runtime-info'
 import { createMediaPermissionGrantWatcher } from './system-permission-watch'
 import { PreviewSupervisorModel } from './preview-supervisor'
-import { initAutoUpdater } from './updater'
+import { initAutoUpdater, registerUpdaterIpc } from './updater'
 import {
   DEFAULT_NATIVE_PREVIEW_MAX_HANDOFF_AGE_MS,
   compositorStatusMetalTargetHandoff,
@@ -5457,6 +5457,7 @@ const mediaPermissionGrantWatcher = createMediaPermissionGrantWatcher({
 
 function runtimeInfo(): RuntimeInfo {
   return buildRuntimeInfo({
+    appVersion: app.getVersion(),
     execPath: process.execPath,
     captureExecPath: resolveBackendPermissionTargetPath(),
     env: process.env
@@ -5621,6 +5622,7 @@ app.whenReady().then(async () => {
 
   registerOAuthCallbackProtocol()
   initAutoUpdater()
+  registerUpdaterIpc(() => mainWindow)
   ipcMain.handle('backend:get-connection', () => backendConnection)
   ipcMain.handle('backend:get-logs', () => backendLogs)
   ipcMain.handle('app:get-runtime-info', () => runtimeInfo())

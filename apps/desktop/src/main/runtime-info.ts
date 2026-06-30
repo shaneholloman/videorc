@@ -9,6 +9,8 @@ export const MACOS_PERMISSION_URLS: Record<SystemPermissionPane, string> = {
 }
 
 export interface RuntimeInfoInput {
+  /** `app.getVersion()` — the running app version. */
+  appVersion: string
   execPath: string
   captureExecPath?: string
   env: Partial<
@@ -53,6 +55,7 @@ export function assertPermissionShortcutSupported(platform: NodeJS.Platform): vo
 }
 
 export function buildRuntimeInfo({
+  appVersion,
   execPath,
   captureExecPath,
   env
@@ -62,6 +65,7 @@ export function buildRuntimeInfo({
   const captureTargetPath = permissionTargetPath(captureExecPath ?? execPath)
 
   return {
+    version: appVersion,
     isPackaged,
     permissionTargetName: isPackaged ? 'Videorc' : 'Electron',
     permissionTargetPath: targetPath,

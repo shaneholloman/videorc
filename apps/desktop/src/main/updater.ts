@@ -1,53 +1,169 @@
-import { app, Notification } from 'electron'
+import { app, ipcMain, Notification } from 'electron'
+import type { BrowserWindow } from 'electron'
 import electronUpdater from 'electron-updater'
+import type { ProgressInfo, UpdateInfo } from 'electron-updater'
 
+import type { UpdateStatus } from '../shared/backend'
 import { safeConsole } from './safe-console'
+import { shouldAutoDownload, updateStatusFromEvent } from './updater-status'
 
 const { autoUpdater } = electronUpdater
 
+// One shared electron-updater singleton drives two flows:
+//   • a silent background check (opt-in via VIDEORC_ENABLE_AUTO_UPDATE=1) that
+//     downloads and applies on the NEXT quit (autoInstallOnAppQuit), so a
+//     recording is never cut off; and
+//   • a manual "Check for updates / Download / Restart & install" button in
+//     Settings → About & updates, driven over IPC.
+//
+// Both flows download explicitly (autoDownload = false) and share one cached
+// UpdateStatus that is pushed to the renderer on every transition. The feed
+// itself lives at electron-builder.yml's `publish.url`; until videorc-web serves
+// it, checks resolve to `error`/`not-available` and the UI degrades gracefully.
+
+type MainWindowGetter = () => BrowserWindow | null
+
+let currentStatus: UpdateStatus = { phase: 'idle' }
+let getMainWindow: MainWindowGetter = () => null
+let listenersAttached = false
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function setStatus(next: UpdateStatus): void {
+  currentStatus = next
+  const window = getMainWindow()
+  if (window && !window.webContents.isDestroyed()) {
+    window.webContents.send('app:update-status', next)
+  }
+}
+
+// Attach the autoUpdater event → UpdateStatus mapping exactly once. Safe to call
+// from both initAutoUpdater (background) and registerUpdaterIpc (manual).
+function attachUpdaterListeners(): void {
+  if (listenersAttached) {
+    return
+  }
+  listenersAttached = true
+
+  // Manual + background both drive download explicitly.
+  autoUpdater.autoDownload = false
+  // A downloaded update still applies on the next natural quit even if the user
+  // never clicks "Restart & install".
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('checking-for-update', () => setStatus(updateStatusFromEvent({ type: 'checking' })))
+  autoUpdater.on('update-available', (info: UpdateInfo) => {
+    setStatus(updateStatusFromEvent({ type: 'available', version: info.version }))
+  })
+  autoUpdater.on('update-not-available', () => {
+    setStatus(updateStatusFromEvent({ type: 'not-available', currentVersion: app.getVersion() }))
+  })
+  autoUpdater.on('download-progress', (progress: ProgressInfo) => {
+    setStatus(updateStatusFromEvent({ type: 'progress', percent: progress.percent }))
+  })
+  autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
+    setStatus(updateStatusFromEvent({ type: 'downloaded', version: info.version }))
+    safeConsole.log(`[auto-update] ${info.version} downloaded; ready to install.`)
+    // Non-blocking heads-up for the background flow (the user may not be in
+    // Settings). Accurate for the manual flow too — they can restart now or it
+    // applies on the next quit.
+    if (Notification.isSupported()) {
+      new Notification({
+        title: `Videorc ${info.version} is ready`,
+        body: 'Restart Videorc to finish updating, or it will apply the next time you quit.',
+        silent: true
+      }).show()
+    }
+  })
+  autoUpdater.on('error', (error) => {
+    const message = errorMessage(error)
+    // Update failures are non-fatal.
+    safeConsole.warn(`[auto-update] error: ${message}`)
+    setStatus(updateStatusFromEvent({ type: 'error', message }))
+  })
+}
+
 // Background auto-update for packaged, signed builds — OFF by default for the
-// download-only beta. videorc-web does not serve an electron-updater feed yet:
-// its download system is auth-gated (presigned per-user URLs), and a public
-// update feed is a separate, deliberate piece of work. With no feed, checking
-// would just hit a dead URL, so this is opt-in. Set VIDEORC_ENABLE_AUTO_UPDATE=1
-// once the feed ships — updates then download in the background and apply on the
-// NEXT quit (autoInstallOnAppQuit), never a forced restart, so a recording is
-// never cut off.
+// download-only beta (videorc-web does not serve an electron-updater feed yet).
+// Set VIDEORC_ENABLE_AUTO_UPDATE=1 once the feed ships: updates then download in
+// the background and apply on the NEXT quit, never a forced restart, so a
+// recording is never cut off.
 export function initAutoUpdater(): void {
   if (!app.isPackaged || process.env.VIDEORC_ENABLE_AUTO_UPDATE !== '1') {
     return
   }
 
-  autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
+  attachUpdaterListeners()
 
-  autoUpdater.on('update-available', (info) => {
-    safeConsole.log(`[auto-update] ${info.version} available; downloading in the background.`)
-  })
-
-  autoUpdater.on('update-downloaded', (info) => {
-    safeConsole.log(`[auto-update] ${info.version} downloaded; will apply on next quit.`)
-    // Non-blocking heads-up. We deliberately do not prompt to restart — the
-    // update lands on the next natural quit so it can never interrupt a capture.
-    if (Notification.isSupported()) {
-      new Notification({
-        title: `Videorc ${info.version} is ready`,
-        body: 'It will be applied the next time you quit Videorc.',
-        silent: true
-      }).show()
-    }
-  })
-
-  autoUpdater.on('error', (error) => {
-    // Update failures are non-fatal and invisible to the user.
-    safeConsole.warn(
-      `[auto-update] error: ${error instanceof Error ? error.message : String(error)}`
-    )
+  // autoDownload is off, so kick the download ourselves when an update is found.
+  autoUpdater.on('update-available', () => {
+    void autoUpdater.downloadUpdate().catch((error) => {
+      safeConsole.warn(`[auto-update] background download failed: ${errorMessage(error)}`)
+    })
   })
 
   void autoUpdater.checkForUpdates().catch((error) => {
-    safeConsole.warn(
-      `[auto-update] check failed: ${error instanceof Error ? error.message : String(error)}`
-    )
+    safeConsole.warn(`[auto-update] check failed: ${errorMessage(error)}`)
+  })
+}
+
+// Wire the manual update controls (Settings → About & updates). A manual check
+// works whenever the app is packaged (explicit user intent) and does NOT require
+// VIDEORC_ENABLE_AUTO_UPDATE — that flag only gates the silent background check.
+export function registerUpdaterIpc(mainWindowGetter: MainWindowGetter): void {
+  getMainWindow = mainWindowGetter
+  attachUpdaterListeners()
+
+  ipcMain.handle('updates:get-status', () => currentStatus)
+
+  ipcMain.handle('updates:check', async (): Promise<UpdateStatus> => {
+    if (!app.isPackaged) {
+      setStatus(updateStatusFromEvent({ type: 'unsupported' }))
+      return currentStatus
+    }
+    try {
+      setStatus(updateStatusFromEvent({ type: 'checking' }))
+      await autoUpdater.checkForUpdates()
+      // The events above have set the truth by the time checkForUpdates resolves.
+      // If an update is available, start downloading immediately for a one-click
+      // feel; progress + downloaded states flow through the listeners.
+      if (shouldAutoDownload(currentStatus)) {
+        void autoUpdater.downloadUpdate().catch((error) => {
+          setStatus(updateStatusFromEvent({ type: 'error', message: errorMessage(error) }))
+        })
+      }
+      return currentStatus
+    } catch (error) {
+      const message = errorMessage(error)
+      safeConsole.warn(`[auto-update] check failed: ${message}`)
+      setStatus(updateStatusFromEvent({ type: 'error', message }))
+      return currentStatus
+    }
+  })
+
+  ipcMain.handle('updates:download', async (): Promise<UpdateStatus> => {
+    if (!app.isPackaged) {
+      setStatus(updateStatusFromEvent({ type: 'unsupported' }))
+      return currentStatus
+    }
+    try {
+      await autoUpdater.downloadUpdate()
+      return currentStatus
+    } catch (error) {
+      const message = errorMessage(error)
+      setStatus(updateStatusFromEvent({ type: 'error', message }))
+      return currentStatus
+    }
+  })
+
+  // Quit, install, and relaunch. The renderer MUST block this while a capture is
+  // live — never interrupt a recording.
+  ipcMain.handle('updates:install', () => {
+    if (!app.isPackaged) {
+      return
+    }
+    autoUpdater.quitAndInstall()
   })
 }

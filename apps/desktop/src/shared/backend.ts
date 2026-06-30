@@ -1724,6 +1724,8 @@ export interface ReorderScreensParams {
 }
 
 export interface RuntimeInfo {
+  /** The running app version (`app.getVersion()`), shown in Settings → About. */
+  version: string
   isPackaged: boolean
   permissionTargetName: string
   permissionTargetPath: string
@@ -1833,6 +1835,22 @@ export interface GlassWallpaperState {
   display: GlassRect
 }
 
+/**
+ * App self-update lifecycle (electron-updater), surfaced in Settings →
+ * About & updates. `phase` drives the UI; the renderer subscribes via
+ * `onUpdateStatus` and seeds from `getUpdateStatus`. `unsupported` is reported
+ * when the app is not packaged (dev runs are not updatable).
+ */
+export type UpdateStatus =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'available'; version: string }
+  | { phase: 'downloading'; percent: number; version?: string }
+  | { phase: 'downloaded'; version: string }
+  | { phase: 'not-available'; currentVersion: string }
+  | { phase: 'error'; message: string }
+  | { phase: 'unsupported' }
+
 export interface VideorcApi {
   getBackendConnection: () => Promise<BackendConnection | null>
   getBackendLogs: () => Promise<BackendLogEvent[]>
@@ -1926,6 +1944,17 @@ export interface VideorcApi {
   onGlassGeometry: (
     callback: (geometry: Pick<GlassWallpaperState, 'window' | 'display'>) => void
   ) => () => void
+  // App self-update (electron-updater) — Settings → About & updates. A manual
+  // check works whenever the app is packaged (explicit user intent); it does not
+  // require VIDEORC_ENABLE_AUTO_UPDATE (that flag only gates the silent
+  // background check). `installUpdate` quits and relaunches, so its promise may
+  // never resolve. The install must be blocked by the caller while a capture is
+  // live — never interrupt a recording.
+  checkForUpdates: () => Promise<UpdateStatus>
+  downloadUpdate: () => Promise<UpdateStatus>
+  installUpdate: () => Promise<void>
+  getUpdateStatus: () => Promise<UpdateStatus>
+  onUpdateStatus: (callback: (status: UpdateStatus) => void) => () => void
 }
 
 // --- Recording repair (lag cleanup & repair plan) ---
