@@ -17,6 +17,8 @@
     "audit:js": "pnpm audit --prod --audit-level high",
     "audit:rust": "cargo audit --deny warnings",
     "audit:deps": "pnpm audit:js && pnpm audit:rust",
+    "changelog:build": "node scripts/build-changelog.mjs",
+    "changelog:check": "node scripts/build-changelog.mjs --check",
     "ffmpeg:build:macos": "bash scripts/build-ffmpeg-macos.sh",
     "ffmpeg:fetch:windows": "node scripts/fetch-ffmpeg-windows.mjs",
     "package:backend": "cargo build --release -p videorc-backend",
