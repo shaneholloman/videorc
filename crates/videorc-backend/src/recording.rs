@@ -4982,12 +4982,20 @@ fn scene_source_fit_filter(
     height: u32,
     params: &StartSessionParams,
 ) -> String {
-    let contain = matches!(kind, SceneSourceKind::Camera)
-        && matches!(params.layout.camera_fit, CameraFit::Fit)
-        && params.layout.camera_zoom <= 100;
+    let contain = match kind {
+        SceneSourceKind::Camera => {
+            matches!(params.layout.camera_fit, CameraFit::Fit) && params.layout.camera_zoom <= 100
+        }
+        // Screen-like content always CONTAINS — nothing on the user's screen may
+        // be cropped away by the layout box (cover hid the Dock on 16:10 screens
+        // in 16:9 boxes; matches compositor_scene_source_fit). Transparent bars
+        // so the canvas/background stage shows through the letterbox.
+        SceneSourceKind::Screen | SceneSourceKind::Window => true,
+        SceneSourceKind::TestPattern => false,
+    };
     if contain {
         return format!(
-            "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=rgba"
+            "scale={width}:{height}:force_original_aspect_ratio=decrease,format=rgba,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0"
         );
     }
     format!(
@@ -8692,7 +8700,8 @@ mod tests {
         );
         assert!(filter.contains("scale=100:100:force_original_aspect_ratio=increase,crop=100:100"));
         assert!(filter.contains("[0:v]setpts=PTS-STARTPTS"));
-        assert!(filter.contains("scale=80:80"));
+        // Screen CONTAINS within the stage (letterbox, never crop the screen).
+        assert!(filter.contains("scale=80:80:force_original_aspect_ratio=decrease"));
         assert!(filter.contains("overlay=x=10:y=10"));
         assert!(filter.contains("[1:v]setpts=PTS-STARTPTS"));
         assert!(filter.contains("scale=20:20"));
@@ -8741,7 +8750,10 @@ mod tests {
         );
 
         assert!(!filter.contains("movie=filename="));
-        assert!(filter.contains("scale=100:100"));
+        // Screen CONTAINS at full canvas (letterbox, never crop the screen —
+        // cover used to hide the Dock on screens whose aspect differs from the
+        // output canvas).
+        assert!(filter.contains("scale=100:100:force_original_aspect_ratio=decrease"));
         assert!(filter.contains("overlay=x=0:y=0"));
         assert!(filter.contains("scale=20:20"));
         assert!(filter.contains("overlay=x=75:y=70"));

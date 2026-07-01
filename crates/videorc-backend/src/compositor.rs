@@ -1746,11 +1746,15 @@ fn try_gpu_compose(
     {
         let (rgba, (image_width, image_height)) = image;
         let bgra = rgba_to_bgra_bytes(rgba);
+        // Screen-image stand-ins are screen-like: contain, never crop.
         let (dest, crop) = gpu_source_placement(
             image_width,
             image_height,
             scene_content_rect_pixels(background_active, inputs.width, inputs.height),
-            false,
+            matches!(
+                compositor_scene_source_fit(&SceneSourceKind::Screen, layout),
+                CompositorSceneSourceFit::Contain
+            ),
             SourceCrop::none(),
             inputs.width,
             inputs.height,
@@ -1790,7 +1794,10 @@ fn try_gpu_compose(
             placeholder.width as u32,
             placeholder.height as u32,
             scene_content_rect_pixels(background_active, inputs.width, inputs.height),
-            false,
+            matches!(
+                compositor_scene_source_fit(&SceneSourceKind::Screen, layout),
+                CompositorSceneSourceFit::Contain
+            ),
             SourceCrop::none(),
             inputs.width,
             inputs.height,
@@ -1894,6 +1901,14 @@ fn try_gpu_compose(
                         unreachable!("screen/window branch")
                     }
                 };
+                // Screen-like sources CONTAIN (the GPU path must honor the same
+                // fit the scene status declares via compositor_scene_source_fit;
+                // it used to hardcode cover here, cropping the Dock off any
+                // screen whose aspect differs from its layout box).
+                let screen_contain = matches!(
+                    compositor_scene_source_fit(&source.kind, layout),
+                    CompositorSceneSourceFit::Contain
+                );
                 // No staleness cutoff for screen/window content: ScreenCaptureKit only
                 // delivers frames when the screen CHANGES, so a frame that is seconds old
                 // is the correct current picture of a static screen. Aging it out painted
@@ -1904,7 +1919,7 @@ fn try_gpu_compose(
                         frame.width,
                         frame.height,
                         rect,
-                        false,
+                        screen_contain,
                         source_crop,
                         inputs.width,
                         inputs.height,
@@ -1929,7 +1944,7 @@ fn try_gpu_compose(
                         placeholder.width as u32,
                         placeholder.height as u32,
                         rect,
-                        false,
+                        screen_contain,
                         source_crop,
                         inputs.width,
                         inputs.height,
@@ -2558,7 +2573,11 @@ fn render_compositor_yuv420p_frame(inputs: CompositorRenderInputs<'_>, bytes: &m
             scene_content_rect_pixels(background_active, width, height),
             SourceRenderOptions {
                 crop: SourceCrop::none(),
-                contain: false,
+                // Screen-image stand-ins are screen-like: contain, never crop.
+                contain: matches!(
+                    compositor_scene_source_fit(&SceneSourceKind::Screen, &snapshot.layout),
+                    CompositorSceneSourceFit::Contain
+                ),
                 mirror_x: false,
                 circle_mask: false,
             },
@@ -2580,6 +2599,12 @@ fn render_compositor_yuv420p_frame(inputs: CompositorRenderInputs<'_>, bytes: &m
                 true
             }
             SceneSourceKind::Screen | SceneSourceKind::Window => {
+                // Same contain-not-crop rule as the GPU path: nothing on the
+                // user's screen may be cropped away by the layout box.
+                let screen_contain = matches!(
+                    compositor_scene_source_fit(&source.kind, &snapshot.layout),
+                    CompositorSceneSourceFit::Contain
+                );
                 if let Some(image) = active_image_source
                     .and_then(|source| source.rgba.as_ref().zip(source.width.zip(source.height)))
                 {
@@ -2597,7 +2622,7 @@ fn render_compositor_yuv420p_frame(inputs: CompositorRenderInputs<'_>, bytes: &m
                         rect,
                         SourceRenderOptions {
                             crop: source_crop_from_transform(&transform),
-                            contain: false,
+                            contain: screen_contain,
                             mirror_x: false,
                             circle_mask: false,
                         },
@@ -2616,7 +2641,7 @@ fn render_compositor_yuv420p_frame(inputs: CompositorRenderInputs<'_>, bytes: &m
                         rect,
                         SourceRenderOptions {
                             crop: source_crop_from_transform(&transform),
-                            contain: false,
+                            contain: screen_contain,
                             mirror_x: false,
                             circle_mask: false,
                         },
@@ -3446,7 +3471,7 @@ fn compositor_scene_sources(
             device_id: None,
             visible: true,
             transform: full_frame_transform(),
-            fit: CompositorSceneSourceFit::Cover,
+            fit: compositor_scene_source_fit(&SceneSourceKind::Screen, &snapshot.layout),
             mirror: false,
             shape: None,
             image_path: active_image_source.map(|source| source.image_path.clone()),
@@ -3493,11 +3518,11 @@ fn compositor_scene_source_fit(
             CameraFit::Fill => CompositorSceneSourceFit::Cover,
         };
     }
-    if layout.layout_preset == LayoutPreset::SideBySide {
-        CompositorSceneSourceFit::Cover
-    } else {
-        CompositorSceneSourceFit::Contain
-    }
+    // Screen-like content always CONTAINS: nothing on the user's screen may be
+    // cropped away by the layout (2026-07-02 report: cover hid the Dock in
+    // screen+camera and side-by-side). Letterbox instead of crop, in every
+    // preset — a 16:10 screen in a 16:9 box shows everything with bars.
+    CompositorSceneSourceFit::Contain
 }
 
 fn camera_circle_mask_applies(layout: &LayoutSettings) -> bool {
