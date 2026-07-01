@@ -557,13 +557,15 @@ pub enum SceneOutputKind {
     Stream,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneConfigParams {
     pub sources: SourceSelection,
     pub layout: LayoutSettings,
     #[serde(default)]
     pub video: Option<VideoSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<EffectiveSceneBackground>,
     #[serde(default)]
     pub protected_overlay_window_ids: Vec<u32>,
 }
@@ -2494,6 +2496,58 @@ mod tests {
         assert!(json.contains("\"fit\":\"fit\""));
         let restored: Scene = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, scene);
+    }
+
+    #[test]
+    fn scene_config_round_trips_background_and_defaults_absent_background() {
+        let plain = SceneConfigParams {
+            sources: SourceSelection {
+                screen_id: None,
+                window_id: None,
+                camera_id: None,
+                microphone_id: None,
+                test_pattern: true,
+            },
+            layout: default_layout_settings(),
+            video: None,
+            background: None,
+            protected_overlay_window_ids: Vec::new(),
+        };
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        assert!(!plain_json.contains("background"));
+        let legacy: SceneConfigParams = serde_json::from_str(&plain_json).unwrap();
+        assert_eq!(legacy.background, None);
+
+        let params = SceneConfigParams {
+            sources: SourceSelection {
+                screen_id: None,
+                window_id: None,
+                camera_id: None,
+                microphone_id: None,
+                test_pattern: true,
+            },
+            layout: default_layout_settings(),
+            video: None,
+            background: Some(EffectiveSceneBackground {
+                asset_id: "asset-1".to_string(),
+                managed_asset_path: "/managed/asset-1.png".to_string(),
+                fit: BackgroundFit::Fill,
+                scale: 100.0,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur_px: 0.0,
+                dim_percent: 0.0,
+                saturation_percent: 100.0,
+                vignette_percent: 0.0,
+            }),
+            protected_overlay_window_ids: Vec::new(),
+        };
+
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("\"background\""));
+        assert!(json.contains("\"managedAssetPath\":\"/managed/asset-1.png\""));
+        let restored: SceneConfigParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, params);
     }
 
     #[test]

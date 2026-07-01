@@ -71,7 +71,7 @@ use crate::repair::{
     GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, RepairJob,
     gate_recording_cancellable,
 };
-use crate::scene::scene_from_capture_config;
+use crate::scene::{scene_from_capture_config, validate_scene_background};
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::secrets;
 use crate::state::{AppState, PreviewFrame};
@@ -298,6 +298,11 @@ pub async fn start_session(
 
     let capture_permit = state.ffmpeg_work.begin_capture_when_available().await;
     validate_outputs(&params)?;
+    if let Some(scene) = params.scene.as_ref()
+        && let Err(message) = validate_scene_background(scene)
+    {
+        bail!(message);
+    }
 
     let ffmpeg_path = resolve_ffmpeg_path(params.output.ffmpeg_path.clone());
     let output_dir = params
@@ -592,6 +597,7 @@ pub async fn start_session(
                 sources: params.sources.clone(),
                 layout: params.layout.clone(),
                 video: Some(params.output.video.clone()),
+                background: None,
                 protected_overlay_window_ids: Vec::new(),
             })
         });
@@ -3469,6 +3475,7 @@ async fn should_use_compositor_encoder_bridge(
             sources: params.sources.clone(),
             layout: params.layout.clone(),
             video: Some(params.output.video.clone()),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         })
     });
@@ -4789,7 +4796,8 @@ fn scene_video_filter(
         else {
             continue;
         };
-        let transform = scene_source_render_transform(&source.transform, background_active);
+        let transform =
+            scene_source_render_transform(&source.transform, &source.kind, background_active);
         let Some((x, y, layer_width, layer_height)) =
             scene_source_rect_pixels(&transform, width, height)
         else {
@@ -4849,9 +4857,10 @@ fn scene_background_fit_filter(fit: &BackgroundFit, width: u32, height: u32) -> 
 
 fn scene_source_render_transform(
     transform: &SceneTransform,
+    source_kind: &SceneSourceKind,
     background_active: bool,
 ) -> SceneTransform {
-    if !background_active {
+    if !background_active || !scene_source_uses_background_stage(source_kind) {
         return transform.clone();
     }
     let stage_scale = 1.0 - (BACKGROUND_STAGE_MARGIN * 2.0);
@@ -4865,6 +4874,13 @@ fn scene_source_render_transform(
         crop_right: transform.crop_right,
         crop_bottom: transform.crop_bottom,
     }
+}
+
+fn scene_source_uses_background_stage(source_kind: &SceneSourceKind) -> bool {
+    matches!(
+        source_kind,
+        SceneSourceKind::Screen | SceneSourceKind::Window | SceneSourceKind::TestPattern
+    )
 }
 
 fn escape_filter_path(path: &str) -> String {
@@ -8622,7 +8638,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_filter_with_background_insets_sources_to_eighty_percent_stage() {
+    fn scene_filter_with_background_insets_screen_like_sources_to_eighty_percent_stage() {
         let mut params = base_params(true, false);
         params.output.video.width = 100;
         params.output.video.height = 100;
@@ -8679,8 +8695,8 @@ mod tests {
         assert!(filter.contains("scale=80:80"));
         assert!(filter.contains("overlay=x=10:y=10"));
         assert!(filter.contains("[1:v]setpts=PTS-STARTPTS"));
-        assert!(filter.contains("scale=16:16"));
-        assert!(filter.contains("overlay=x=70:y=66"));
+        assert!(filter.contains("scale=20:20"));
+        assert!(filter.contains("overlay=x=75:y=70"));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::protocol::{
     CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransformMode, LayoutPreset, Scene,
     SceneConfigParams, SceneOutput, SceneOutputKind, SceneSource, SceneSourceKind,
@@ -30,6 +32,37 @@ pub fn default_scene() -> Scene {
     }
 }
 
+pub fn validate_scene_background(scene: &Scene) -> Result<(), String> {
+    let Some(background) = scene.background.as_ref() else {
+        return Ok(());
+    };
+
+    let path = background.managed_asset_path.trim();
+    if path.is_empty() {
+        return Err(format!(
+            "Scene background {} has no managed asset path. Re-apply or replace the background before recording.",
+            background.asset_id
+        ));
+    }
+
+    let image_path = Path::new(path);
+    if !image_path.is_file() {
+        return Err(format!(
+            "Scene background {} file is missing: {}. Re-apply or replace the background before recording.",
+            background.asset_id, path
+        ));
+    }
+
+    image::open(image_path).map_err(|error| {
+        format!(
+            "Scene background {} could not be read from {}: {}. Replace the background before recording.",
+            background.asset_id, path, error
+        )
+    })?;
+
+    Ok(())
+}
+
 pub fn scene_from_capture_config(params: SceneConfigParams) -> Scene {
     let (output_width, output_height, fps) = params
         .video
@@ -56,7 +89,7 @@ pub fn scene_from_capture_config(params: SceneConfigParams) -> Scene {
                 fps,
             },
         ],
-        background: None,
+        background: params.background.clone(),
     };
 
     match params.layout.layout_preset {
@@ -486,7 +519,10 @@ fn find_source_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{CameraTransform, LayoutPreset, LayoutSettings, SourceSelection};
+    use crate::protocol::{
+        BackgroundFit, CameraTransform, EffectiveSceneBackground, LayoutPreset, LayoutSettings,
+        SourceSelection,
+    };
 
     fn base_params() -> SceneConfigParams {
         SceneConfigParams {
@@ -514,8 +550,35 @@ mod tests {
                 side_by_side_camera_side: SideBySideCameraSide::Right,
             },
             video: None,
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         }
+    }
+
+    fn test_background(path: impl Into<String>) -> EffectiveSceneBackground {
+        EffectiveSceneBackground {
+            asset_id: "asset-1".to_string(),
+            managed_asset_path: path.into(),
+            fit: BackgroundFit::Fill,
+            scale: 100.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_px: 0.0,
+            dim_percent: 0.0,
+            saturation_percent: 100.0,
+            vignette_percent: 0.0,
+        }
+    }
+
+    fn temp_png_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "videorc-scene-{name}-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 
     #[test]
@@ -639,6 +702,72 @@ mod tests {
         assert_eq!(scene.sources[0].transform.width, 1.0);
         assert!(scene.sources[1].transform.x > 0.6);
         assert!(scene.sources[1].transform.y > 0.6);
+    }
+
+    #[test]
+    fn scene_from_capture_config_preserves_background() {
+        let mut params = base_params();
+        params.background = Some(test_background("/managed/background.png"));
+
+        let scene = scene_from_capture_config(params);
+
+        assert_eq!(
+            scene
+                .background
+                .as_ref()
+                .map(|background| background.asset_id.as_str()),
+            Some("asset-1")
+        );
+        assert_eq!(
+            scene
+                .background
+                .as_ref()
+                .map(|background| background.managed_asset_path.as_str()),
+            Some("/managed/background.png")
+        );
+    }
+
+    #[test]
+    fn validate_scene_background_blocks_missing_and_unreadable_files() {
+        let mut scene = scene_from_capture_config(base_params());
+
+        scene.background = Some(test_background(""));
+        assert!(
+            validate_scene_background(&scene)
+                .unwrap_err()
+                .contains("has no managed asset path")
+        );
+
+        scene.background = Some(test_background("/tmp/videorc-missing-background.png"));
+        assert!(
+            validate_scene_background(&scene)
+                .unwrap_err()
+                .contains("file is missing")
+        );
+
+        let path = temp_png_path("invalid");
+        std::fs::write(&path, b"not an image").unwrap();
+        scene.background = Some(test_background(path.display().to_string()));
+        assert!(
+            validate_scene_background(&scene)
+                .unwrap_err()
+                .contains("could not be read")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn validate_scene_background_accepts_decodable_images() {
+        let path = temp_png_path("valid");
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+
+        let mut scene = scene_from_capture_config(base_params());
+        scene.background = Some(test_background(path.display().to_string()));
+
+        assert_eq!(validate_scene_background(&scene), Ok(()));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

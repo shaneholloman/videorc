@@ -80,6 +80,7 @@ import type {
   PreviewSurfaceCompositorUpdateParams,
   PreviewSurfaceBounds,
   PreviewSurfaceSceneLayer,
+  PreviewSurfaceSceneLayerKind,
   PreviewSurfaceSceneState,
   PreviewSurfaceSceneUpdateParams,
   PreviewSurfaceStatus,
@@ -1701,9 +1702,16 @@ function insetTransformForBackground(transform: SceneTransform): SceneTransform 
 
 function transformForPreviewBackground(
   transform: SceneTransform,
+  sourceKind: PreviewSurfaceSceneLayerKind,
   backgroundActive: boolean
 ): SceneTransform {
-  return backgroundActive ? insetTransformForBackground(transform) : transform
+  return backgroundActive && previewLayerUsesBackgroundStage(sourceKind)
+    ? insetTransformForBackground(transform)
+    : transform
+}
+
+function previewLayerUsesBackgroundStage(sourceKind: PreviewSurfaceSceneLayerKind): boolean {
+  return ['screen', 'window', 'screen-image', 'test-pattern'].includes(sourceKind)
 }
 
 function previewBackgroundLayer(
@@ -1823,7 +1831,7 @@ function buildPreviewSurfaceScene(
       id: source.id,
       name: source.name,
       kind: source.kind,
-      transform: transformForPreviewBackground(source.transform, backgroundActive),
+      transform: transformForPreviewBackground(source.transform, source.kind, backgroundActive),
       visible: source.visible,
       frameUrl: nativePreviewSurfaceFramePollingSuppressed
         ? undefined
@@ -1840,7 +1848,11 @@ function buildPreviewSurfaceScene(
       id: `screen-image:${activeScreen.id}`,
       name: activeScreen.name,
       kind: 'screen-image',
-      transform: transformForPreviewBackground(fullFrameTransform(), backgroundActive),
+      transform: transformForPreviewBackground(
+        fullFrameTransform(),
+        'screen-image',
+        backgroundActive
+      ),
       visible: true,
       imageUrl: fileUrlFromPath(activeScreen.imagePath),
       fit: 'cover',
@@ -1874,7 +1886,7 @@ function buildPreviewSurfaceSceneFromCompositorStatus(
       id: source.id,
       name: source.name,
       kind: source.kind,
-      transform: transformForPreviewBackground(source.transform, backgroundActive),
+      transform: transformForPreviewBackground(source.transform, source.kind, backgroundActive),
       visible: source.visible,
       frameUrl: suppressFramePolling ? undefined : compositorLayerFrameUrl(source),
       imageUrl:

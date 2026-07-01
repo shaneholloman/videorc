@@ -106,6 +106,7 @@ import type {
   RtmpPreset,
   Scene,
   SceneCommitStatus,
+  SceneConfigParams,
   SessionLogEntry,
   SessionSummary,
   SourceSelection,
@@ -964,15 +965,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   }, [streamTargets])
 
   const { registry: backgroundRegistry } = useBackgroundAssets()
+  const activeSceneBackground = useMemo(
+    () => effectiveSceneBackground(backgroundRegistry) ?? undefined,
+    [backgroundRegistry]
+  )
   // Overlay the active background from the shared registry onto the scene so both
   // the session and the native preview carry it; the registry is the source of
   // truth (A5). Resolves to no background when nothing usable is selected.
   const sceneWithBackground = useMemo<Scene | null>(
-    () =>
-      scene
-        ? { ...scene, background: effectiveSceneBackground(backgroundRegistry) ?? undefined }
-        : null,
-    [scene, backgroundRegistry]
+    () => (scene ? { ...scene, background: activeSceneBackground } : null),
+    [scene, activeSceneBackground]
   )
 
   const sessionParams = useMemo<StartSessionParams>(
@@ -2149,13 +2151,17 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         return
       }
 
+      const params: SceneConfigParams = {
+        ...config,
+        background: activeSceneBackground
+      }
       const status = await client.request<SceneCommitStatus>(
         'scene.load_from_capture_config',
-        config
+        params
       )
       applyCommittedScene(status)
     },
-    [applyCommittedScene, client, wsStatus]
+    [activeSceneBackground, applyCommittedScene, client, wsStatus]
   )
 
   const reloadSceneFromCaptureConfig = useCallback(async () => {
@@ -2432,6 +2438,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
               sources: captureConfig.sources,
               layout,
               video: captureConfig.video,
+              background: activeSceneBackground,
               protectedOverlayWindowIds
             })
             applyScene(status.scene)
@@ -2474,6 +2481,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     },
     [
       applyScene,
+      activeSceneBackground,
       captureConfig.layout,
       captureConfig.sources,
       captureConfig.video,
@@ -2515,6 +2523,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           sources,
           layout: captureConfig.layout,
           video: captureConfig.video,
+          background: activeSceneBackground,
           protectedOverlayWindowIds
         })
         applyScene(status.scene)
@@ -2530,6 +2539,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     },
     [
       applyScene,
+      activeSceneBackground,
       captureConfig.layout,
       captureConfig.video,
       client,

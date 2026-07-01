@@ -1826,7 +1826,8 @@ fn try_gpu_compose(
 
     let scene = scene.ok_or("compositor scene unavailable")?;
     for source in scene.sources.iter().filter(|source| source.visible) {
-        let transform = scene_source_render_transform(&source.transform, background_active);
+        let transform =
+            scene_source_render_transform(&source.transform, &source.kind, background_active);
         let rect = scene_source_rect_pixels(&transform, inputs.width, inputs.height)
             .ok_or("source rectangle is outside compositor bounds")?;
         let source_crop = source_crop_from_transform(&transform);
@@ -2568,7 +2569,8 @@ fn render_compositor_yuv420p_frame(inputs: CompositorRenderInputs<'_>, bytes: &m
 
     let mut rendered_sources = 0_u32;
     for source in scene.sources.iter().filter(|source| source.visible) {
-        let transform = scene_source_render_transform(&source.transform, background_active);
+        let transform =
+            scene_source_render_transform(&source.transform, &source.kind, background_active);
         let Some(rect) = scene_source_rect_pixels(&transform, width, height) else {
             continue;
         };
@@ -2980,9 +2982,10 @@ fn scene_content_rect_pixels(background_active: bool, width: u32, height: u32) -
 
 fn scene_source_render_transform(
     transform: &SceneTransform,
+    source_kind: &SceneSourceKind,
     background_active: bool,
 ) -> SceneTransform {
-    if !background_active {
+    if !background_active || !scene_source_uses_background_stage(source_kind) {
         return transform.clone();
     }
     let stage_scale = 1.0 - (BACKGROUND_STAGE_MARGIN * 2.0);
@@ -2996,6 +2999,13 @@ fn scene_source_render_transform(
         crop_right: transform.crop_right,
         crop_bottom: transform.crop_bottom,
     }
+}
+
+fn scene_source_uses_background_stage(source_kind: &SceneSourceKind) -> bool {
+    matches!(
+        source_kind,
+        SceneSourceKind::Screen | SceneSourceKind::Window | SceneSourceKind::TestPattern
+    )
 }
 
 fn scene_source_rect_pixels(
@@ -3643,6 +3653,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 6000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         CompositorSceneSnapshot {
@@ -4042,6 +4053,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         let snapshot = CompositorSceneSnapshot {
@@ -4126,6 +4138,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         let mut overlay = scene.sources[0].clone();
@@ -4201,6 +4214,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         let snapshot = CompositorSceneSnapshot {
@@ -4278,6 +4292,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         scene.background = Some(EffectiveSceneBackground {
@@ -4364,6 +4379,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         {
@@ -4444,6 +4460,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         {
@@ -4514,6 +4531,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         scene
@@ -4883,6 +4901,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         update_compositor_scene(
@@ -4960,6 +4979,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         let stream_store = Arc::new(StdMutex::new(FrameStore::new(2)));
@@ -5586,6 +5606,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         let snapshot = CompositorSceneSnapshot {
@@ -5649,6 +5670,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         scene.background = Some(EffectiveSceneBackground {
@@ -5716,7 +5738,7 @@ mod tests {
     }
 
     #[test]
-    fn active_background_insets_scene_sources_to_eighty_percent_stage() {
+    fn active_background_insets_screen_like_sources_to_eighty_percent_stage() {
         let full_frame = scene_source_render_transform(
             &SceneTransform {
                 x: 0.0,
@@ -5728,6 +5750,7 @@ mod tests {
                 crop_right: 0.0,
                 crop_bottom: 0.0,
             },
+            &SceneSourceKind::Screen,
             true,
         );
 
@@ -5747,13 +5770,34 @@ mod tests {
                 crop_right: 0.0,
                 crop_bottom: 0.0,
             },
+            &SceneSourceKind::Camera,
             true,
         );
 
-        assert_close(camera.x, 0.70);
-        assert_close(camera.y, 0.66);
-        assert_close(camera.width, 0.16);
-        assert_close(camera.height, 0.16);
+        assert_close(camera.x, 0.75);
+        assert_close(camera.y, 0.70);
+        assert_close(camera.width, 0.20);
+        assert_close(camera.height, 0.20);
+
+        let test_pattern = scene_source_render_transform(
+            &SceneTransform {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+                crop_left: 0.0,
+                crop_top: 0.0,
+                crop_right: 0.0,
+                crop_bottom: 0.0,
+            },
+            &SceneSourceKind::TestPattern,
+            true,
+        );
+
+        assert_close(test_pattern.x, 0.10);
+        assert_close(test_pattern.y, 0.10);
+        assert_close(test_pattern.width, 0.80);
+        assert_close(test_pattern.height, 0.80);
     }
 
     #[test]
@@ -5777,6 +5821,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         let snapshot = CompositorSceneSnapshot {
@@ -5837,6 +5882,7 @@ mod tests {
                 fps: 30,
                 bitrate_kbps: 2000,
             }),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         {
@@ -5908,6 +5954,7 @@ mod tests {
             },
             layout: layout.clone(),
             video: None,
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         });
         let scene_source_count = scene.sources.len();

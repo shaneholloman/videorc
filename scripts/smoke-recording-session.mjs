@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { analyzeRecording, writeReports } from './lib/recording-analyzer.mjs'
 
@@ -63,6 +65,18 @@ export async function runBackendRecordingSmoke({
         })
       )
     }
+    results.push(
+      await recordAssetBackgroundScenario({
+        ws,
+        timeoutMs,
+        recordingMs,
+        label,
+        outputDirectory,
+        ffmpegPath,
+        ffprobePath,
+        analyze
+      })
+    )
     return results
   } finally {
     ws?.close()
@@ -84,7 +98,12 @@ async function recordScenario({
     ws,
     timeoutMs,
     'session.start',
-    sessionParams({ outputDirectory, ffmpegPath, preset: scenario.preset })
+    sessionParams({
+      outputDirectory,
+      ffmpegPath,
+      preset: scenario.preset,
+      background: scenario.background
+    })
   )
   if (!['recording', 'streaming'].includes(started.state)) {
     throw new Error(
@@ -135,6 +154,55 @@ async function recordScenario({
       `(report: ${reportPaths.mdPath})`
   )
   return { preset: scenario.preset, outputPath, size, quality, reportPaths }
+}
+
+async function recordAssetBackgroundScenario({
+  ws,
+  timeoutMs,
+  recordingMs,
+  label,
+  outputDirectory,
+  ffmpegPath,
+  ffprobePath,
+  analyze
+}) {
+  const backgroundPath = writeSolidBackgroundPng({ ffmpegPath, outputDirectory })
+  const scenario = {
+    preset: 'screen-only',
+    label: 'Asset background 80% screen stage',
+    background: {
+      assetId: 'smoke-red-background',
+      managedAssetPath: backgroundPath,
+      fit: 'stretch',
+      scale: 100,
+      offsetX: 0,
+      offsetY: 0,
+      blurPx: 0,
+      dimPercent: 0,
+      saturationPercent: 100,
+      vignettePercent: 0
+    }
+  }
+  const result = await recordScenario({
+    ws,
+    timeoutMs,
+    recordingMs,
+    label,
+    outputDirectory,
+    ffmpegPath,
+    ffprobePath,
+    analyze,
+    scenario
+  })
+  assertAssetBackgroundFrame({
+    outputPath: result.outputPath,
+    outputDirectory,
+    ffmpegPath
+  })
+  console.log(
+    `${label} smoke [${scenario.label}] asset background frame PASS: red border around 80% screen stage`
+  )
+  return result
 }
 
 export function connectBackend(connection, timeoutMs) {
@@ -203,7 +271,7 @@ export function request(ws, timeoutMs, method, params) {
   })
 }
 
-function sessionParams({ outputDirectory, ffmpegPath, preset = 'screen-camera' }) {
+function sessionParams({ outputDirectory, ffmpegPath, preset = 'screen-camera', background }) {
   return {
     sources: {
       testPattern: true
@@ -241,7 +309,150 @@ function sessionParams({ outputDirectory, ffmpegPath, preset = 'screen-camera' }
         serverUrl: '',
         streamKey: ''
       }
+    },
+    scene: background ? sceneWithAssetBackground(background) : undefined
+  }
+}
+
+function sceneWithAssetBackground(background) {
+  const transform = fullFrameTransform()
+  return {
+    id: 'scene:asset-background-smoke',
+    name: 'Asset background smoke',
+    sources: [
+      {
+        id: 'source:test-pattern',
+        name: 'Test pattern',
+        kind: 'test-pattern',
+        deviceId: undefined,
+        transform,
+        defaultTransform: transform,
+        visible: true,
+        locked: false
+      }
+    ],
+    outputs: [],
+    background
+  }
+}
+
+function fullFrameTransform() {
+  return {
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    cropLeft: 0,
+    cropTop: 0,
+    cropRight: 0,
+    cropBottom: 0
+  }
+}
+
+function writeSolidBackgroundPng({ ffmpegPath, outputDirectory }) {
+  const backgroundPath = join(outputDirectory, `asset-background-red-${Date.now()}.png`)
+  runCommand(
+    ffmpegPath,
+    [
+      '-v',
+      'error',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=red:s=16x16',
+      '-frames:v',
+      '1',
+      backgroundPath
+    ],
+    'create asset background PNG'
+  )
+  return backgroundPath
+}
+
+function assertAssetBackgroundFrame({ outputPath, outputDirectory, ffmpegPath }) {
+  const width = 640
+  const height = 360
+  const rawPath = join(outputDirectory, `asset-background-frame-${Date.now()}.rgb`)
+  runCommand(
+    ffmpegPath,
+    [
+      '-v',
+      'error',
+      '-y',
+      '-ss',
+      '0.5',
+      '-i',
+      outputPath,
+      '-frames:v',
+      '1',
+      '-vf',
+      `scale=${width}:${height}`,
+      '-pix_fmt',
+      'rgb24',
+      '-f',
+      'rawvideo',
+      rawPath
+    ],
+    'extract asset background smoke frame'
+  )
+
+  const bytes = readFileSync(rawPath)
+  const expectedBytes = width * height * 3
+  if (bytes.length < expectedBytes) {
+    throw new Error(
+      `Asset background smoke frame is truncated: expected ${expectedBytes} byte(s), got ${bytes.length}.`
+    )
+  }
+
+  const borderPoints = sampleGrid({ x0: 8, x1: 56, y0: 8, y1: 32, columns: 5, rows: 3 })
+    .concat(sampleGrid({ x0: 8, x1: 56, y0: 328, y1: 352, columns: 5, rows: 3 }))
+    .concat(sampleGrid({ x0: 584, x1: 632, y0: 8, y1: 352, columns: 3, rows: 5 }))
+  const centerPoints = sampleGrid({ x0: 96, x1: 544, y0: 72, y1: 288, columns: 7, rows: 5 })
+
+  const borderRedRatio = redRatio(bytes, width, borderPoints)
+  const centerRedRatio = redRatio(bytes, width, centerPoints)
+  if (borderRedRatio < 0.9) {
+    throw new Error(
+      `Asset background smoke expected a red border around the staged screen; red border ratio was ${borderRedRatio.toFixed(2)}.`
+    )
+  }
+  if (centerRedRatio > 0.75) {
+    throw new Error(
+      `Asset background smoke expected screen content in the 80% center; center red ratio was ${centerRedRatio.toFixed(2)}.`
+    )
+  }
+}
+
+function sampleGrid({ x0, x1, y0, y1, columns, rows }) {
+  const points = []
+  for (let yIndex = 0; yIndex < rows; yIndex += 1) {
+    const y = Math.round(y0 + ((y1 - y0) * yIndex) / Math.max(1, rows - 1))
+    for (let xIndex = 0; xIndex < columns; xIndex += 1) {
+      const x = Math.round(x0 + ((x1 - x0) * xIndex) / Math.max(1, columns - 1))
+      points.push([x, y])
     }
+  }
+  return points
+}
+
+function redRatio(bytes, width, points) {
+  const red = points.filter(([x, y]) => {
+    const offset = (y * width + x) * 3
+    const r = bytes[offset] ?? 0
+    const g = bytes[offset + 1] ?? 0
+    const b = bytes[offset + 2] ?? 0
+    return r >= 180 && g <= 80 && b <= 80
+  }).length
+  return red / Math.max(1, points.length)
+}
+
+function runCommand(command, args, label) {
+  const result = spawnSync(command, args, { encoding: 'utf8' })
+  if (result.status !== 0) {
+    throw new Error(
+      `${label} failed: ${command} ${args.join(' ')} exited with ${result.status}; ${result.stderr || result.stdout}`
+    )
   }
 }
 

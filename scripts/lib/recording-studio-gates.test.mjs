@@ -34,6 +34,7 @@ describe('buildRecordingStudioGateSteps', () => {
       '@videorc/desktop',
       'test',
       'capture.test.ts',
+      'background-assets.test.ts',
       'session-params.test.ts',
       'studio-health.test.ts',
       'native-preview-present-policy.test.ts'

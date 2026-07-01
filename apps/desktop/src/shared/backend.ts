@@ -338,6 +338,7 @@ export interface SceneConfigParams {
   sources: SourceSelection
   layout: LayoutSettings
   video?: VideoSettings
+  background?: EffectiveSceneBackground
   protectedOverlayWindowIds?: number[]
 }
 

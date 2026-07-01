@@ -40,7 +40,7 @@ use crate::protocol::{
     PreviewCameraStatus, PreviewScreenStartParams, PreviewScreenState, PreviewScreenStatus, Scene,
     SceneCommitStatus, SceneConfigParams, SceneSourceKind, SourceSelection,
 };
-use crate::scene::scene_from_capture_config;
+use crate::scene::{scene_from_capture_config, validate_scene_background};
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::state::AppState;
 
@@ -319,7 +319,7 @@ async fn apply_scene_live(
     let session_active = state.recording.lock().await.is_some();
 
     if !session_active {
-        let status = commit_scene_with_layout(state, &scene, params.layout.clone(), None).await;
+        let status = commit_scene_with_layout(state, &scene, params.layout.clone(), None).await?;
         return Ok(LiveLayoutApplyStatus {
             applied: true,
             mode: "idle".to_string(),
@@ -337,7 +337,8 @@ async fn apply_scene_live(
     let live = source_liveness(state, target_liveness).await;
     match plan_live_swap(mutation_kind, needs, live) {
         ApplyMode::Hot => {
-            let status = commit_scene_with_layout(state, &scene, params.layout.clone(), None).await;
+            let status =
+                commit_scene_with_layout(state, &scene, params.layout.clone(), None).await?;
             Ok(LiveLayoutApplyStatus {
                 applied: true,
                 mode: "hot".to_string(),
@@ -366,7 +367,7 @@ async fn apply_scene_live(
                 params.layout.clone(),
                 Some(message.clone()),
             )
-            .await;
+            .await?;
             Ok(LiveLayoutApplyStatus {
                 applied: true,
                 mode: "warm".to_string(),
@@ -469,7 +470,7 @@ async fn wait_for_sources_ready(
 pub async fn commit_scene_with_current_layout(
     state: &AppState,
     scene: &Scene,
-) -> SceneCommitStatus {
+) -> Result<SceneCommitStatus> {
     let layout = {
         let compositor = state.compositor.lock().await;
         compositor
@@ -486,7 +487,11 @@ pub async fn commit_scene_with_layout(
     scene: &Scene,
     layout: crate::protocol::LayoutSettings,
     message: Option<String>,
-) -> SceneCommitStatus {
+) -> Result<SceneCommitStatus> {
+    if let Err(message) = validate_scene_background(scene) {
+        bail!(message);
+    }
+
     {
         let mut guard = state.scene.lock().await;
         *guard = scene.clone();
@@ -514,14 +519,14 @@ pub async fn commit_scene_with_layout(
     } else {
         "idle"
     };
-    SceneCommitStatus {
+    Ok(SceneCommitStatus {
         applied: true,
         mode: mode.to_string(),
         scene_revision: revision,
         scene: scene.clone(),
         compositor_status,
         message,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -567,6 +572,7 @@ mod tests {
             sources: sources(camera, screen),
             layout: layout(preset),
             video: Some(fallback_video_settings()),
+            background: None,
             protected_overlay_window_ids: Vec::new(),
         }
     }
