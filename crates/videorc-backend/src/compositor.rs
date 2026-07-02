@@ -1697,16 +1697,71 @@ fn scene_source_kind_label(kind: &SceneSourceKind) -> &'static str {
 /// CPU compositor when uncached, so enabling the flag never produces a frame for a case
 /// the GPU path cannot match.
 #[cfg(target_os = "macos")]
+/// Append the caption bar as the TOPMOST Metal image source. The bridge
+/// consumes Metal-composited surfaces directly, so the overlay must ride the
+/// GPU path (forcing CPU starves the VideoToolbox encoder — exit 187).
+fn push_caption_overlay_gpu_source(
+    prepared_sources: &mut Vec<PreparedGpuSource<'_>>,
+    overlay: &crate::captions::CaptionOverlay,
+    canvas_width: u32,
+    canvas_height: u32,
+) {
+    let overlay_width = overlay.width as usize;
+    let overlay_height = overlay.height as usize;
+    if overlay.rgba.len() < overlay_width * overlay_height * 4 {
+        return;
+    }
+    let (source_left, dest_left, dest_top, draw_width) = caption_overlay_layout(
+        overlay_width,
+        overlay_height,
+        canvas_width.max(1) as usize,
+        canvas_height.max(1) as usize,
+        overlay.position,
+    );
+    let draw_height = overlay_height.min(canvas_height.max(1) as usize);
+    // Extract the (possibly center-cropped) bar region as BGRA.
+    let mut bgra = Vec::with_capacity(draw_width * draw_height * 4);
+    for row in 0..draw_height {
+        let row_start = (row * overlay_width + source_left) * 4;
+        for pixel in overlay.rgba[row_start..row_start + draw_width * 4].chunks_exact(4) {
+            bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+        }
+    }
+    let Some((dest, crop)) = gpu_source_placement(
+        draw_width as u32,
+        draw_height as u32,
+        PixelRect {
+            x: dest_left as u32,
+            y: dest_top as u32,
+            width: draw_width as u32,
+            height: draw_height as u32,
+        },
+        false,
+        SourceCrop::none(),
+        canvas_width,
+        canvas_height,
+    ) else {
+        return;
+    };
+    prepared_sources.push(PreparedGpuSource {
+        pixels: PreparedGpuSourcePixels::Owned(bgra),
+        kind: crate::metal_compositor::GpuSourceKind::Image,
+        iosurface: None,
+        pixel_buffer: None,
+        width: draw_width,
+        height: draw_height,
+        dest,
+        crop,
+        mirror: false,
+        circle: false,
+    });
+}
+
 fn try_gpu_compose(
     gpu: Option<&mut GpuCompositor>,
     inputs: &CompositorRenderInputs<'_>,
     publish_yuv_frame: bool,
 ) -> Result<GpuCompositorFrame, String> {
-    if inputs.caption_overlay.is_some() {
-        // The caption bar is composited by the CPU renderer only (v1); force
-        // the CPU path for legs that carry it.
-        return Err("caption overlay requires the CPU compositor".to_string());
-    }
     let gpu = gpu.ok_or_else(|| {
         if metal_compositor_enabled() {
             "Metal compositor unavailable"
@@ -1803,6 +1858,14 @@ fn try_gpu_compose(
             mirror: false,
             circle: false,
         });
+        if let Some(overlay) = inputs.caption_overlay {
+            push_caption_overlay_gpu_source(
+                &mut prepared_sources,
+                overlay,
+                inputs.width,
+                inputs.height,
+            );
+        }
         let sources = prepared_sources
             .iter()
             .map(PreparedGpuSource::as_gpu_source)
@@ -1846,6 +1909,14 @@ fn try_gpu_compose(
             mirror: false,
             circle: false,
         });
+        if let Some(overlay) = inputs.caption_overlay {
+            push_caption_overlay_gpu_source(
+                &mut prepared_sources,
+                overlay,
+                inputs.width,
+                inputs.height,
+            );
+        }
         let sources = prepared_sources
             .iter()
             .map(PreparedGpuSource::as_gpu_source)
@@ -2024,6 +2095,9 @@ fn try_gpu_compose(
     }
     if prepared_sources.is_empty() {
         return Err("no visible compositor sources".to_string());
+    }
+    if let Some(overlay) = inputs.caption_overlay {
+        push_caption_overlay_gpu_source(&mut prepared_sources, overlay, inputs.width, inputs.height);
     }
     let sources = prepared_sources
         .iter()
@@ -3217,6 +3291,32 @@ const CAPTION_OVERLAY_MARGIN: f64 = 0.04;
 /// alpha-blending blit (scene blits are binary: alpha<16 skip, else write).
 /// The bar is pre-rendered at the leg's output width; wider bars are
 /// center-cropped (bar edges are padding), never scaled.
+/// Where the caption bar lands on a canvas (shared by the CPU blit and the
+/// Metal source placement): centered, 4% vertical safe margin, wider bars
+/// center-cropped.
+pub(crate) fn caption_overlay_layout(
+    overlay_width: usize,
+    overlay_height: usize,
+    canvas_width: usize,
+    canvas_height: usize,
+    position: crate::captions::CaptionOverlayPosition,
+) -> (usize, usize, usize, usize) {
+    let draw_width = overlay_width.min(canvas_width);
+    let draw_height = overlay_height.min(canvas_height);
+    let source_left = (overlay_width - draw_width) / 2;
+    let dest_left = (canvas_width - draw_width) / 2;
+    let margin = ((canvas_height as f64) * CAPTION_OVERLAY_MARGIN).round() as usize;
+    let dest_top = match position {
+        crate::captions::CaptionOverlayPosition::Top => {
+            margin.min(canvas_height.saturating_sub(draw_height))
+        }
+        crate::captions::CaptionOverlayPosition::Bottom => {
+            canvas_height.saturating_sub(draw_height + margin)
+        }
+    };
+    (source_left, dest_left, dest_top, draw_width.max(1))
+}
+
 fn composite_caption_overlay(
     overlay: &crate::captions::CaptionOverlay,
     canvas_width: u32,
@@ -3234,18 +3334,14 @@ fn composite_caption_overlay(
         return;
     }
 
-    let draw_width = overlay_width.min(canvas_width);
     let draw_height = overlay_height.min(canvas_height);
-    // Center-crop horizontally when the bar is wider than this leg's canvas.
-    let source_left = (overlay_width - draw_width) / 2;
-    let dest_left = (canvas_width - draw_width) / 2;
-    let margin = ((canvas_height as f64) * CAPTION_OVERLAY_MARGIN).round() as usize;
-    let dest_top = match overlay.position {
-        crate::captions::CaptionOverlayPosition::Top => margin.min(canvas_height - draw_height),
-        crate::captions::CaptionOverlayPosition::Bottom => {
-            canvas_height.saturating_sub(draw_height + margin)
-        }
-    };
+    let (source_left, dest_left, dest_top, draw_width) = caption_overlay_layout(
+        overlay_width,
+        overlay_height,
+        canvas_width,
+        canvas_height,
+        overlay.position,
+    );
 
     let y_len = canvas_width * canvas_height;
     let uv_width = canvas_width.div_ceil(2);
