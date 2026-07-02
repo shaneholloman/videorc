@@ -92,7 +92,7 @@ export function QuickSettings(): ReactElement {
   const { openStudioPanel } = useWorkspaceNav()
   const [captionsPending, setCaptionsPending] = useState(false)
   const captionsGate = cloudAiUploadGate(entitlements)
-  const captionsLive = captionsStatus.state === 'live'
+  const captionsLive = captionsStatus.state === 'live' || captionsStatus.state === 'degraded'
   const toggleCaptions = async (next: boolean): Promise<void> => {
     setCaptionsPending(true)
     try {
@@ -286,13 +286,15 @@ export function QuickSettings(): ReactElement {
       <QuickCard icon={ClosedCaptioning} label="Captions">
         <div className="flex items-center justify-between gap-2 rounded-row border bg-background px-2.5 py-1.5">
           <span className="min-w-0 flex-1 truncate text-sm font-medium">
-            {captionsLive
-              ? isSessionActive
-                ? 'Live'
-                : 'Waiting for session'
-              : captionsGate.allowed
-                ? 'Off'
-                : 'Premium'}
+            {captionsStatus.state === 'degraded'
+              ? 'Reconnecting…'
+              : captionsLive
+                ? isSessionActive
+                  ? 'Live'
+                  : 'Waiting for session'
+                : captionsGate.allowed
+                  ? 'Off'
+                  : 'Premium'}
           </span>
           <Switch
             aria-label="Enable live captions"

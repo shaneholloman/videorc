@@ -22,8 +22,6 @@ pub const CAPTION_CHUNK_SECONDS: f64 = 3.0;
 /// Bounded frame queue between the realtime audio thread and the session task.
 /// At ~93 CoreAudio callbacks/s, 256 frames ≈ 2.7s of cushion.
 const TAP_CHANNEL_CAPACITY: usize = 256;
-/// Consecutive transient upload failures before the session gives up.
-const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
 // ---------------------------------------------------------------------------
 // Tap: the audio FIFO writer thread offers every mic frame here. Fast path is
@@ -232,7 +230,10 @@ pub fn render_ass(
          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     );
     for (start, end, text) in &cues {
-        let escaped = text.replace('\n', "\\N").replace('{', "(").replace('}', ")");
+        let escaped = text
+            .replace('\n', "\\N")
+            .replace('{', "(")
+            .replace('}', ")");
         ass.push_str(&format!(
             "Dialogue: 0,{},{},VideorcCaptions,,0,0,0,,{}\n",
             format_ass_timestamp(*start),
@@ -476,7 +477,9 @@ pub fn enqueue_caption_burn(
                     Some(&session_id),
                     crate::protocol::HealthLevel::Warn,
                     "captions-burn-failed",
-                    &format!("Captioned copy was not created ({reason}); the .srt sidecar is still available."),
+                    &format!(
+                        "Captioned copy was not created ({reason}); the .srt sidecar is still available."
+                    ),
                 );
             }
         }
@@ -600,6 +603,9 @@ pub fn current_caption_overlay(slot: &CaptionOverlaySlot) -> Option<CaptionOverl
 pub enum CaptionsState {
     Idle,
     Live,
+    /// Uploads are failing and retrying with backoff; the session survives
+    /// and recovers on the next successful chunk (R0).
+    Degraded,
     Error,
 }
 
@@ -695,10 +701,11 @@ pub async fn start_captions(state: &AppState, language: Option<String>) -> Resul
     let client = VideorcApiClient::new()?;
 
     let mut coordinator = state.captions.lock().await;
-    if let (Some(task), Some(status)) = (coordinator.task.as_ref(), coordinator.status.as_ref()) {
-        if !task.is_finished() && status.state == CaptionsState::Live {
-            return Ok(status.clone());
-        }
+    if let (Some(task), Some(status)) = (coordinator.task.as_ref(), coordinator.status.as_ref())
+        && !task.is_finished()
+        && matches!(status.state, CaptionsState::Live | CaptionsState::Degraded)
+    {
+        return Ok(status.clone());
     }
     if let Some(task) = coordinator.task.take() {
         task.abort();
@@ -760,11 +767,16 @@ async fn run_caption_session(mut session: CaptionSession) {
     let chunk_samples = (f64::from(CAPTION_SAMPLE_RATE) * CAPTION_CHUNK_SECONDS) as usize;
     let mut pcm: Vec<i16> = Vec::with_capacity(chunk_samples * 2);
     let mut seq = 0_u64;
-    let mut consecutive_failures = 0_u32;
     // Recording-epoch anchoring for the post pass: mono samples consumed since
     // the current capture pipeline started (frames are already epoch-trimmed).
     let mut consumed_samples: u64 = 0;
     let mut last_frame_timestamp: Option<u64> = None;
+    // Transient-failure backoff (R0): failed chunks are DROPPED — captions
+    // skip a beat instead of dying — and uploads resume automatically once a
+    // chunk succeeds after the backoff window. Never terminal.
+    let mut backoff: Option<std::time::Duration> = None;
+    let mut next_upload_allowed_at = std::time::Instant::now();
+    let mut degraded_reason: Option<String> = None;
 
     loop {
         if session.stop.load(Ordering::Relaxed) {
@@ -791,10 +803,15 @@ async fn run_caption_session(mut session: CaptionSession) {
         }
 
         let chunk: Vec<i16> = pcm.drain(..chunk_samples).collect();
-        let wav = encode_wav_16k_mono(&chunk);
         seq += 1;
         let offset_seconds = consumed_samples as f64 / f64::from(CAPTION_SAMPLE_RATE);
         consumed_samples += chunk_samples as u64;
+        // In backoff: drop this chunk without an upload attempt (the loop keeps
+        // draining frames so the tap channel never backs up).
+        if std::time::Instant::now() < next_upload_allowed_at {
+            continue;
+        }
+        let wav = encode_wav_16k_mono(&chunk);
 
         match session
             .client
@@ -807,15 +824,41 @@ async fn run_caption_session(mut session: CaptionSession) {
             .await
         {
             Ok(response) => {
-                consecutive_failures = 0;
+                if degraded_reason.take().is_some() {
+                    // Outage over: say so once and go back to Live.
+                    let _ = crate::recording::emit_health_event(
+                        &session.state,
+                        None,
+                        crate::protocol::HealthLevel::Info,
+                        "captions-upload-recovered",
+                        "Caption uploads recovered; live captions resumed.",
+                    );
+                    publish_status(
+                        &session.state,
+                        CaptionsStatus {
+                            state: CaptionsState::Live,
+                            message: None,
+                            remaining_seconds: Some(response.remaining_seconds),
+                            session_client_id: Some(session.session_client_id.clone()),
+                        },
+                    )
+                    .await;
+                }
+                backoff = None;
                 if !response.text.trim().is_empty() {
-                    session.state.captions.lock().await.chunks.push(CaptionChunkRecord {
-                        seq,
-                        offset_seconds,
-                        duration_seconds: CAPTION_CHUNK_SECONDS,
-                        text: response.text.trim().to_string(),
-                        segments: response.segments.clone(),
-                    });
+                    session
+                        .state
+                        .captions
+                        .lock()
+                        .await
+                        .chunks
+                        .push(CaptionChunkRecord {
+                            seq,
+                            offset_seconds,
+                            duration_seconds: CAPTION_CHUNK_SECONDS,
+                            text: response.text.trim().to_string(),
+                            segments: response.segments.clone(),
+                        });
                     session.state.emit_event(
                         "captions.update",
                         CaptionsUpdate {
@@ -829,6 +872,7 @@ async fn run_caption_session(mut session: CaptionSession) {
                 }
             }
             Err(CaptionChunkFailure::Terminal { code, message }) => {
+                // Only auth/premium/quota/disabled end the session.
                 tracing::warn!("Live captions stopped ({code}): {message}");
                 remove_tap();
                 publish_status(
@@ -844,25 +888,35 @@ async fn run_caption_session(mut session: CaptionSession) {
                 return;
             }
             Err(CaptionChunkFailure::Transient { message }) => {
-                consecutive_failures += 1;
+                let next_backoff = next_caption_backoff(backoff);
+                backoff = Some(next_backoff);
+                next_upload_allowed_at = std::time::Instant::now() + next_backoff;
                 tracing::warn!(
-                    "Live caption chunk failed ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}): {message}"
+                    "Live caption chunk failed (retrying in {}s): {message}",
+                    next_backoff.as_secs()
                 );
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    remove_tap();
+                if degraded_reason.as_deref() != Some(message.as_str()) {
+                    // First failure of this outage (or the reason changed):
+                    // one health event + a degraded status carrying the REAL
+                    // reason — never a silent generic stop.
+                    let _ = crate::recording::emit_health_event(
+                        &session.state,
+                        None,
+                        crate::protocol::HealthLevel::Warn,
+                        "captions-upload-failed",
+                        &format!("Caption upload failed; retrying with backoff. {message}"),
+                    );
                     publish_status(
                         &session.state,
                         CaptionsStatus {
-                            state: CaptionsState::Error,
-                            message: Some(
-                                "Live captions stopped after repeated upload failures.".to_string(),
-                            ),
+                            state: CaptionsState::Degraded,
+                            message: Some(format!("Captions reconnecting — {message}")),
                             remaining_seconds: None,
                             session_client_id: Some(session.session_client_id.clone()),
                         },
                     )
                     .await;
-                    return;
+                    degraded_reason = Some(message);
                 }
             }
         }
@@ -870,6 +924,17 @@ async fn run_caption_session(mut session: CaptionSession) {
 
     remove_tap();
     publish_status(&session.state, CaptionsStatus::idle()).await;
+}
+
+/// Exponential backoff for transient upload failures: 2s doubling to a 30s
+/// cap. Pure and unit-tested.
+pub fn next_caption_backoff(current: Option<std::time::Duration>) -> std::time::Duration {
+    const FIRST: std::time::Duration = std::time::Duration::from_secs(2);
+    const CAP: std::time::Duration = std::time::Duration::from_secs(30);
+    match current {
+        None => FIRST,
+        Some(previous) => (previous * 2).min(CAP),
+    }
 }
 
 #[cfg(test)]
@@ -931,6 +996,20 @@ mod tests {
     }
 
     #[test]
+    fn caption_backoff_doubles_to_a_thirty_second_cap() {
+        use std::time::Duration;
+        let first = next_caption_backoff(None);
+        assert_eq!(first, Duration::from_secs(2));
+        let second = next_caption_backoff(Some(first));
+        assert_eq!(second, Duration::from_secs(4));
+        let mut current = second;
+        for _ in 0..10 {
+            current = next_caption_backoff(Some(current));
+        }
+        assert_eq!(current, Duration::from_secs(30));
+    }
+
+    #[test]
     fn anchor_resets_only_on_timestamp_regression() {
         assert!(!caption_anchor_should_reset(None, 0));
         assert!(!caption_anchor_should_reset(Some(10), 10));
@@ -963,8 +1042,18 @@ mod tests {
     #[test]
     fn srt_uses_segment_timing_and_absolute_offsets() {
         let srt = render_srt(&[
-            chunk(1, 0.0, "Hello viewers", &[("Hello", 0.10, 0.50), ("viewers", 0.60, 1.20)]),
-            chunk(2, 3.0, "welcome back", &[("welcome", 0.05, 0.40), ("back", 0.50, 0.90)]),
+            chunk(
+                1,
+                0.0,
+                "Hello viewers",
+                &[("Hello", 0.10, 0.50), ("viewers", 0.60, 1.20)],
+            ),
+            chunk(
+                2,
+                3.0,
+                "welcome back",
+                &[("welcome", 0.05, 0.40), ("back", 0.50, 0.90)],
+            ),
         ]);
         assert_eq!(
             srt,
@@ -997,7 +1086,12 @@ mod tests {
     #[test]
     fn ass_renders_glass_adjacent_style_with_knobs() {
         let ass = render_ass(
-            &[chunk(1, 3.0, "Hello viewers", &[("Hello", 0.1, 0.5), ("viewers", 0.6, 1.2)])],
+            &[chunk(
+                1,
+                3.0,
+                "Hello viewers",
+                &[("Hello", 0.1, 0.5), ("viewers", 0.6, 1.2)],
+            )],
             CaptionOverlayPosition::Top,
             CaptionTextSize::L,
         );
@@ -1005,9 +1099,15 @@ mod tests {
         // L size = round(1920/38 * 1.25) = 63; top-center alignment = 8.
         assert!(ass.contains(",63,&H00F5F4F4,"));
         assert!(ass.contains(",8,60,60,43,1"));
-        assert!(ass.contains("Dialogue: 0,0:00:03.10,0:00:04.20,VideorcCaptions,,0,0,0,,Hello viewers"));
+        assert!(
+            ass.contains("Dialogue: 0,0:00:03.10,0:00:04.20,VideorcCaptions,,0,0,0,,Hello viewers")
+        );
 
-        let bottom = render_ass(&[chunk(1, 0.0, "hi", &[])], CaptionOverlayPosition::Bottom, CaptionTextSize::M);
+        let bottom = render_ass(
+            &[chunk(1, 0.0, "hi", &[])],
+            CaptionOverlayPosition::Bottom,
+            CaptionTextSize::M,
+        );
         assert!(bottom.contains(",2,60,60,43,1"));
         assert!(bottom.contains("Dialogue: 0,0:00:00.00,0:00:03.00,"));
     }
@@ -1056,8 +1156,12 @@ mod tests {
     #[test]
     fn overlay_installs_decodes_and_revs() {
         let slot = new_caption_overlay_slot();
-        let info = install_caption_overlay(&slot, &encode_test_png(4, 2), CaptionOverlayPosition::Bottom)
-            .expect("valid overlay installs");
+        let info = install_caption_overlay(
+            &slot,
+            &encode_test_png(4, 2),
+            CaptionOverlayPosition::Bottom,
+        )
+        .expect("valid overlay installs");
         assert!(info.active);
         assert_eq!((info.width, info.height), (4, 2));
         assert_eq!(info.revision, 1);
@@ -1075,10 +1179,17 @@ mod tests {
     #[test]
     fn overlay_rejects_garbage_and_keeps_previous() {
         let slot = new_caption_overlay_slot();
-        install_caption_overlay(&slot, &encode_test_png(4, 2), CaptionOverlayPosition::Bottom)
-            .expect("valid overlay installs");
+        install_caption_overlay(
+            &slot,
+            &encode_test_png(4, 2),
+            CaptionOverlayPosition::Bottom,
+        )
+        .expect("valid overlay installs");
 
-        assert!(install_caption_overlay(&slot, "not base64!!!", CaptionOverlayPosition::Bottom).is_err());
+        assert!(
+            install_caption_overlay(&slot, "not base64!!!", CaptionOverlayPosition::Bottom)
+                .is_err()
+        );
         assert!(install_caption_overlay(&slot, "", CaptionOverlayPosition::Bottom).is_err());
         {
             use base64::Engine as _;
@@ -1098,12 +1209,20 @@ mod tests {
     fn overlay_rejects_out_of_range_dimensions_and_clears() {
         let slot = new_caption_overlay_slot();
         assert!(
-            install_caption_overlay(&slot, &encode_test_png(4200, 2), CaptionOverlayPosition::Top)
-                .is_err()
+            install_caption_overlay(
+                &slot,
+                &encode_test_png(4200, 2),
+                CaptionOverlayPosition::Top
+            )
+            .is_err()
         );
 
-        install_caption_overlay(&slot, &encode_test_png(4, 2), CaptionOverlayPosition::Bottom)
-            .expect("valid overlay installs");
+        install_caption_overlay(
+            &slot,
+            &encode_test_png(4, 2),
+            CaptionOverlayPosition::Bottom,
+        )
+        .expect("valid overlay installs");
         let cleared = clear_caption_overlay(&slot);
         assert!(!cleared.active);
         assert!(current_caption_overlay(&slot).is_none());

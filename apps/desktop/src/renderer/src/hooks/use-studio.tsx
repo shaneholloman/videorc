@@ -534,12 +534,24 @@ const idleDiagnosticStats = (): DiagnosticStats => ({
   encoderBridgeCompositorWaitP95Ms: undefined,
   encoderBridgeVideoToolboxSubmitP95Ms: undefined,
   encoderBridgeVideoToolboxFifoWriteP95Ms: undefined,
+  encoderBridgeVideoToolboxFifoEnqueueP95Ms: undefined,
+  encoderBridgeVideoToolboxFifoEnqueueMaxMs: undefined,
   encoderBridgeWriterLoopP95Ms: undefined,
   encoderBridgeWriterSleepP95Ms: undefined,
   encoderBridgeWriterActiveP95Ms: undefined,
   encoderBridgeDeadlineLagP95Ms: undefined,
   encoderBridgeDeadlineLagMaxMs: undefined,
   encoderBridgeLateDeadlineTicks: 0,
+  encoderBridgeRecordingInputFps: undefined,
+  encoderBridgeStreamInputFps: undefined,
+  encoderBridgeRecordingWriterLoopP95Ms: undefined,
+  encoderBridgeStreamWriterLoopP95Ms: undefined,
+  encoderBridgeRecordingWriterActiveP95Ms: undefined,
+  encoderBridgeStreamWriterActiveP95Ms: undefined,
+  encoderBridgeRecordingVideoToolboxFifoEnqueueP95Ms: undefined,
+  encoderBridgeStreamVideoToolboxFifoEnqueueP95Ms: undefined,
+  encoderBridgeRecordingVideoToolboxFifoEnqueueMaxMs: undefined,
+  encoderBridgeStreamVideoToolboxFifoEnqueueMaxMs: undefined,
   compositorCpuFallbackFrames: 0,
   compositorSourceIosurfaceImportFrames: 0,
   compositorSourceCvpixelbufferImportFrames: 0,
@@ -3654,7 +3666,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
     const burnIn = captureConfig.captions.burnInEnabled
     const latest = captionLines.at(-1)
-    if (!burnIn || captionsStatus.state !== 'live' || !isSessionActive) {
+    const captionsRunning =
+      captionsStatus.state === 'live' || captionsStatus.state === 'degraded'
+    if (!burnIn || !captionsRunning || !isSessionActive) {
       if (captionOverlayPushedSeq.current !== null) {
         captionOverlayPushedSeq.current = null
         void client.request('captions.overlay.clear').catch(() => {})

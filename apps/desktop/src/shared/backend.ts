@@ -1424,6 +1424,10 @@ export interface DiagnosticStats {
   encoderBridgeVideoToolboxSubmitP95Ms?: number
   /** P95 time spent writing completed VideoToolbox H.264 access units into FFmpeg. */
   encoderBridgeVideoToolboxFifoWriteP95Ms?: number
+  /** P95 time spent waiting to enqueue encoded VideoToolbox frames for the FIFO writer. */
+  encoderBridgeVideoToolboxFifoEnqueueP95Ms?: number
+  /** Max time spent waiting to enqueue encoded VideoToolbox frames for the FIFO writer. */
+  encoderBridgeVideoToolboxFifoEnqueueMaxMs?: number
   /** P95 end-to-end bridge writer loop time, including intentional CFR sleep. */
   encoderBridgeWriterLoopP95Ms?: number
   /** P95 time spent sleeping until the bridge writer's scheduled CFR deadline. */
@@ -1436,6 +1440,26 @@ export interface DiagnosticStats {
   encoderBridgeDeadlineLagMaxMs?: number
   /** Cumulative bridge writer ticks that started late against their CFR deadline. */
   encoderBridgeLateDeadlineTicks: number
+  /** Recording-leg bridge input FPS for split-output sessions. */
+  encoderBridgeRecordingInputFps?: number
+  /** Stream-leg bridge input FPS for split-output sessions. */
+  encoderBridgeStreamInputFps?: number
+  /** Recording-leg bridge writer p95 for split-output sessions. */
+  encoderBridgeRecordingWriterLoopP95Ms?: number
+  /** Stream-leg bridge writer p95 for split-output sessions. */
+  encoderBridgeStreamWriterLoopP95Ms?: number
+  /** Recording-leg active writer work p95 for split-output sessions. */
+  encoderBridgeRecordingWriterActiveP95Ms?: number
+  /** Stream-leg active writer work p95 for split-output sessions. */
+  encoderBridgeStreamWriterActiveP95Ms?: number
+  /** Recording-leg FIFO enqueue wait p95 for split-output sessions. */
+  encoderBridgeRecordingVideoToolboxFifoEnqueueP95Ms?: number
+  /** Stream-leg FIFO enqueue wait p95 for split-output sessions. */
+  encoderBridgeStreamVideoToolboxFifoEnqueueP95Ms?: number
+  /** Recording-leg FIFO enqueue max wait for split-output sessions. */
+  encoderBridgeRecordingVideoToolboxFifoEnqueueMaxMs?: number
+  /** Stream-leg FIFO enqueue max wait for split-output sessions. */
+  encoderBridgeStreamVideoToolboxFifoEnqueueMaxMs?: number
   encoderBridgeError?: string
   /** Which encoder the active session requested — proves hardware vs software encode. */
   encodeBackend?: EncodeBackend
@@ -2321,7 +2345,8 @@ export function createEmptyLiveChatSnapshot(updatedAt: string): LiveChatSnapshot
 }
 
 // Live captions (captions.* RPCs + events; premium cloud-AI feature).
-export type CaptionsState = 'idle' | 'live' | 'error'
+// 'degraded' = uploads failing + retrying with backoff; recovers on its own.
+export type CaptionsState = 'idle' | 'live' | 'degraded' | 'error'
 
 export interface CaptionsStatus {
   state: CaptionsState

@@ -343,6 +343,9 @@ impl VideorcApiClient {
             .post(self.endpoint("/api/ai/captions/chunks"))
             .bearer_auth(bearer_token)
             .multipart(form)
+            // A hung upload must become a retryable failure, not a stalled
+            // caption loop (R0) — chunks are ~3s of audio, 10s is generous.
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
             .map_err(|error| CaptionChunkFailure::Transient {
@@ -417,9 +420,12 @@ pub struct CaptionChunkResponse {
     pub text: String,
     pub chunk_seconds: u64,
     pub remaining_seconds: u64,
+    #[allow(dead_code)]
     pub monthly_seconds_limit: u64,
     #[serde(default)]
+    #[allow(dead_code)]
     pub latency_ms: Option<u64>,
+    #[allow(dead_code)]
     pub model: String,
     /// Word timing within this chunk (empty on older web deploys).
     #[serde(default)]

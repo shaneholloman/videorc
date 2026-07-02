@@ -293,7 +293,7 @@ function LiveCaptionsSection(): ReactElement {
   } = useStudio()
   const [pending, setPending] = useState(false)
   const gate = cloudAiUploadGate(entitlements)
-  const active = captionsStatus.state === 'live'
+  const active = captionsStatus.state === 'live' || captionsStatus.state === 'degraded'
   const locked = !active && !gate.allowed
   const lines = captionStripLines(captionLines)
   const captions = captureConfig.captions
@@ -359,7 +359,8 @@ function LiveCaptionsSection(): ReactElement {
             transcription. Captions appear a few seconds behind speech.
           </p>
         )}
-        {captionsStatus.state === 'error' && captionsStatus.message ? (
+        {(captionsStatus.state === 'error' || captionsStatus.state === 'degraded') &&
+        captionsStatus.message ? (
           <div className="flex items-start gap-2 border-l-2 border-warning/50 pl-3 text-xs text-warning-foreground dark:text-warning">
             <WarningCircle className="mt-0.5 size-3.5 shrink-0" weight="fill" />
             <span>{captionsStatus.message}</span>
