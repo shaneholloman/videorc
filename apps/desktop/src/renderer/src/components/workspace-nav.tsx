@@ -46,7 +46,7 @@ export type StudioPanelMeta = {
 export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
   { id: 'studio', label: 'Studio', icon: VideoCamera, group: 'stage' },
   { id: 'library', label: 'Library', icon: FilmReel, group: 'library' },
-  { id: 'ai', label: 'AI', icon: Sparkle, group: 'library' },
+  { id: 'ai', label: 'Publish', icon: Sparkle, group: 'library' },
   { id: 'settings', label: 'Settings', icon: GearSix, group: 'system' },
   { id: 'diagnostics', label: 'Health', icon: Pulse, group: 'system' }
 ]

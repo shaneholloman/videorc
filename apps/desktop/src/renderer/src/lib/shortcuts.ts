@@ -20,7 +20,7 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
   { id: 'nav-live', keys: ['⌘', '5'], label: 'Livestream', group: 'Navigation' },
   { id: 'nav-recording', keys: ['⌘', '6'], label: 'Output', group: 'Navigation' },
   { id: 'nav-library', keys: ['⌘', '7'], label: 'Library', group: 'Navigation' },
-  { id: 'nav-ai', keys: ['⌘', '8'], label: 'AI', group: 'Navigation' },
+  { id: 'nav-ai', keys: ['⌘', '8'], label: 'Publish', group: 'Navigation' },
   { id: 'nav-settings', keys: ['⌘', '9'], label: 'Settings', group: 'Navigation' },
   { id: 'search', keys: ['⌘', 'K'], label: 'Search & commands', group: 'Navigation' },
 

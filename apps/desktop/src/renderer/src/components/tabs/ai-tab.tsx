@@ -47,6 +47,7 @@ import {
   objectField
 } from '@/lib/format'
 import { VIDEORC_PREMIUM_URL } from '@/lib/premium-upgrade'
+import { PUBLISH_PIPELINE } from '@/lib/publish-pipeline'
 
 export function AiTab({
   selectedSessionId,
@@ -89,15 +90,25 @@ export function AiTab({
     return (
       <div className="flex flex-col gap-5">
         <AiHeader />
-        <Empty className="rounded-panel border py-16">
+        <Empty className="rounded-panel border py-10">
           <EmptyMedia variant="icon">
             <Brain weight="duotone" />
           </EmptyMedia>
-          <EmptyTitle>No sessions to analyze</EmptyTitle>
+          <EmptyTitle>Record something in Studio first</EmptyTitle>
           <EmptyDescription>
-            Record a session first, then run transcript, summary, and chapters here.
+            Every recording can become a publishable upload. Here is what each step makes:
           </EmptyDescription>
         </Empty>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          {PUBLISH_PIPELINE.map((step, index) => (
+            <div key={step.kind} className="flex flex-col gap-1.5 rounded-panel border p-3">
+              <span className="text-xs font-medium text-muted-foreground">{index + 1}</span>
+              <span className="text-sm font-semibold">{step.name}</span>
+              <p className="text-xs text-muted-foreground">{step.valueProp}</p>
+              <p className="text-xs italic text-muted-foreground/70">{step.example}</p>
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
@@ -211,9 +222,10 @@ export function AiTab({
   function AiHeader(): ReactElement {
     return (
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold tracking-tight">AI</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Publish</h1>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Turn a recording into a transcript, summary, chapters, and a publish pack.
+          Turn a finished recording into a publishable upload — transcript, title, summary,
+          chapters, and highlights, bundled as a publish pack.
         </p>
       </div>
     )
@@ -309,62 +321,99 @@ function ArtifactView({ session }: { session: SessionSummary }): ReactElement {
   const description = titleDescription ? artifactField(titleDescription, 'description') : ''
   const problemArtifact = latestAiProblemArtifact(session)
 
-  if (!session.aiArtifacts.length) {
-    return (
-      <Empty className="border-0 py-6">
-        <EmptyTitle>No artifacts yet</EmptyTitle>
-        <EmptyDescription>
-          Run the AI workflow to generate transcript, summary, chapters, and creator intelligence.
-        </EmptyDescription>
-      </Empty>
-    )
+  const pipelineContent: Record<string, ReactNode> = {
+    transcript: transcript ? (
+      <p className="text-sm whitespace-pre-line text-muted-foreground">
+        {artifactText(transcript)}
+      </p>
+    ) : null,
+    'title-description':
+      title || description ? (
+        <>
+          {title ? <p className="font-medium">{title}</p> : null}
+          {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
+        </>
+      ) : null,
+    summary: summary ? <p className="text-sm whitespace-pre-line">{artifactText(summary)}</p> : null,
+    chapters: chapterItems.length ? (
+      <ol className="flex flex-col gap-1.5">
+        {chapterItems.map((chapter) => (
+          <li className="flex gap-3 text-sm" key={`${chapter.timestamp}-${chapter.title}`}>
+            <time className="font-mono text-xs text-muted-foreground tabular-nums">
+              {chapter.timestamp}
+            </time>
+            <span>{chapter.title}</span>
+          </li>
+        ))}
+      </ol>
+    ) : null,
+    highlights: highlightItems.length ? (
+      <InsightList
+        badgeField="timestamp"
+        details={[
+          ['reason', 'Reason'],
+          ['suggestedUse', 'Use']
+        ]}
+        icon={Lightning}
+        items={highlightItems}
+        primaryField="title"
+      />
+    ) : null
   }
+
+  const labHasContent =
+    smartZoomItems.length > 0 ||
+    noiseCleanupItems.length > 0 ||
+    silenceRemovalItems.length > 0 ||
+    healthItems.length > 0
 
   return (
     <ScrollArea className="h-[calc(100vh-15rem)] pr-3">
       <div className="flex flex-col gap-2">
         {problemArtifact ? <ArtifactProblem artifact={problemArtifact} /> : null}
-        {title || description ? (
-          <ArtifactSection defaultOpen title="Title & description">
-            {title ? <p className="font-medium">{title}</p> : null}
-            {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
-          </ArtifactSection>
-        ) : null}
-        {summary ? (
-          <ArtifactSection defaultOpen title="Summary">
-            <p className="text-sm whitespace-pre-line">{artifactText(summary)}</p>
-          </ArtifactSection>
-        ) : null}
-        {chapterItems.length ? (
-          <ArtifactSection title="Chapters">
-            <ol className="flex flex-col gap-1.5">
-              {chapterItems.map((chapter) => (
-                <li className="flex gap-3 text-sm" key={`${chapter.timestamp}-${chapter.title}`}>
-                  <time className="font-mono text-xs text-muted-foreground tabular-nums">
-                    {chapter.timestamp}
-                  </time>
-                  <span>{chapter.title}</span>
-                </li>
-              ))}
-            </ol>
-          </ArtifactSection>
-        ) : null}
-        {highlightItems.length ? (
-          <ArtifactSection defaultOpen title="Highlights">
-            <InsightList
-              badgeField="timestamp"
-              details={[
-                ['reason', 'Reason'],
-                ['suggestedUse', 'Use']
-              ]}
-              icon={Lightning}
-              items={highlightItems}
-              primaryField="title"
-            />
-          </ArtifactSection>
-        ) : null}
+
+        {/* The five pipeline steps, in order — a card TEACHES until its
+            artifact exists, then shows the content. */}
+        {PUBLISH_PIPELINE.map((step, index) => {
+          const content = pipelineContent[step.kind]
+          return (
+            <div key={step.kind} className="flex flex-col gap-2 rounded-panel border p-3">
+              <div className="flex items-center gap-2">
+                <span className="grid size-5 shrink-0 place-items-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground">
+                  {index + 1}
+                </span>
+                <span className="flex-1 text-sm font-semibold">{step.name}</span>
+                <Badge variant={content ? 'success' : 'outline'}>
+                  {content ? 'Ready' : 'Not run'}
+                </Badge>
+              </div>
+              {content ?? (
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs text-muted-foreground">{step.valueProp}</p>
+                  <p className="text-xs italic text-muted-foreground/60">{step.example}</p>
+                </div>
+              )}
+            </div>
+          )
+        })}
+
+        {/* Everything experimental lives in ONE collapsed Lab section. */}
+        <Collapsible className="rounded-panel border border-dashed">
+          <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2.5 text-sm font-medium">
+            <span className="flex-1 text-left">Lab</span>
+            <Badge variant="outline">Experimental</Badge>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="flex flex-col gap-2 px-3 pb-3">
+            <p className="text-xs text-muted-foreground">
+              Suggestions only — nothing here edits your recording.
+            </p>
+            {!labHasContent ? (
+              <p className="text-xs text-muted-foreground/70">
+                Zoom, cleanup, and health suggestions appear here after a workflow run.
+              </p>
+            ) : null}
         {smartZoomItems.length ? (
-          <ArtifactSection title="Smart zoom prototype">
+          <ArtifactSection title="Smart zoom">
             <InsightList
               badgeField="timestamp"
               details={[
@@ -420,13 +469,8 @@ function ArtifactView({ session }: { session: SessionSummary }): ReactElement {
             />
           </ArtifactSection>
         ) : null}
-        {transcript ? (
-          <ArtifactSection title="Transcript">
-            <p className="text-sm whitespace-pre-line text-muted-foreground">
-              {artifactText(transcript)}
-            </p>
-          </ArtifactSection>
-        ) : null}
+          </CollapsibleContent>
+        </Collapsible>
       </div>
     </ScrollArea>
   )
