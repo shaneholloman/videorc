@@ -244,10 +244,7 @@ export async function renderCaptionOverlayPng(params: {
     return null
   }
   const pad = captionShadowPadPx(layout.metrics.fontPx)
-  const canvas = new OffscreenCanvas(
-    layout.barWidthPx + pad * 2,
-    layout.barHeightPx + pad * 2
-  )
+  const canvas = new OffscreenCanvas(layout.barWidthPx + pad * 2, layout.barHeightPx + pad * 2)
   const context = canvas.getContext('2d')
   if (!context) {
     return null
@@ -268,7 +265,10 @@ export async function renderCaptionCueFramePng(params: {
   position: CaptionPosition
   textSize: CaptionTextSize
 }): Promise<string | null> {
-  const canvas = new OffscreenCanvas(Math.max(2, params.canvasWidth), Math.max(2, params.canvasHeight))
+  const canvas = new OffscreenCanvas(
+    Math.max(2, params.canvasWidth),
+    Math.max(2, params.canvasHeight)
+  )
   const context = canvas.getContext('2d')
   if (!context) {
     return null

@@ -19,6 +19,7 @@ export function assertSourceCompleteCompositorHealthy({
   scenarioLabel,
   stats,
   sourceComplete,
+  allowSyntheticSourceOnly = false,
   requiredLiveSourceKinds = []
 }) {
   if (!sourceComplete) {
@@ -28,7 +29,8 @@ export function assertSourceCompleteCompositorHealthy({
   const prefix = scenarioLabel ? `[${scenarioLabel}] ` : ''
   const fallbackFrames = count(stats.maxCompositorCpuFallbackFrames)
   const metalTargets = count(stats.maxEncoderBridgeMetalTargetFrames)
-  const reason = typeof stats.lastCompositorFallbackReason === 'string' ? stats.lastCompositorFallbackReason : ''
+  const reason =
+    typeof stats.lastCompositorFallbackReason === 'string' ? stats.lastCompositorFallbackReason : ''
 
   if (fallbackFrames > 0) {
     throw new Error(
@@ -36,15 +38,22 @@ export function assertSourceCompleteCompositorHealthy({
     )
   }
   if (metalTargets <= 0) {
-    throw new Error(`${prefix}Source-complete native-preview smoke never reached the Metal compositor target path.`)
+    throw new Error(
+      `${prefix}Source-complete native-preview smoke never reached the Metal compositor target path.`
+    )
   }
   if (count(stats.maxCompositorSourceImportFailures) > 0) {
     throw new Error(
       `${prefix}Source-complete native-preview smoke reported ${count(stats.maxCompositorSourceImportFailures)} source import failure(s).`
     )
   }
-  if (!Array.isArray(requiredLiveSourceKinds) || requiredLiveSourceKinds.length === 0) {
-    throw new Error(`${prefix}Source-complete native-preview smoke declared no required live source kinds.`)
+  if (
+    (!Array.isArray(requiredLiveSourceKinds) || requiredLiveSourceKinds.length === 0) &&
+    !allowSyntheticSourceOnly
+  ) {
+    throw new Error(
+      `${prefix}Source-complete native-preview smoke declared no required live source kinds.`
+    )
   }
   for (const kind of requiredLiveSourceKinds) {
     assertLiveSourceKindHealthy(prefix, stats, kind)
@@ -54,7 +63,9 @@ export function assertSourceCompleteCompositorHealthy({
 function assertLiveSourceKindHealthy(prefix, stats, kind) {
   const fields = LIVE_SOURCE_IMPORT_FIELDS[kind]
   if (!fields) {
-    throw new Error(`${prefix}Source-complete native-preview smoke cannot gate unknown live source kind "${kind}".`)
+    throw new Error(
+      `${prefix}Source-complete native-preview smoke cannot gate unknown live source kind "${kind}".`
+    )
   }
   const importFailures = count(stats[fields.failures])
   const byteUploads = count(stats[fields.byteUpload])

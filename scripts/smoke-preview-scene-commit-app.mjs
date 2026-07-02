@@ -33,17 +33,19 @@ try {
   const smoke = launched.connections['preview-motion-ready']
   ws = await connectBackend(backend, timeoutMs)
 
+  await smokeCommand(smoke, 'open-tab', {
+    tab: 'studio',
+    waitFor: '[data-videorc-preview-card]'
+  })
   await smokeCommand(smoke, 'preview-window-open')
+  await waitForSurfaceLive(smoke)
   await smokeCommand(smoke, 'enable-synthetic-source', { settleMs })
   await smokeCommand(smoke, 'select-layout-preset', { preset: 'screen-camera', settleMs })
   await sleep(settleMs)
 
   const beforeScene = await request(ws, timeoutMs, 'scene.get')
   const beforeCompositor = await request(ws, timeoutMs, 'compositor.status')
-  const highRevision = Math.max(
-    Number(beforeCompositor.sceneRevision ?? 0),
-    Date.now() + 1_000_000
-  )
+  const highRevision = Math.max(Number(beforeCompositor.sceneRevision ?? 0), Date.now() + 1_000_000)
   const layout = beforeCompositor.sceneLayout ?? defaultLayout()
 
   const highStatus = await request(ws, timeoutMs, 'compositor.scene.update', {
@@ -58,7 +60,8 @@ try {
     )
   }
 
-  const source = beforeScene.sources.find((candidate) => candidate.visible) ?? beforeScene.sources[0]
+  const source =
+    beforeScene.sources.find((candidate) => candidate.visible) ?? beforeScene.sources[0]
   if (!source) {
     throw new Error(`Scene has no source to mutate: ${JSON.stringify(beforeScene)}`)
   }
@@ -96,6 +99,21 @@ try {
     // Best-effort cleanup.
   }
   await launched.stop()
+}
+
+async function waitForSurfaceLive(smoke) {
+  let last = null
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    last = await smokeCommand(smoke, 'native-preview-surface-status')
+    if (last.state === 'live' && last.bounds?.width > 0 && last.bounds?.height > 0) {
+      return last
+    }
+    await sleep(100)
+  }
+  throw new Error(
+    `Timed out waiting for live preview surface. Last status: ${JSON.stringify(last)}`
+  )
 }
 
 async function waitForCompositorRevision(connection, revision) {

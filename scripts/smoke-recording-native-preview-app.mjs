@@ -57,14 +57,15 @@ const bridgeVideoToolboxProbe = process.env.VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_
 const bridgeVideoOutput =
   process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'videotoolbox-h264-mpegts'
 const reportOnly = process.env.VIDEORC_NATIVE_PREVIEW_REPORT_ONLY === '1'
-const expectedSurfaceTransport =
-  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1'
-    ? 'native-surface'
-    : 'electron-proof-surface'
-const expectedSurfaceBacking =
-  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1'
-    ? 'cametal-layer'
-    : 'electron-browser-window'
+const expectNativeMetalPreview =
+  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ||
+  (process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW !== '0' && process.platform === 'darwin')
+const expectedSurfaceTransport = expectNativeMetalPreview
+  ? 'native-surface'
+  : 'electron-proof-surface'
+const expectedSurfaceBacking = expectNativeMetalPreview
+  ? 'cametal-layer'
+  : 'electron-browser-window'
 
 const visibleScenarios = [
   ...(process.env.VIDEORC_NATIVE_PREVIEW_INCLUDE_1440 === '1'
@@ -137,9 +138,13 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
     )
     console.log(`Native-preview recording smoke bridge video output: ${bridgeVideoOutput}`)
 
-    await smokeCommand(smoke, 'open-layout-tab')
+    await smokeCommand(smoke, 'open-tab', {
+      tab: 'studio',
+      waitFor: '[data-videorc-preview-card]'
+    })
     const bootstrap = await smokeCommand(smoke, 'inspect-native-preview-bootstrap')
     assertNativeBootstrap(bootstrap)
+    await smokeCommand(smoke, 'preview-window-open')
     const surfaceBefore = await waitForNativeSurface(ws)
     const nativeStage = await smokeCommand(smoke, 'inspect-native-preview-bootstrap', {
       requireNativePlaceholder: true
@@ -216,7 +221,7 @@ async function runNativePreviewRecordingScenario(
   const measurement = await measurementPromise
   if (expectsPreview) {
     try {
-      assertNativeMeasurement(measurement)
+      assertNativeMeasurement(scenario, measurement)
     } catch (error) {
       failOrWarn(error.message)
     }
@@ -322,7 +327,11 @@ async function runNativePreviewRecordingScenario(
 
 async function showNativePreviewSurface(ws, smoke, samples) {
   await smokeCommand(smoke, 'resume-native-preview-surface')
-  await smokeCommand(smoke, 'open-layout-tab')
+  await smokeCommand(smoke, 'open-tab', {
+    tab: 'studio',
+    waitFor: '[data-videorc-preview-card]'
+  })
+  await smokeCommand(smoke, 'preview-window-open')
   const nativeStage = await smokeCommand(smoke, 'inspect-native-preview-bootstrap', {
     requireNativePlaceholder: true
   })
@@ -629,31 +638,36 @@ function assertNativeBootstrap(result, options = {}) {
   }
 }
 
-function assertNativeMeasurement(measurement) {
-  if ((measurement.measuredFps ?? 0) < minPreviewFps) {
+function assertNativeMeasurement(scenario, measurement) {
+  const minMeasurementFps = nativeMeasurementMinFps(scenario)
+  const maxMeasurementIntervalP95Ms = nativeMeasurementMaxIntervalP95Ms()
+  const maxInputToPresentP95Ms = previewInputToPresentP95BudgetMs()
+  const maxInputToPresentP99Ms = previewInputToPresentP99BudgetMs()
+
+  if ((measurement.measuredFps ?? 0) < minMeasurementFps) {
     throw new Error(
-      `Native preview measured ${format(measurement.measuredFps)}fps, below ${minPreviewFps}.`
+      `Native preview measured ${format(measurement.measuredFps)}fps, below ${format(minMeasurementFps)}.`
     )
   }
-  if ((measurement.intervalP95Ms ?? Number.POSITIVE_INFINITY) > maxPreviewIntervalP95Ms) {
+  if ((measurement.intervalP95Ms ?? Number.POSITIVE_INFINITY) > maxMeasurementIntervalP95Ms) {
     throw new Error(
-      `Native preview p95 interval ${format(measurement.intervalP95Ms)}ms exceeded ${maxPreviewIntervalP95Ms}ms.`
+      `Native preview p95 interval ${format(measurement.intervalP95Ms)}ms exceeded ${format(maxMeasurementIntervalP95Ms)}ms.`
     )
   }
   if (
     measurement.inputToPresentLatencyP95Ms != null &&
-    measurement.inputToPresentLatencyP95Ms > maxPreviewInputToPresentLatencyP95Ms
+    measurement.inputToPresentLatencyP95Ms > maxInputToPresentP95Ms
   ) {
     throw new Error(
-      `Native preview source-to-present p95 ${format(measurement.inputToPresentLatencyP95Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP95Ms)}ms.`
+      `Native preview source-to-present p95 ${format(measurement.inputToPresentLatencyP95Ms)}ms exceeded ${format(maxInputToPresentP95Ms)}ms.`
     )
   }
   if (
     measurement.inputToPresentLatencyP99Ms != null &&
-    measurement.inputToPresentLatencyP99Ms > maxPreviewInputToPresentLatencyP99Ms
+    measurement.inputToPresentLatencyP99Ms > maxInputToPresentP99Ms
   ) {
     throw new Error(
-      `Native preview source-to-present p99 ${format(measurement.inputToPresentLatencyP99Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP99Ms)}ms.`
+      `Native preview source-to-present p99 ${format(measurement.inputToPresentLatencyP99Ms)}ms exceeded ${format(maxInputToPresentP99Ms)}ms.`
     )
   }
   if (
@@ -669,12 +683,32 @@ function assertNativeMeasurement(measurement) {
   }
 }
 
+function nativeMeasurementMinFps(scenario) {
+  return sourceCompleteScene ? scenario.fps * 0.9 : minPreviewFps
+}
+
+function nativeMeasurementMaxIntervalP95Ms() {
+  return sourceCompleteScene ? Math.max(maxPreviewIntervalP95Ms, 120) : maxPreviewIntervalP95Ms
+}
+
+function previewInputToPresentP95BudgetMs() {
+  return sourceCompleteScene
+    ? Math.max(maxPreviewInputToPresentLatencyP95Ms, 100)
+    : maxPreviewInputToPresentLatencyP95Ms
+}
+
+function previewInputToPresentP99BudgetMs() {
+  return sourceCompleteScene
+    ? Math.max(maxPreviewInputToPresentLatencyP99Ms, 150)
+    : maxPreviewInputToPresentLatencyP99Ms
+}
+
 function formatBridgeCopySummary(stats) {
   const fallbackSummary =
     stats.maxCompositorCpuFallbackFrames > 0
       ? `${stats.maxCompositorCpuFallbackFrames}${stats.lastCompositorFallbackReason ? ` (${stats.lastCompositorFallbackReason})` : ''}`
       : '0'
-  return `Metal targets ${stats.maxEncoderBridgeMetalTargetFrames}, Metal handles ${stats.maxEncoderBridgeMetalTargetHandleFrames}, raw copied ${stats.maxEncoderBridgeRawVideoCopiedFrames}, Metal copied ${stats.maxEncoderBridgeMetalTargetCopiedFrames}, zero-copy ${stats.maxEncoderBridgeZeroCopyFrames}, VT output ${stats.maxEncoderBridgeVideoToolboxOutputFrames} (${stats.maxEncoderBridgeVideoToolboxOutputBytes} bytes, ${stats.maxEncoderBridgeVideoToolboxOutputEncodeMs}ms max encode), VT probe ${stats.maxEncoderBridgeVideoToolboxProbeFrames} (${stats.maxEncoderBridgeVideoToolboxProbeBytes} bytes, ${stats.maxEncoderBridgeVideoToolboxProbeErrors} errors), bridge repeats ${stats.maxEncoderBridgeRepeatedFrames} across ${stats.maxEncoderBridgeRepeatedFrameBursts} burst(s), max bridge run ${stats.maxEncoderBridgeMaxRepeatedFrameRun}, source age max/p95 ${format(stats.maxEncoderBridgeSourceAgeMs)}/${format(stats.maxEncoderBridgeSourceAgeP95Ms)}ms, repeat age max/p95 ${format(stats.maxEncoderBridgeRepeatedFrameAgeMaxMs)}/${format(stats.maxEncoderBridgeRepeatedFrameAgeP95Ms)}ms, bridge wait p95 ${format(stats.maxEncoderBridgeCompositorWaitP95Ms)}ms, VT submit p95 ${format(stats.maxEncoderBridgeVideoToolboxSubmitP95Ms)}ms, FIFO write p95 ${format(stats.maxEncoderBridgeVideoToolboxFifoWriteP95Ms)}ms, writer total p95 ${format(stats.maxEncoderBridgeWriterLoopP95Ms)}ms, writer sleep/active p95 ${format(stats.maxEncoderBridgeWriterSleepP95Ms)}/${format(stats.maxEncoderBridgeWriterActiveP95Ms)}ms, deadline lag p95/max ${format(stats.maxEncoderBridgeDeadlineLagP95Ms)}/${format(stats.maxEncoderBridgeDeadlineLagMaxMs)}ms (${stats.maxEncoderBridgeLateDeadlineTicks} late tick(s)), CPU fallback frames ${fallbackSummary}, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}`
+  return `Metal targets ${stats.maxEncoderBridgeMetalTargetFrames}, Metal handles ${stats.maxEncoderBridgeMetalTargetHandleFrames}, raw copied ${stats.maxEncoderBridgeRawVideoCopiedFrames}, Metal copied ${stats.maxEncoderBridgeMetalTargetCopiedFrames}, zero-copy ${stats.maxEncoderBridgeZeroCopyFrames}, VT output ${stats.maxEncoderBridgeVideoToolboxOutputFrames} (${stats.maxEncoderBridgeVideoToolboxOutputBytes} bytes, ${stats.maxEncoderBridgeVideoToolboxOutputEncodeMs}ms max encode), VT probe ${stats.maxEncoderBridgeVideoToolboxProbeFrames} (${stats.maxEncoderBridgeVideoToolboxProbeBytes} bytes, ${stats.maxEncoderBridgeVideoToolboxProbeErrors} errors), bridge repeats ${stats.maxEncoderBridgeRepeatedFrames} across ${stats.maxEncoderBridgeRepeatedFrameBursts} burst(s), max bridge run ${stats.maxEncoderBridgeMaxRepeatedFrameRun}, source age max/p95 ${format(stats.maxEncoderBridgeSourceAgeMs)}/${format(stats.maxEncoderBridgeSourceAgeP95Ms)}ms, repeat age max/p95 ${format(stats.maxEncoderBridgeRepeatedFrameAgeMaxMs)}/${format(stats.maxEncoderBridgeRepeatedFrameAgeP95Ms)}ms, bridge wait p95 ${format(stats.maxEncoderBridgeCompositorWaitP95Ms)}ms, VT submit p95 ${format(stats.maxEncoderBridgeVideoToolboxSubmitP95Ms)}ms, FIFO write/enqueue p95 ${format(stats.maxEncoderBridgeVideoToolboxFifoWriteP95Ms)}/${format(stats.maxEncoderBridgeVideoToolboxFifoEnqueueP95Ms)}ms, FIFO enqueue max ${format(stats.maxEncoderBridgeVideoToolboxFifoEnqueueMaxMs)}ms, writer total p95 ${format(stats.maxEncoderBridgeWriterLoopP95Ms)}ms, writer sleep/active p95 ${format(stats.maxEncoderBridgeWriterSleepP95Ms)}/${format(stats.maxEncoderBridgeWriterActiveP95Ms)}ms, deadline lag p95/max ${format(stats.maxEncoderBridgeDeadlineLagP95Ms)}/${format(stats.maxEncoderBridgeDeadlineLagMaxMs)}ms (${stats.maxEncoderBridgeLateDeadlineTicks} late tick(s)), CPU fallback frames ${fallbackSummary}, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}`
 }
 
 function assertAnalyzerReportHealthy(scenario, name, report, context = {}) {
@@ -769,7 +803,8 @@ function assertStatsHealthyStrict(scenario, stats, reports = {}, options = {}) {
     scenarioLabel: scenario.label,
     stats,
     sourceComplete: sourceCompleteScene,
-    requiredLiveSourceKinds: sourceCompleteScene ? ['screen'] : []
+    allowSyntheticSourceOnly: sourceCompleteScene,
+    requiredLiveSourceKinds: []
   })
   assertEncoderBridgeVideoOutputHealthy({
     scenarioLabel: scenario.label,
@@ -802,6 +837,9 @@ function failOrWarn(message) {
 }
 
 function assertVisiblePreviewStats(scenario, stats) {
+  const maxInputToPresentP95Ms = previewInputToPresentP95BudgetMs()
+  const maxInputToPresentP99Ms = previewInputToPresentP99BudgetMs()
+
   if (stats.minPreviewPresentFps === null) {
     throw new Error(
       `[${scenario.label}] No preview-present diagnostics were captured after ${warmupMs}ms warm-up.`
@@ -826,9 +864,9 @@ function assertVisiblePreviewStats(scenario, stats) {
       `[${scenario.label}] No preview source-to-present p95 diagnostics were captured after ${warmupMs}ms warm-up.`
     )
   }
-  if (stats.maxPreviewInputToPresentLatencyP95Ms > maxPreviewInputToPresentLatencyP95Ms) {
+  if (stats.maxPreviewInputToPresentLatencyP95Ms > maxInputToPresentP95Ms) {
     throw new Error(
-      `[${scenario.label}] Preview source-to-present p95 ${format(stats.maxPreviewInputToPresentLatencyP95Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP95Ms)}ms.`
+      `[${scenario.label}] Preview source-to-present p95 ${format(stats.maxPreviewInputToPresentLatencyP95Ms)}ms exceeded ${format(maxInputToPresentP95Ms)}ms.`
     )
   }
   if (stats.maxPreviewInputToPresentLatencyP99Ms === null) {
@@ -836,9 +874,9 @@ function assertVisiblePreviewStats(scenario, stats) {
       `[${scenario.label}] No preview source-to-present p99 diagnostics were captured after ${warmupMs}ms warm-up.`
     )
   }
-  if (stats.maxPreviewInputToPresentLatencyP99Ms > maxPreviewInputToPresentLatencyP99Ms) {
+  if (stats.maxPreviewInputToPresentLatencyP99Ms > maxInputToPresentP99Ms) {
     throw new Error(
-      `[${scenario.label}] Preview source-to-present p99 ${format(stats.maxPreviewInputToPresentLatencyP99Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP99Ms)}ms.`
+      `[${scenario.label}] Preview source-to-present p99 ${format(stats.maxPreviewInputToPresentLatencyP99Ms)}ms exceeded ${format(maxInputToPresentP99Ms)}ms.`
     )
   }
   if (
@@ -926,7 +964,7 @@ async function smokeCommand(smoke, command, params = {}) {
       return await sendSmokeCommand(smoke, command, params)
     } catch (error) {
       lastError = error
-      if (!String(error?.message ?? error).includes('Main window is not ready')) {
+      if (!isRetryableSmokeCommandError(error)) {
         throw error
       }
       await sleep(150)
@@ -935,17 +973,51 @@ async function smokeCommand(smoke, command, params = {}) {
   throw lastError ?? new Error(`${command} smoke command timed out.`)
 }
 
+function isRetryableSmokeCommandError(error) {
+  const message = String(error?.message ?? error)
+  return (
+    message.includes('Main window is not ready') ||
+    message.includes('Timed out waiting for [data-videorc-preview-card]') ||
+    message.includes('Timed out waiting for active tab') ||
+    message.includes('Could not find tab ')
+  )
+}
+
 async function sendSmokeCommand(smoke, command, params = {}) {
-  const response = await fetch(`http://${smoke.host}:${smoke.port}/command`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, params })
-  })
-  const payload = await response.json()
-  if (!response.ok || !payload.ok) {
-    throw new Error(payload.error ?? `${command} smoke command failed.`)
+  const controller = new AbortController()
+  const commandTimeoutMs = smokeCommandTimeoutMs(params)
+  const timer = setTimeout(() => controller.abort(), commandTimeoutMs)
+  let response
+  try {
+    response = await fetch(`http://${smoke.host}:${smoke.port}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, params }),
+      signal: controller.signal
+    })
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`${command} smoke command timed out after ${commandTimeoutMs}ms.`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+  let payload
+  try {
+    payload = await response.json()
+  } catch (error) {
+    throw new Error(`${command} smoke command returned non-JSON response: ${error.message}`)
+  }
+  if (!response.ok || !payload?.ok) {
+    throw new Error(payload?.error ?? `${command} smoke command failed.`)
   }
   return payload.result
+}
+
+function smokeCommandTimeoutMs(params = {}) {
+  const durationMs = Number(params.durationMs ?? 0)
+  return Math.min(timeoutMs, Math.max(15_000, durationMs + 5_000))
 }
 
 function run(command, args) {

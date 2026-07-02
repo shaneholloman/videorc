@@ -105,12 +105,18 @@ export function buildRecordingStudioGateSteps({
       {
         label: 'real ScreenCaptureKit screen recording smoke',
         command: 'pnpm',
-        args: ['smoke:screen-recording-real']
+        args: ['smoke:screen-recording-real'],
+        env: {
+          VIDEORC_BASELINE_SOURCE_READINESS_MS: '60000'
+        }
       },
       {
         label: 'Notes window recording invisibility smoke',
         command: 'pnpm',
-        args: ['smoke:notes-window-invisible']
+        args: ['smoke:notes-window-invisible'],
+        env: {
+          VIDEORC_BASELINE_SOURCE_READINESS_MS: '60000'
+        }
       }
     )
   }

@@ -133,6 +133,12 @@ pub struct CaptionChunkRecord {
     pub text: String,
     /// Word timing RELATIVE TO THE CHUNK (add offset_seconds for absolute).
     pub segments: Vec<CaptionSegment>,
+    /// Which capture pipeline (recording) this transcript belongs to. The
+    /// caption session outlives recordings; transcripts that land AFTER a new
+    /// recording started must never leak into it (previous video's last words
+    /// at t≈0 of the next). Stamped by the session, filtered at finalize.
+    #[serde(skip_serializing)]
+    pub capture_epoch: u64,
 }
 
 /// A frame timestamp lower than the last one means the capture pipeline
@@ -311,7 +317,32 @@ fn format_srt_timestamp(seconds: f64) -> String {
 }
 
 pub async fn drain_caption_chunks(state: &AppState) -> Vec<CaptionChunkRecord> {
-    std::mem::take(&mut state.captions.lock().await.chunks)
+    let mut coordinator = state.captions.lock().await;
+    let epoch = coordinator.capture_epoch;
+    let drained = std::mem::take(&mut coordinator.chunks);
+    drop(coordinator);
+    filter_caption_records_for_epoch(drained, epoch)
+}
+
+/// Keep only records from the capture epoch being finalized; stragglers from
+/// a previous recording (uploads/finals that landed after the new one began)
+/// are dropped — never attributed to the wrong video.
+pub fn filter_caption_records_for_epoch(
+    records: Vec<CaptionChunkRecord>,
+    epoch: u64,
+) -> Vec<CaptionChunkRecord> {
+    let before = records.len();
+    let kept: Vec<CaptionChunkRecord> = records
+        .into_iter()
+        .filter(|record| record.capture_epoch == epoch)
+        .collect();
+    if kept.len() != before {
+        tracing::info!(
+            "Dropped {} caption record(s) from a previous recording.",
+            before - kept.len()
+        );
+    }
+    kept
 }
 
 /// Session-stop hook (recording finalize path): drain the chunks recorded
@@ -802,9 +833,13 @@ pub struct CaptionsCoordinator {
     task: Option<tokio::task::JoinHandle<()>>,
     stop: Option<Arc<AtomicBool>>,
     status: Option<CaptionsStatus>,
-    /// Transcribed chunks awaiting the post-recording pass (drained at
-    /// session stop; cleared when a new capture pipeline starts).
+    /// Transcribed chunks awaiting the post-recording pass (drained +
+    /// epoch-filtered at session stop).
     chunks: Vec<CaptionChunkRecord>,
+    /// Bumped by the caption session on every capture-pipeline restart
+    /// (frame-timestamp regression); finalize keeps only current-epoch
+    /// records.
+    capture_epoch: u64,
     /// Styling knobs + output size captured at session start for the burned copy.
     style: (CaptionOverlayPosition, CaptionTextSize),
     output_size: (u32, u32),
@@ -995,6 +1030,7 @@ async fn run_realtime_caption_session(session: &mut CaptionSession) -> RealtimeO
     let mut last_frame_timestamp: Option<u64> = None;
     let mut unreported_ms: f64 = 0.0;
     let mut degraded = false;
+    let mut capture_epoch = session.state.captions.lock().await.capture_epoch;
 
     'reconnect: loop {
         if session.stop.load(Ordering::Relaxed) {
@@ -1075,7 +1111,11 @@ async fn run_realtime_caption_session(session: &mut CaptionSession) -> RealtimeO
                 "turn_detection": { "type": "server_vad" }
             }
         });
-        if ws.send(Message::Text(configure.to_string().into())).await.is_err() {
+        if ws
+            .send(Message::Text(configure.to_string().into()))
+            .await
+            .is_err()
+        {
             continue 'reconnect;
         }
 
@@ -1109,7 +1149,10 @@ async fn run_realtime_caption_session(session: &mut CaptionSession) -> RealtimeO
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|since| since.as_secs())
                     .unwrap_or(0);
-                expires_at.saturating_sub(now).saturating_sub(60).clamp(30, 600)
+                expires_at
+                    .saturating_sub(now)
+                    .saturating_sub(60)
+                    .clamp(30, 600)
             })
             .unwrap_or(240);
         let refresh_at = tokio::time::Instant::now() + std::time::Duration::from_secs(refresh_in);
@@ -1131,8 +1174,14 @@ async fn run_realtime_caption_session(session: &mut CaptionSession) -> RealtimeO
                         return RealtimeOutcome::Ended;
                     };
                     if caption_anchor_should_reset(last_frame_timestamp, frame.timestamp_micros) {
+                        // New recording: re-anchor, forget in-flight
+                        // utterances (their transcripts belong to the
+                        // previous video), and advance the capture epoch.
                         ms_at_anchor = ms_sent;
                         items.clear();
+                        let mut coordinator = session.state.captions.lock().await;
+                        coordinator.capture_epoch += 1;
+                        capture_epoch = coordinator.capture_epoch;
                     }
                     last_frame_timestamp = Some(frame.timestamp_micros);
                     let mono = downmix_resample_to_16k_mono(
@@ -1175,6 +1224,7 @@ async fn run_realtime_caption_session(session: &mut CaptionSession) -> RealtimeO
                         &mut seq,
                         ms_at_anchor,
                         ms_sent,
+                        capture_epoch,
                     )
                     .await;
                 }
@@ -1244,8 +1294,12 @@ async fn handle_realtime_event(
     seq: &mut u64,
     ms_at_anchor: f64,
     ms_sent: f64,
+    capture_epoch: u64,
 ) {
-    let event_type = event.get("type").and_then(|value| value.as_str()).unwrap_or("");
+    let event_type = event
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     let raw_type = event
         .get("rawType")
         .and_then(|value| value.as_str())
@@ -1290,8 +1344,11 @@ async fn handle_realtime_event(
             if item_id.is_empty() || transcript.is_empty() {
                 return;
             }
-            let offset = ((ms_sent - ms_at_anchor) / 1000.0).max(0.0);
-            let (item_seq, _) = item_entry(items, seq, item_id, offset);
+            // Unknown item = its speech started before a recording boundary
+            // (we cleared it) — the transcript belongs to the previous video.
+            let Some(&(item_seq, _)) = items.get(item_id) else {
+                return;
+            };
             session.state.emit_event(
                 "captions.update",
                 CaptionsUpdate {
@@ -1319,8 +1376,10 @@ async fn handle_realtime_event(
             if item_id.is_empty() || transcript.is_empty() {
                 return;
             }
-            let fallback_offset = ((ms_sent - ms_at_anchor) / 1000.0).max(0.0);
-            let (item_seq, offset) = item_entry(items, seq, item_id, fallback_offset);
+            // Same boundary rule as partials: cleared items never resurrect.
+            let Some(&(item_seq, offset)) = items.get(item_id) else {
+                return;
+            };
             let end = ((ms_sent - ms_at_anchor) / 1000.0).max(offset + 0.5);
             session
                 .state
@@ -1334,6 +1393,7 @@ async fn handle_realtime_event(
                     duration_seconds: (end - offset).clamp(0.5, 30.0),
                     text: transcript.to_string(),
                     segments: Vec::new(),
+                    capture_epoch,
                 });
             session.state.emit_event(
                 "captions.update",
@@ -1355,6 +1415,7 @@ async fn run_chunked_caption_session(session: &mut CaptionSession) -> bool {
     let chunk_samples = (f64::from(CAPTION_SAMPLE_RATE) * CAPTION_CHUNK_SECONDS) as usize;
     let mut pcm: Vec<i16> = Vec::with_capacity(chunk_samples * 2);
     let mut seq = 0_u64;
+    let mut capture_epoch = session.state.captions.lock().await.capture_epoch;
     // Recording-epoch anchoring for the post pass: mono samples consumed since
     // the current capture pipeline started (frames are already epoch-trimmed).
     let mut consumed_samples: u64 = 0;
@@ -1374,11 +1435,15 @@ async fn run_chunked_caption_session(session: &mut CaptionSession) -> bool {
             break; // tap removed
         };
         if caption_anchor_should_reset(last_frame_timestamp, frame.timestamp_micros) {
-            // New capture pipeline (new recording): drop cross-session audio
-            // and restart the offset anchor. Chunks already recorded belong to
-            // the previous recording and stay until its stop path drains them.
+            // New capture pipeline (new recording): drop cross-session audio,
+            // restart the offset anchor, and advance the capture epoch so any
+            // still-in-flight transcripts from the previous recording can
+            // never be attributed to this one.
             pcm.clear();
             consumed_samples = 0;
+            let mut coordinator = session.state.captions.lock().await;
+            coordinator.capture_epoch += 1;
+            capture_epoch = coordinator.capture_epoch;
         }
         last_frame_timestamp = Some(frame.timestamp_micros);
         pcm.extend(downmix_resample_to_16k_mono(
@@ -1446,6 +1511,7 @@ async fn run_chunked_caption_session(session: &mut CaptionSession) -> bool {
                             duration_seconds: CAPTION_CHUNK_SECONDS,
                             text: response.text.trim().to_string(),
                             segments: response.segments.clone(),
+                            capture_epoch,
                         });
                     session.state.emit_event(
                         "captions.update",
@@ -1619,6 +1685,18 @@ mod tests {
     }
 
     #[test]
+    fn epoch_filter_drops_records_from_previous_recordings() {
+        let mut previous = chunk(1, 118.0, "last words of the old video", &[]);
+        previous.capture_epoch = 3;
+        let mut current = chunk(2, 0.4, "first words of the new video", &[]);
+        current.capture_epoch = 4;
+        let kept = filter_caption_records_for_epoch(vec![previous, current], 4);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].text, "first words of the new video");
+        assert_eq!(filter_caption_records_for_epoch(Vec::new(), 7), Vec::new());
+    }
+
+    #[test]
     fn caption_backoff_doubles_to_a_thirty_second_cap() {
         use std::time::Duration;
         let first = next_caption_backoff(None);
@@ -1659,6 +1737,7 @@ mod tests {
                     end_second: *end,
                 })
                 .collect(),
+            capture_epoch: 0,
         }
     }
 
@@ -1709,7 +1788,12 @@ mod tests {
     #[test]
     fn concat_track_alternates_gaps_and_cues_with_exact_durations() {
         let cues = caption_cues(&[
-            chunk(3, 3.0, "hello there", &[("hello", 0.10, 0.60), ("there", 0.70, 1.20)]),
+            chunk(
+                3,
+                3.0,
+                "hello there",
+                &[("hello", 0.10, 0.60), ("there", 0.70, 1.20)],
+            ),
             chunk(7, 9.0, "again", &[("again", 0.05, 0.80)]),
         ]);
         let list = build_caption_track_concat(&cues, 0);

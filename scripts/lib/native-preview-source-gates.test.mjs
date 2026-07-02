@@ -88,6 +88,21 @@ describe('assertSourceCompleteCompositorHealthy', () => {
     )
   })
 
+  it('passes a source-complete synthetic-source run without live source imports', () => {
+    const stats = healthyStats()
+    stats.maxCompositorScreenSourceIosurfaceImportFrames = 0
+
+    assert.doesNotThrow(() =>
+      assertSourceCompleteCompositorHealthy({
+        scenarioLabel: 'source-complete-synthetic',
+        sourceComplete: true,
+        allowSyntheticSourceOnly: true,
+        requiredLiveSourceKinds: [],
+        stats
+      })
+    )
+  })
+
   it('fails source-complete runs with source import failures', () => {
     const stats = healthyStats()
     stats.maxCompositorSourceImportFailures = 1

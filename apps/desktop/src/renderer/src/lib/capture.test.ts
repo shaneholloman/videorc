@@ -1012,8 +1012,10 @@ describe('normalizeCaptionsCaptureSettings', () => {
         textSize: 'l'
       })
     ).toEqual({ burnTarget: 'recording', position: 'top', textSize: 'l' })
-    expect(
-      normalizeCaptionsCaptureSettings({ burnTarget: 'sideways' as never })
-    ).toEqual({ burnTarget: 'off', position: 'bottom', textSize: 'm' })
+    expect(normalizeCaptionsCaptureSettings({ burnTarget: 'sideways' as never })).toEqual({
+      burnTarget: 'off',
+      position: 'bottom',
+      textSize: 'm'
+    })
   })
 })

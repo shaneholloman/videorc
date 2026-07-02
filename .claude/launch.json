@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "caption-design-bench",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "4173", "--directory", "/private/tmp/claude-501/-Users-orcdev-projects-videogre/6c925837-10a8-4c1e-864f-eda8edce3857/scratchpad/caption-design"],
+      "port": 4173
+    }
+  ]
+}

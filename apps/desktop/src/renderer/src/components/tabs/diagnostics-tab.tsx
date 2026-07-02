@@ -412,6 +412,22 @@ export function DiagnosticsTab(): ReactElement {
               value={formatMs(diagnosticStats.encoderBridgeWriterActiveP95Ms)}
             />
             <DiagnosticMetric
+              label="FIFO enqueue p95"
+              value={formatMs(diagnosticStats.encoderBridgeVideoToolboxFifoEnqueueP95Ms)}
+            />
+            <DiagnosticMetric
+              label="FIFO enqueue max"
+              value={formatMs(diagnosticStats.encoderBridgeVideoToolboxFifoEnqueueMaxMs)}
+            />
+            <DiagnosticMetric
+              label="Record writer p95"
+              value={formatMs(diagnosticStats.encoderBridgeRecordingWriterLoopP95Ms)}
+            />
+            <DiagnosticMetric
+              label="Stream writer p95"
+              value={formatMs(diagnosticStats.encoderBridgeStreamWriterLoopP95Ms)}
+            />
+            <DiagnosticMetric
               label="Deadline lag"
               value={`${formatMs(diagnosticStats.encoderBridgeDeadlineLagP95Ms)} / ${diagnosticStats.encoderBridgeLateDeadlineTicks}`}
             />

@@ -427,9 +427,7 @@ export function defaultCaptionsCaptureSettings(): CaptionsCaptureSettings {
 const CAPTION_BURN_TARGETS: CaptionBurnTarget[] = ['off', 'stream', 'recording', 'both']
 
 export function normalizeCaptionsCaptureSettings(
-  loaded:
-    | (Partial<CaptionsCaptureSettings> & { burnInEnabled?: boolean })
-    | undefined
+  loaded: (Partial<CaptionsCaptureSettings> & { burnInEnabled?: boolean }) | undefined
 ): CaptionsCaptureSettings {
   const defaults = defaultCaptionsCaptureSettings()
   // Pre-R1 configs carried a boolean; true meant the stream leg.

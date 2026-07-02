@@ -64,6 +64,8 @@ test('native preview diagnostics summarize only steady active recording samples 
         encoderBridgeCompositorWaitP95Ms: 2.4,
         encoderBridgeVideoToolboxSubmitP95Ms: 1.2,
         encoderBridgeVideoToolboxFifoWriteP95Ms: 0.8,
+        encoderBridgeVideoToolboxFifoEnqueueP95Ms: 3.4,
+        encoderBridgeVideoToolboxFifoEnqueueMaxMs: 8.9,
         encoderBridgeWriterLoopP95Ms: 34.5,
         encoderBridgeWriterSleepP95Ms: 24.0,
         encoderBridgeWriterActiveP95Ms: 10.5,
@@ -168,6 +170,8 @@ test('native preview diagnostics summarize only steady active recording samples 
   assert.equal(summary.maxEncoderBridgeCompositorWaitP95Ms, 2.4)
   assert.equal(summary.maxEncoderBridgeVideoToolboxSubmitP95Ms, 1.2)
   assert.equal(summary.maxEncoderBridgeVideoToolboxFifoWriteP95Ms, 0.8)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxFifoEnqueueP95Ms, 3.4)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxFifoEnqueueMaxMs, 8.9)
   assert.equal(summary.maxEncoderBridgeWriterLoopP95Ms, 34.5)
   assert.equal(summary.maxEncoderBridgeWriterSleepP95Ms, 24.0)
   assert.equal(summary.maxEncoderBridgeWriterActiveP95Ms, 10.5)
@@ -193,6 +197,35 @@ test('native preview diagnostics summarize only steady active recording samples 
   assert.equal(summary.steadySurfaceSamples, 1)
   assert.equal(summary.measuredSurfaceSamples, 1)
   assert.equal(summary.maxActiveFfmpegProcesses, 1)
+})
+
+test('native preview diagnostics include record+stream samples', () => {
+  const summary = summarizeNativePreviewRecordingDiagnostics(
+    [
+      {
+        activeOutputMode: 'record+stream',
+        receivedAt: 3_500,
+        captureFps: 29.8,
+        renderFps: 30.1,
+        encoderSpeed: 1.0,
+        previewTransport: 'electron-proof-surface',
+        previewSurfaceBacking: 'electron-browser-window',
+        encoderBridgeVideoToolboxOutputFrames: 72
+      },
+      {
+        activeOutputMode: 'stream',
+        receivedAt: 3_600,
+        captureFps: 1,
+        renderFps: 1,
+        encoderBridgeVideoToolboxOutputFrames: 1_000
+      }
+    ],
+    baseOptions
+  )
+
+  assert.equal(summary.minFps, 29.8)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputFrames, 72)
+  assert.equal(summary.measuredSamples, 1)
 })
 
 test('native preview diagnostics fall back to active samples when warmup hides them all', () => {
@@ -252,6 +285,8 @@ test('native preview diagnostics fall back to active samples when warmup hides t
   assert.equal(summary.maxEncoderBridgeCompositorWaitP95Ms, null)
   assert.equal(summary.maxEncoderBridgeVideoToolboxSubmitP95Ms, null)
   assert.equal(summary.maxEncoderBridgeVideoToolboxFifoWriteP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxFifoEnqueueP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxFifoEnqueueMaxMs, null)
   assert.equal(summary.maxEncoderBridgeWriterLoopP95Ms, null)
   assert.equal(summary.maxEncoderBridgeWriterSleepP95Ms, null)
   assert.equal(summary.maxEncoderBridgeWriterActiveP95Ms, null)

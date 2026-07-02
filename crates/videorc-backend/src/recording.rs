@@ -103,6 +103,7 @@ const CAPTURE_AUDIO_FILTER: &str = "aresample=async=1:first_pts=0";
 const MONO_TO_STEREO_FILTER: &str = "pan=stereo|c0=c0|c1=c0";
 const MICROPHONE_SYNC_OFFSET_MIN_MS: i32 = -1000;
 const MICROPHONE_SYNC_OFFSET_MAX_MS: i32 = 1000;
+const STREAM_OUTPUT_AUDIO_ADVANCE_MS: i32 = 220;
 const MJPEG_BOUNDARY: &[u8] = b"--videorc";
 const MJPEG_HEADER_END: &[u8] = b"\r\n\r\n";
 const PREVIEW_READ_BUFFER_BYTES: usize = 64 * 1024;
@@ -3924,7 +3925,7 @@ fn default_encoder_bridge_video_output_for_outputs(
 ) -> EncoderBridgeVideoOutput {
     #[cfg(target_os = "macos")]
     if stream_enabled {
-        return EncoderBridgeVideoOutput::VideoToolboxH264AnnexB;
+        return EncoderBridgeVideoOutput::VideoToolboxH264MpegTs;
     }
 
     default_encoder_bridge_video_output()
@@ -4015,69 +4016,77 @@ fn bridge_compositor_ffmpeg_args(
     ];
     let input_layout =
         append_bridge_recording_input_args(&mut args, capture, params, fifo_path, video_output);
-    match video_output {
-        EncoderBridgeVideoOutput::RawYuv420p => {
-            args.extend([
-                "-filter_complex".to_string(),
-                bridge_recording_video_filter(input_layout.video_input_index, &params.output.video),
-                "-map".to_string(),
-                "[v_main]".to_string(),
-            ]);
+    let mpegts_plain_stream_output = video_output
+        == EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
+        && !stream_targets.is_empty();
+    if !mpegts_plain_stream_output {
+        match video_output {
+            EncoderBridgeVideoOutput::RawYuv420p => {
+                args.extend([
+                    "-filter_complex".to_string(),
+                    bridge_recording_video_filter(
+                        input_layout.video_input_index,
+                        &params.output.video,
+                    ),
+                    "-map".to_string(),
+                    "[v_main]".to_string(),
+                ]);
+            }
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
+                args.extend([
+                    "-map".to_string(),
+                    format!("{}:v", input_layout.video_input_index),
+                ]);
+            }
         }
-        EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
-        | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
-            args.extend([
-                "-map".to_string(),
-                format!("{}:v", input_layout.video_input_index),
-            ]);
+        append_audio_output_args(&mut args, &input_layout);
+        match video_output {
+            EncoderBridgeVideoOutput::RawYuv420p => {
+                args.extend([
+                    "-r".to_string(),
+                    params.output.video.fps.to_string(),
+                    "-pix_fmt".to_string(),
+                    "yuv420p".to_string(),
+                    // Phase 4: prefer hardware encoding on the shared-compositor path, like OBS and
+                    // the legacy path. Software libx264 ultrafast was a CPU-pressure source under
+                    // real 1080p/1440p load; h264_videotoolbox offloads the encode to the media
+                    // engine. `-allow_sw 1` keeps a software fallback so the encode never fails.
+                    "-c:v".to_string(),
+                    "h264_videotoolbox".to_string(),
+                    "-allow_sw".to_string(),
+                    "1".to_string(),
+                    "-realtime".to_string(),
+                    "1".to_string(),
+                    "-prio_speed".to_string(),
+                    "1".to_string(),
+                    "-b:v".to_string(),
+                    format!("{}k", params.output.video.bitrate_kbps),
+                    "-maxrate".to_string(),
+                    format!("{}k", params.output.video.bitrate_kbps),
+                    "-bufsize".to_string(),
+                    format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
+                    "-g".to_string(),
+                    params.output.video.fps.saturating_mul(2).to_string(),
+                    "-force_key_frames".to_string(),
+                    "expr:gte(t,n_forced*2)".to_string(),
+                    "-flags".to_string(),
+                    "+global_header".to_string(),
+                ]);
+            }
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
+                args.extend(["-c:v".to_string(), "copy".to_string()]);
+            }
         }
+        append_audio_encoding_args(
+            &mut args,
+            &input_layout,
+            &params.audio,
+            !stream_targets.is_empty(),
+        );
+        args.push("-shortest".to_string());
     }
-    append_audio_output_args(&mut args, &input_layout);
-    match video_output {
-        EncoderBridgeVideoOutput::RawYuv420p => {
-            args.extend([
-                "-r".to_string(),
-                params.output.video.fps.to_string(),
-                "-pix_fmt".to_string(),
-                "yuv420p".to_string(),
-                // Phase 4: prefer hardware encoding on the shared-compositor path, like OBS and
-                // the legacy path. Software libx264 ultrafast was a CPU-pressure source under
-                // real 1080p/1440p load; h264_videotoolbox offloads the encode to the media
-                // engine. `-allow_sw 1` keeps a software fallback so the encode never fails.
-                "-c:v".to_string(),
-                "h264_videotoolbox".to_string(),
-                "-allow_sw".to_string(),
-                "1".to_string(),
-                "-realtime".to_string(),
-                "1".to_string(),
-                "-prio_speed".to_string(),
-                "1".to_string(),
-                "-b:v".to_string(),
-                format!("{}k", params.output.video.bitrate_kbps),
-                "-maxrate".to_string(),
-                format!("{}k", params.output.video.bitrate_kbps),
-                "-bufsize".to_string(),
-                format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
-                "-g".to_string(),
-                params.output.video.fps.saturating_mul(2).to_string(),
-                "-force_key_frames".to_string(),
-                "expr:gte(t,n_forced*2)".to_string(),
-                "-flags".to_string(),
-                "+global_header".to_string(),
-            ]);
-        }
-        EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
-        | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
-            args.extend(["-c:v".to_string(), "copy".to_string()]);
-        }
-    }
-    append_audio_encoding_args(
-        &mut args,
-        &input_layout,
-        &params.audio,
-        !stream_targets.is_empty(),
-    );
-    args.push("-shortest".to_string());
 
     let stream_legs = stream_targets
         .iter()
@@ -4091,6 +4100,18 @@ fn bridge_compositor_ffmpeg_args(
 
     match (output_path, stream_targets) {
         (Some(path), []) => args.push(path.display().to_string()),
+        (Some(path), _) if video_output == EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
+            append_bridge_copy_file_output(&mut args, &input_layout, &params.audio, true, path);
+            for target in stream_targets {
+                append_bridge_copy_flv_output(
+                    &mut args,
+                    &input_layout,
+                    &params.audio,
+                    target,
+                    false,
+                );
+            }
+        }
         (Some(path), _) => {
             let mut legs = vec![format!(
                 "[f=matroska:onfail=abort]{}",
@@ -4098,6 +4119,17 @@ fn bridge_compositor_ffmpeg_args(
             )];
             legs.extend(stream_legs);
             args.extend(tee_output_args(legs.join("|")));
+        }
+        (None, targets) if video_output == EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
+            for target in targets {
+                append_bridge_copy_flv_output(
+                    &mut args,
+                    &input_layout,
+                    &params.audio,
+                    target,
+                    false,
+                );
+            }
         }
         (None, [single]) => {
             args.extend([
@@ -4219,27 +4251,27 @@ fn bridge_compositor_split_output_ffmpeg_args(
                 screen_overlay_input_index: None,
                 audio_inputs: input_layout.audio_inputs.clone(),
             };
-            args.extend(["-map".to_string(), format!("{video_input_index}:v")]);
-            append_audio_output_args(&mut args, &stream_input_layout);
-            args.extend(["-c:v".to_string(), "copy".to_string()]);
-            append_audio_encoding_args(&mut args, &stream_input_layout, &params.audio, true);
-            args.push("-shortest".to_string());
-            args.extend([
-                "-flvflags".to_string(),
-                "no_duration_filesize".to_string(),
-                "-f".to_string(),
-                "flv".to_string(),
-                target.url.clone(),
-            ]);
+            append_bridge_copy_flv_output(
+                &mut args,
+                &stream_input_layout,
+                &params.audio,
+                target,
+                true,
+            );
         }
         return Ok(args);
     }
 
-    args.extend(["-map".to_string(), format!("{stream_video_input_index}:v")]);
-    append_audio_output_args(&mut args, &stream_input_layout);
-    args.extend(["-c:v".to_string(), "copy".to_string()]);
-    append_audio_encoding_args(&mut args, &stream_input_layout, &params.audio, true);
-    args.push("-shortest".to_string());
+    let mpegts_plain_stream = recording_video_output
+        == EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
+        && !stream_targets.is_empty();
+    if !mpegts_plain_stream {
+        args.extend(["-map".to_string(), format!("{stream_video_input_index}:v")]);
+        append_audio_output_args(&mut args, &stream_input_layout);
+        args.extend(["-c:v".to_string(), "copy".to_string()]);
+        append_audio_encoding_args(&mut args, &stream_input_layout, &params.audio, true);
+        args.push("-shortest".to_string());
+    }
 
     let stream_legs = stream_targets
         .iter()
@@ -4251,6 +4283,17 @@ fn bridge_compositor_split_output_ffmpeg_args(
         })
         .collect::<Vec<_>>();
     match stream_targets {
+        _ if recording_video_output == EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
+            for target in stream_targets {
+                append_bridge_copy_flv_output(
+                    &mut args,
+                    &stream_input_layout,
+                    &params.audio,
+                    target,
+                    true,
+                );
+            }
+        }
         [single] => {
             args.extend([
                 "-flvflags".to_string(),
@@ -4397,6 +4440,66 @@ fn append_bridge_encoded_video_input_args(
     }
     *next_input_index += 1;
     Ok(input_index)
+}
+
+fn append_bridge_copy_file_output(
+    args: &mut Vec<String>,
+    input_layout: &InputLayout,
+    audio: &AudioSettings,
+    streaming_audio: bool,
+    path: &Path,
+) {
+    append_bridge_copy_output_args(args, input_layout, audio, streaming_audio);
+    args.push(path.display().to_string());
+}
+
+fn append_bridge_copy_flv_output(
+    args: &mut Vec<String>,
+    input_layout: &InputLayout,
+    audio: &AudioSettings,
+    target: &StreamTarget,
+    advance_audio: bool,
+) {
+    let stream_audio;
+    let audio = if advance_audio {
+        stream_audio = stream_output_audio_settings(audio);
+        &stream_audio
+    } else {
+        audio
+    };
+    append_bridge_copy_output_args(args, input_layout, audio, true);
+    args.extend([
+        "-flvflags".to_string(),
+        "no_duration_filesize".to_string(),
+        "-f".to_string(),
+        "flv".to_string(),
+        target.url.clone(),
+    ]);
+}
+
+fn append_bridge_copy_output_args(
+    args: &mut Vec<String>,
+    input_layout: &InputLayout,
+    audio: &AudioSettings,
+    streaming_audio: bool,
+) {
+    args.extend([
+        "-map".to_string(),
+        format!("{}:v", input_layout.video_input_index),
+    ]);
+    append_audio_output_args(args, input_layout);
+    args.extend(["-c:v".to_string(), "copy".to_string()]);
+    append_audio_encoding_args(args, input_layout, audio, streaming_audio);
+    args.push("-shortest".to_string());
+}
+
+fn stream_output_audio_settings(audio: &AudioSettings) -> AudioSettings {
+    let mut adjusted = audio.clone();
+    adjusted.microphone_sync_offset_ms = adjusted
+        .microphone_sync_offset_ms
+        .saturating_sub(STREAM_OUTPUT_AUDIO_ADVANCE_MS)
+        .clamp(MICROPHONE_SYNC_OFFSET_MIN_MS, MICROPHONE_SYNC_OFFSET_MAX_MS);
+    adjusted
 }
 
 fn append_bridge_audio_input_args(
@@ -8012,7 +8115,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             video_output,
-            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
         );
         #[cfg(not(target_os = "macos"))]
         assert_eq!(video_output, EncoderBridgeVideoOutput::RawYuv420p);
@@ -8030,20 +8133,18 @@ mod tests {
             assert_eq!(arg_value(&args, "-c:v"), Some("copy"));
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-f"),
-                Some("h264")
+                Some("mpegts")
             );
-            assert_eq!(
-                input_arg_value(
-                    &args,
-                    &fifo_path.display().to_string(),
-                    "-use_wallclock_as_timestamps"
-                ),
-                Some("1")
-            );
-            assert_eq!(
-                input_arg_value(&args, &fifo_path.display().to_string(), "-framerate"),
-                Some("30")
-            );
+            assert!(!input_has_arg(
+                &args,
+                &fifo_path.display().to_string(),
+                "-use_wallclock_as_timestamps"
+            ));
+            assert!(!input_has_arg(
+                &args,
+                &fifo_path.display().to_string(),
+                "-framerate"
+            ));
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-pix_fmt"),
                 None
@@ -8095,21 +8196,42 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             video_output,
-            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
         );
         #[cfg(not(target_os = "macos"))]
         assert_eq!(video_output, EncoderBridgeVideoOutput::RawYuv420p);
-        assert!(args.contains(&"tee".to_string()));
-        let tee = args.iter().find(|arg| arg.contains("[f=flv")).unwrap();
-        assert!(!tee.contains("[f=matroska"));
-        assert_eq!(tee.matches("[f=flv").count(), 2);
-        assert!(tee.contains("rtmp://a.rtmp.youtube.com/live2/yt"));
-        assert!(tee.contains("rtmp://live.twitch.tv/app/tw"));
-        assert!(
-            args.windows(2)
-                .any(|window| window[0] == "-use_fifo" && window[1] == "1"),
-            "stream-only bridge tee must isolate slaves with a fifo: {args:?}"
-        );
+        #[cfg(target_os = "macos")]
+        {
+            assert!(!args.contains(&"tee".to_string()));
+            assert_eq!(
+                args.windows(2)
+                    .filter(|window| window[0] == "-f" && window[1] == "flv")
+                    .count(),
+                2
+            );
+            assert!(args.contains(&"rtmp://a.rtmp.youtube.com/live2/yt".to_string()));
+            assert!(args.contains(&"rtmp://live.twitch.tv/app/tw".to_string()));
+            assert!(
+                !args
+                    .windows(2)
+                    .any(|window| window[0] == "-use_fifo" && window[1] == "1"),
+                "timestamped MPEG-TS stream outputs avoid tee tag propagation: {args:?}"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(args.contains(&"tee".to_string()));
+            let tee = args.iter().find(|arg| arg.contains("[f=flv")).unwrap();
+            assert!(!tee.contains("[f=matroska"));
+            assert_eq!(tee.matches("[f=flv").count(), 2);
+            assert!(tee.contains("rtmp://a.rtmp.youtube.com/live2/yt"));
+            assert!(tee.contains("rtmp://live.twitch.tv/app/tw"));
+            assert!(
+                args.windows(2)
+                    .any(|window| window[0] == "-use_fifo" && window[1] == "1"),
+                "stream-only bridge tee must isolate slaves with a fifo: {args:?}"
+            );
+        }
         assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
         #[cfg(target_os = "macos")]
         {
@@ -8117,8 +8239,13 @@ mod tests {
             assert_eq!(arg_value(&args, "-filter_complex"), None);
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-f"),
-                Some("h264")
+                Some("mpegts")
             );
+            assert!(!input_has_arg(
+                &args,
+                &fifo_path.display().to_string(),
+                "-use_wallclock_as_timestamps"
+            ));
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-pix_fmt"),
                 None
@@ -8170,16 +8297,26 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             video_output,
-            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
         );
         #[cfg(not(target_os = "macos"))]
         assert_eq!(video_output, EncoderBridgeVideoOutput::RawYuv420p);
-        assert!(args.contains(&"tee".to_string()));
-        let tee = args.iter().find(|arg| arg.contains("[f=matroska")).unwrap();
-        assert!(tee.contains("[f=matroska:onfail=abort]/tmp/videorc-bridge-record-stream.mkv"));
-        assert_eq!(tee.matches("[f=flv").count(), 2);
-        assert!(tee.contains("rtmp://a.rtmp.youtube.com/live2/yt"));
-        assert!(tee.contains("rtmp://live.twitch.tv/app/tw"));
+        #[cfg(target_os = "macos")]
+        {
+            assert!(!args.contains(&"tee".to_string()));
+            assert!(args.contains(&"/tmp/videorc-bridge-record-stream.mkv".to_string()));
+            assert!(args.contains(&"rtmp://a.rtmp.youtube.com/live2/yt".to_string()));
+            assert!(args.contains(&"rtmp://live.twitch.tv/app/tw".to_string()));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(args.contains(&"tee".to_string()));
+            let tee = args.iter().find(|arg| arg.contains("[f=matroska")).unwrap();
+            assert!(tee.contains("[f=matroska:onfail=abort]/tmp/videorc-bridge-record-stream.mkv"));
+            assert_eq!(tee.matches("[f=flv").count(), 2);
+            assert!(tee.contains("rtmp://a.rtmp.youtube.com/live2/yt"));
+            assert!(tee.contains("rtmp://live.twitch.tv/app/tw"));
+        }
         assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
         assert!(args.iter().any(|arg| arg == "-shortest"));
         assert!(!args.iter().any(|arg| arg == "[preview]"));
@@ -8189,8 +8326,13 @@ mod tests {
             assert_eq!(arg_value(&args, "-filter_complex"), None);
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-f"),
-                Some("h264")
+                Some("mpegts")
             );
+            assert!(!input_has_arg(
+                &args,
+                &fifo_path.display().to_string(),
+                "-use_wallclock_as_timestamps"
+            ));
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-pix_fmt"),
                 None
@@ -8529,7 +8671,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             select_encoder_bridge_video_output(None, true, true),
-            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
         );
         #[cfg(not(target_os = "macos"))]
         assert_eq!(
@@ -8543,7 +8685,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             select_encoder_bridge_video_output(None, false, true),
-            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
         );
         #[cfg(not(target_os = "macos"))]
         assert_eq!(
@@ -9440,6 +9582,31 @@ mod tests {
         assert_eq!(
             arg_value(&trimmed, "-af"),
             Some("atrim=start=0.250,asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0")
+        );
+    }
+
+    #[test]
+    fn stream_output_audio_settings_apply_stream_only_egress_advance() {
+        let audio = AudioSettings::default();
+        let adjusted = stream_output_audio_settings(&audio);
+        assert_eq!(audio.microphone_sync_offset_ms, 0);
+        assert_eq!(
+            adjusted.microphone_sync_offset_ms,
+            -STREAM_OUTPUT_AUDIO_ADVANCE_MS
+        );
+
+        let mut tuned = AudioSettings::default();
+        tuned.microphone_sync_offset_ms = 80;
+        assert_eq!(
+            stream_output_audio_settings(&tuned).microphone_sync_offset_ms,
+            80 - STREAM_OUTPUT_AUDIO_ADVANCE_MS
+        );
+
+        let mut near_min = AudioSettings::default();
+        near_min.microphone_sync_offset_ms = MICROPHONE_SYNC_OFFSET_MIN_MS + 10;
+        assert_eq!(
+            stream_output_audio_settings(&near_min).microphone_sync_offset_ms,
+            MICROPHONE_SYNC_OFFSET_MIN_MS
         );
     }
 

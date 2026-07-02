@@ -2097,7 +2097,12 @@ fn try_gpu_compose(
         return Err("no visible compositor sources".to_string());
     }
     if let Some(overlay) = inputs.caption_overlay {
-        push_caption_overlay_gpu_source(&mut prepared_sources, overlay, inputs.width, inputs.height);
+        push_caption_overlay_gpu_source(
+            &mut prepared_sources,
+            overlay,
+            inputs.width,
+            inputs.height,
+        );
     }
     let sources = prepared_sources
         .iter()

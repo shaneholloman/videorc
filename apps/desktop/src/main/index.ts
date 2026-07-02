@@ -270,6 +270,9 @@ const remoteDebugPortOverride = process.env.VIDEORC_REMOTE_DEBUG_PORT?.trim()
 if (remoteDebugPortOverride) {
   app.commandLine.appendSwitch('remote-debugging-port', remoteDebugPortOverride)
 }
+if (process.env.VIDEORC_SMOKE_DISABLE_ELECTRON_GPU === '1') {
+  app.commandLine.appendSwitch('disable-gpu')
+}
 // Keep the detached preview window live while it sits behind the main window.
 // A scene change is made in the main window, so the preview is occluded at that
 // moment — and macOS/Chromium stops compositing a fully-occluded window, which

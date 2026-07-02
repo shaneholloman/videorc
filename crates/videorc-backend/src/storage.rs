@@ -1362,10 +1362,10 @@ fn latest_quality_status_for_path_locked(
     file_path: &str,
 ) -> Result<Option<(String, GateStatus)>> {
     let mut stmt = conn.prepare(
-        "SELECT outcome_json, reason, updated_at
+        "SELECT outcome_json, reason, updated_at, status
          FROM repair_jobs
          WHERE file_path = ?1
-           AND status = 'completed'
+           AND status IN ('completed', 'running')
            AND outcome_json IS NOT NULL
          ORDER BY updated_at DESC, created_at DESC",
     )?;
@@ -1374,13 +1374,22 @@ fn latest_quality_status_for_path_locked(
             row.get::<_, String>(0)?,
             row.get::<_, Option<String>>(1)?,
             row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
 
     for row in rows {
-        let (outcome_json, reason, updated_at) = row?;
+        let (outcome_json, reason, updated_at, job_status) = row?;
         if let Ok(status) = serde_json::from_str::<GateStatus>(&outcome_json) {
             if reason.as_deref().is_some_and(|value| !value.is_empty())
+                && matches!(
+                    status,
+                    GateStatus::Ready { .. } | GateStatus::Repaired { .. }
+                )
+            {
+                continue;
+            }
+            if job_status == "running"
                 && matches!(
                     status,
                     GateStatus::Ready { .. } | GateStatus::Repaired { .. }
@@ -1967,6 +1976,29 @@ mod tests {
             })
         );
 
+        let mut running_fast_gate = RepairJob::pending(
+            "job-running-fast-not-100".to_string(),
+            "/tmp/videorc-test.mp4".to_string(),
+            &expectations,
+            "t0".to_string(),
+        );
+        running_fast_gate.mark_running("t3".to_string());
+        running_fast_gate.outcome = serde_json::to_value(&GateStatus::NotHundredPercent {
+            path: "/tmp/videorc-test.mp4".to_string(),
+            reasons: vec!["Only 8fps observed while live.".to_string()],
+        })
+        .ok();
+        database.upsert_repair_job(&running_fast_gate).unwrap();
+
+        let sessions = database.list_sessions(1).unwrap();
+        assert_eq!(
+            sessions[0].quality_status,
+            Some(GateStatus::NotHundredPercent {
+                path: "/tmp/videorc-test.mp4".to_string(),
+                reasons: vec!["Only 8fps observed while live.".to_string()],
+            })
+        );
+
         let mut stale_repair_outcome = RepairJob::pending(
             "job-stale-repaired".to_string(),
             "/tmp/videorc-test.mp4".to_string(),
@@ -1989,7 +2021,7 @@ mod tests {
             sessions[0].quality_status,
             Some(GateStatus::NotHundredPercent {
                 path: "/tmp/videorc-test.mp4".to_string(),
-                reasons: vec!["Frozen video segment detected.".to_string()],
+                reasons: vec!["Only 8fps observed while live.".to_string()],
             })
         );
 

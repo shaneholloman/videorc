@@ -56,7 +56,9 @@ describe('buildRecordingStudioGateSteps', () => {
     assert.equal(steps.at(-3).env.VIDEORC_PREVIEW_SURFACE_MAX_INTERVAL_P95_MS, '120')
     assert.equal(steps.at(-3).env.VIDEORC_PREVIEW_SURFACE_MAX_INPUT_TO_PRESENT_P95_MS, '100')
     assert.deepEqual(steps.at(-2).args, ['smoke:screen-recording-real'])
+    assert.equal(steps.at(-2).env.VIDEORC_BASELINE_SOURCE_READINESS_MS, '60000')
     assert.deepEqual(steps.at(-1).args, ['smoke:notes-window-invisible'])
+    assert.equal(steps.at(-1).env.VIDEORC_BASELINE_SOURCE_READINESS_MS, '60000')
   })
 
   it('can include the heavier native preview layout-stress smoke', () => {
@@ -87,6 +89,7 @@ describe('buildRecordingStudioGateSteps', () => {
     assert.match(report, /probe:preview-lifecycle/)
     assert.match(report, /smoke:preview-surface/)
     assert.match(report, /smoke:screen-recording-real/)
+    assert.match(report, /VIDEORC_BASELINE_SOURCE_READINESS_MS=60000/)
     assert.match(report, /smoke:notes-window-invisible/)
     assert.match(report, /VIDEORC_PREVIEW_SURFACE_MAX_INPUT_TO_PRESENT_P95_MS=100/)
     assert.match(report, /VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE=1/)

@@ -376,7 +376,12 @@ function LiveCaptionsSection(): ReactElement {
             variant="outline"
             disabled={locked}
             onValueChange={(value) => {
-              if (value === 'off' || value === 'stream' || value === 'recording' || value === 'both') {
+              if (
+                value === 'off' ||
+                value === 'stream' ||
+                value === 'recording' ||
+                value === 'both'
+              ) {
                 patchCaptions({ burnTarget: value })
               }
             }}

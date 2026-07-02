@@ -37,6 +37,9 @@
 //   VIDEORC_BASELINE_STREAM_TARGET_ID          modern target id (default target platform)
 //   VIDEORC_BASELINE_STREAM_COMPANION=1        add one companion modern target
 //   VIDEORC_BASELINE_STREAM_COMPANION_SERVER_URL / _KEY / _PLATFORM / _ID
+//   VIDEORC_BASELINE_CAPTIONS=1                send caption burn session params
+//   VIDEORC_BASELINE_CAPTION_BURN_TARGET       stream|recording|both|off (default stream)
+//   VIDEORC_BASELINE_CAPTION_OVERLAY_STIMULUS=1 push local caption-overlay PNGs during the session
 //   VIDEORC_SMOKE_OUTPUT_DIR        where recordings + reports land
 //   VIDEORC_BASELINE_SCREEN_ID / _CAMERA_ID / _MIC_ID   force a specific device id
 //   VIDEORC_BASELINE_NO_SCREEN / _NO_CAMERA / _NO_MIC   omit that source
@@ -46,6 +49,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { deflateSync } from 'node:zlib'
 
 import { launchDevApp, stopProcess } from './lib/app-launcher.mjs'
 import { launchAvSyncStimulus, stopAvSyncStimulus } from './lib/av-sync-stimulus.mjs'
@@ -55,12 +59,19 @@ import {
   launchScreenMotionStimulus,
   refreshScreenMotionStimulusVisibility,
   screenMotionStimulusOptionsForSource,
-  stopScreenMotionStimulus,
+  stopScreenMotionStimulus
 } from './lib/screen-motion-stimulus.mjs'
 import { connectBackend, request } from './smoke-recording-session.mjs'
 import { analyzeRecording, writeReports } from './lib/recording-analyzer.mjs'
-import { analyzeStartupResolution, writeStartupReports } from './lib/startup-resolution-analyzer.mjs'
-import { analyzeNotesOverlayArtifact, appendNotesOverlayFailures, formatNotesOverlayArtifactSummary } from './lib/notes-overlay-artifact-gate.mjs'
+import {
+  analyzeStartupResolution,
+  writeStartupReports
+} from './lib/startup-resolution-analyzer.mjs'
+import {
+  analyzeNotesOverlayArtifact,
+  appendNotesOverlayFailures,
+  formatNotesOverlayArtifactSummary
+} from './lib/notes-overlay-artifact-gate.mjs'
 import { DEFAULT_ACCEPTANCE_GATES, evaluateAcceptance } from './lib/acceptance-gate.mjs'
 import { classifyMediaQualityMode } from './lib/media-quality-mode.mjs'
 import { classifyObsParityEvidence } from './lib/obs-parity-evidence.mjs'
@@ -72,7 +83,7 @@ import {
   claimsNativePreview,
   formatTransportHonesty,
   strongestPreviewBacking,
-  strongestPreviewTransport,
+  strongestPreviewTransport
 } from './lib/native-preview-claim.mjs'
 import { createPreviewSurfaceOutputGuard } from './lib/smoke-output-guards.mjs'
 
@@ -83,11 +94,15 @@ const config = {
   fps: Number(process.env.VIDEORC_BASELINE_FPS ?? 30),
   bitrateKbps: Number(process.env.VIDEORC_BASELINE_BITRATE_KBPS ?? 6000),
   timeoutMs: Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 180000),
+  sourceReadinessTimeoutMs: Number(process.env.VIDEORC_BASELINE_SOURCE_READINESS_MS ?? 30_000),
   sampleIntervalMs: Number(process.env.VIDEORC_BASELINE_SAMPLE_MS ?? 2000),
   warmupMs: Number(process.env.VIDEORC_BASELINE_WARMUP_MS ?? 8000),
   previewMeasurementMs: Number(process.env.VIDEORC_BASELINE_PREVIEW_MEASUREMENT_MS ?? 5000),
   ffmpegPath: process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg',
-  ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? siblingFfprobe(process.env.VIDEORC_SMOKE_FFMPEG_PATH) ?? 'ffprobe',
+  ffprobePath:
+    process.env.VIDEORC_SMOKE_FFPROBE_PATH ??
+    siblingFfprobe(process.env.VIDEORC_SMOKE_FFMPEG_PATH) ??
+    'ffprobe',
   // Stream sessions must exercise the backend's DEFAULT bridge selector. On macOS
   // this is the product VideoToolbox H.264 path; raw-YUV is an explicit debug
   // override only. Only force an output when the operator set one explicitly, or
@@ -114,6 +129,16 @@ const config = {
     process.env.VIDEORC_BASELINE_STREAM_COMPANION_ID ??
     process.env.VIDEORC_BASELINE_STREAM_COMPANION_PLATFORM ??
     'twitch',
+  captionsEnabled:
+    process.env.VIDEORC_BASELINE_CAPTIONS === '1' ||
+    process.env.VIDEORC_BASELINE_CAPTION_OVERLAY_STIMULUS === '1',
+  captionBurnTarget: normalizeCaptionBurnTarget(
+    process.env.VIDEORC_BASELINE_CAPTION_BURN_TARGET ?? 'stream'
+  ),
+  captionOverlayStimulus: process.env.VIDEORC_BASELINE_CAPTION_OVERLAY_STIMULUS === '1',
+  captionOverlayStimulusIntervalMs: Number(
+    process.env.VIDEORC_BASELINE_CAPTION_OVERLAY_STIMULUS_MS ?? 1000
+  ),
   fallbackLivePreview: process.env.VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW === '1',
   noPreviewSurface: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE === '1',
   screenMotionStimulus: process.env.VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS === '1',
@@ -122,24 +147,27 @@ const config = {
   notesOverlayText:
     process.env.VIDEORC_BASELINE_NOTES_TEXT ??
     'VIDEORC NOTES LEAK MARKER\nRED OVERLAY SHOULD NOT RECORD',
-  notesOverlayMaxMarkerPixelRatio: Number(process.env.VIDEORC_BASELINE_NOTES_MAX_MARKER_RATIO ?? 0.002),
+  notesOverlayMaxMarkerPixelRatio: Number(
+    process.env.VIDEORC_BASELINE_NOTES_MAX_MARKER_RATIO ?? 0.002
+  ),
   microphoneSyncOffsetMs: Number(process.env.VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS ?? 0),
   screenMotionFocusIntervalMs: Number(process.env.VIDEORC_SCREEN_MOTION_FOCUS_INTERVAL_MS ?? 1000),
   requireMotion:
     process.env.VIDEORC_BASELINE_REQUIRE_MOTION === '1' ||
     process.env.VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS === '1',
   outputDirectory: resolve(
-    process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-real-source-baseline-${Date.now()}`)
+    process.env.VIDEORC_SMOKE_OUTPUT_DIR ??
+      join(tmpdir(), `videorc-real-source-baseline-${Date.now()}`)
   ),
   gate: process.argv.includes('--gate'),
   screenRecordingGate: process.argv.includes('--screen-recording-gate'),
-  notesOverlayGate: process.argv.includes('--notes-overlay-gate'),
+  notesOverlayGate: process.argv.includes('--notes-overlay-gate')
 }
 
 const NATIVE_PREFIX = {
   screen: 'screen:screencapturekit:',
   camera: 'camera:avfoundation-native:',
-  microphone: 'microphone:coreaudio:',
+  microphone: 'microphone:coreaudio:'
 }
 
 let launched
@@ -153,7 +181,12 @@ mkdirSync(config.outputDirectory, { recursive: true })
 let exitCode = 0
 try {
   const verdict = await main()
-  exitCode = (config.gate || config.screenRecordingGate || config.notesOverlayGate) && verdict && !verdict.pass ? 1 : 0
+  exitCode =
+    (config.gate || config.screenRecordingGate || config.notesOverlayGate) &&
+    verdict &&
+    !verdict.pass
+      ? 1
+      : 0
 } catch (error) {
   console.error(`real-source baseline failed: ${error?.message ?? error}`)
   exitCode = 2
@@ -182,11 +215,12 @@ async function main() {
       VIDEORC_DISABLE_AUTO_PREVIEW: '1',
       VIDEORC_SMOKE_COMMAND_SERVER: needsSmokeCommandServer ? '1' : '0',
       VIDEORC_SMOKE_NATIVE_PREVIEW_SUSPENDED: requiresPreviewHostCommandServer ? '1' : '0',
+      ...(config.noPreviewSurface ? { VIDEORC_SMOKE_DISABLE_ELECTRON_GPU: '1' } : {}),
       ...(config.notesOverlay
         ? {
             VIDEORC_NOTES_WINDOW: '1',
             VIDEORC_NOTES_RECORDING_OVERLAY: '1',
-            VIDEORC_NOTES_SMOKE_MARKER: '1',
+            VIDEORC_NOTES_SMOKE_MARKER: '1'
           }
         : {}),
       ...(config.streamEnabled ? { VIDEORC_PREMIUM_FEATURES: '1' } : {}),
@@ -195,12 +229,12 @@ async function main() {
       // key must be absent entirely, not undefined.
       ...(config.bridgeVideoOutput
         ? { VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: config.bridgeVideoOutput }
-        : {}),
+        : {})
     },
     onLine: (line) => {
       previewSurfaceOutputGuard.inspectLine(line)
       console.log(line)
-    },
+    }
   })
 
   const ws = await connectBackend(launched.connections['backend-ready'], config.timeoutMs)
@@ -225,12 +259,16 @@ async function main() {
   })
 
   try {
-    const health = await request(ws, config.timeoutMs, 'health.ping', { ffmpegPath: config.ffmpegPath })
+    const health = await request(ws, config.timeoutMs, 'health.ping', {
+      ffmpegPath: config.ffmpegPath
+    })
     if (!health?.ffmpeg?.available) {
       throw new Error(health?.ffmpeg?.message ?? 'FFmpeg is unavailable for the baseline run.')
     }
 
-    const devices = await request(ws, config.timeoutMs, 'devices.list', { ffmpegPath: config.ffmpegPath })
+    const devices = await request(ws, config.timeoutMs, 'devices.list', {
+      ffmpegPath: config.ffmpegPath
+    })
     const sources = selectSources(devices.devices ?? [])
     reportSelection(sources, devices.warnings ?? [])
     assertRequiredSourcesAvailable(sources)
@@ -249,7 +287,9 @@ async function main() {
       )
     }
     if (!sources.screen && !sources.camera) {
-      throw new Error('No real screen or camera available/selected — cannot run a real-source baseline.')
+      throw new Error(
+        'No real screen or camera available/selected — cannot run a real-source baseline.'
+      )
     }
 
     const sourceSelection = {
@@ -257,7 +297,7 @@ async function main() {
       windowId: null,
       cameraId: sources.camera?.id ?? null,
       microphoneId: sources.microphone?.id ?? null,
-      testPattern: false,
+      testPattern: false
     }
     const preRecordingStartedAt = Date.now()
     try {
@@ -271,7 +311,7 @@ async function main() {
         healthEvents,
         scenarioStartedAt: preRecordingStartedAt,
         error,
-        failurePrefix: 'pre-recording source validation failed',
+        failurePrefix: 'pre-recording source validation failed'
       })
     }
 
@@ -281,7 +321,7 @@ async function main() {
         screenSource: sources.screen,
         verifyVisible: true,
         outputDirectory: config.outputDirectory,
-        ffmpegPath: config.ffmpegPath,
+        ffmpegPath: config.ffmpegPath
       })
       console.log(
         `Screen motion stimulus window ${motionStimulus.width}x${motionStimulus.height} @ ${motionStimulus.x},${motionStimulus.y}.`
@@ -295,7 +335,9 @@ async function main() {
     if (config.avSyncStimulus) {
       console.log('Launching visible flash+click A/V sync stimulus.')
       avSyncStimulus = await launchAvSyncStimulus({ screenSource: sources.screen })
-      console.log(`A/V sync stimulus window ${avSyncStimulus.width}x${avSyncStimulus.height} @ ${avSyncStimulus.x},${avSyncStimulus.y}.`)
+      console.log(
+        `A/V sync stimulus window ${avSyncStimulus.width}x${avSyncStimulus.height} @ ${avSyncStimulus.x},${avSyncStimulus.y}.`
+      )
     }
     if (config.notesOverlay) {
       notesOverlayState = await setupNotesOverlay(sources.screen)
@@ -304,22 +346,24 @@ async function main() {
       )
     }
     const protectedOverlayWindowIds = protectedOverlayWindowIdsFromNotesOverlay()
+    const screenPreviewParams = previewSourceParams(sourceSelection, { protectedOverlayWindowIds })
 
     // Mirror the UI: warm the real capturers, then use the compositor preview surface
     // when native preview mode is enabled. The legacy live preview launches a second
     // FFmpeg AVFoundation graph, so keep it opt-in for fallback transport tests only.
     let previewTransport = 'unknown'
     await tryStep('preview.camera.start', async () => {
-      if (sources.camera) await request(ws, config.timeoutMs, 'preview.camera.start', previewSourceParams(sourceSelection))
-    })
-    await tryStep('preview.screen.start', async () => {
-      if (sources.screen) {
+      if (sources.camera)
         await request(
           ws,
           config.timeoutMs,
-          'preview.screen.start',
-          previewSourceParams(sourceSelection, { protectedOverlayWindowIds })
+          'preview.camera.start',
+          previewSourceParams(sourceSelection)
         )
+    })
+    await tryStep('preview.screen.start', async () => {
+      if (sources.screen) {
+        await request(ws, config.timeoutMs, 'preview.screen.start', screenPreviewParams)
       }
     })
     if (config.fallbackLivePreview) {
@@ -328,7 +372,7 @@ async function main() {
           sources: sourceSelection,
           layout: layoutSettings(sourceSelection),
           ffmpegPath: config.ffmpegPath,
-          video: videoSettings(),
+          video: videoSettings()
         })
         previewTransport = status?.transport ?? previewTransport
       })
@@ -351,7 +395,7 @@ async function main() {
         const status = await request(ws, config.timeoutMs, 'preview.surface.create', {
           bounds: previewSurfaceBounds(),
           targetFps: 60,
-          source: previewSurfaceSource(sourceSelection),
+          source: previewSurfaceSource(sourceSelection)
         })
         const hostStatus = await applyPendingNativePreviewHostCommands(ws)
         previewTransport = hostStatus?.transport ?? status?.transport ?? previewTransport
@@ -359,7 +403,7 @@ async function main() {
     }
 
     try {
-      await waitForPreviewSourceReadiness(ws, sources)
+      await waitForPreviewSourceReadiness(ws, sources, screenPreviewParams)
       await requireMotionStimulusVisibleBeforeRecording()
     } catch (error) {
       return await writeBlockedBeforeEncoding({
@@ -370,7 +414,7 @@ async function main() {
         healthEvents,
         scenarioStartedAt: preRecordingStartedAt,
         error,
-        failurePrefix: 'pre-recording source readiness failed',
+        failurePrefix: 'pre-recording source readiness failed'
       })
     }
 
@@ -379,23 +423,53 @@ async function main() {
     try {
       started = await request(ws, config.timeoutMs, 'session.start', sessionParams(sourceSelection))
     } catch (error) {
-      return await writeBlockedBeforeEncoding({
-        ws,
-        sources,
-        previewTransport,
-        diagnosticsEvents,
-        healthEvents,
-        scenarioStartedAt,
-        error,
-        failurePrefix: 'session.start failed before encoding',
-      })
+      if (sources.screen && isPreviewFrameStartupError(error)) {
+        console.log(
+          `session.start saw no reusable screen frames; restarting preview.screen and retrying once.`
+        )
+        try {
+          await restartPreviewScreenSource(ws, screenPreviewParams)
+          await waitForPreviewSourceReadiness(ws, sources, screenPreviewParams)
+          started = await request(
+            ws,
+            config.timeoutMs,
+            'session.start',
+            sessionParams(sourceSelection)
+          )
+        } catch (retryError) {
+          return await writeBlockedBeforeEncoding({
+            ws,
+            sources,
+            previewTransport,
+            diagnosticsEvents,
+            healthEvents,
+            scenarioStartedAt,
+            error: retryError,
+            failurePrefix: 'session.start failed before encoding after preview.screen retry'
+          })
+        }
+      } else {
+        return await writeBlockedBeforeEncoding({
+          ws,
+          sources,
+          previewTransport,
+          diagnosticsEvents,
+          healthEvents,
+          scenarioStartedAt,
+          error,
+          failurePrefix: 'session.start failed before encoding'
+        })
+      }
     }
     if (started.state !== 'recording') {
       throw new Error(`Expected recording state after start, got ${started.state}.`)
     }
-    console.log(`Recording real sources for ${(config.recordingMs / 1000).toFixed(0)}s -> ${started.outputPath ?? '(pending)'}`)
+    console.log(
+      `Recording real sources for ${(config.recordingMs / 1000).toFixed(0)}s -> ${started.outputPath ?? '(pending)'}`
+    )
 
     const motionStimulusFocusKeepalive = startMotionStimulusFocusKeepalive()
+    const stopCaptionOverlayStimulus = startCaptionOverlayStimulus(ws)
     let previewMeasurement
     let snapshots
     try {
@@ -403,6 +477,7 @@ async function main() {
       snapshots = await sampleDuringRecording(ws, config.recordingMs)
       previewMeasurement = await previewMeasurementPromise
     } finally {
+      if (stopCaptionOverlayStimulus) await stopCaptionOverlayStimulus()
       if (motionStimulusFocusKeepalive) clearInterval(motionStimulusFocusKeepalive)
     }
     if (previewMeasurement?.error) {
@@ -416,7 +491,7 @@ async function main() {
       recordingStatusEvents,
       healthEvents,
       stopRequestedAt,
-      timeoutMs: config.timeoutMs,
+      timeoutMs: config.timeoutMs
     })
     if (!outputPath || !existsSync(outputPath)) {
       throw new Error(`Recording output was not created: ${outputPath ?? 'missing path'}`)
@@ -431,12 +506,18 @@ async function main() {
       intendedFps: config.fps,
       expectAudio: Boolean(sources.microphone),
       gates: {
-        requireMotion: config.requireMotion,
-      },
+        requireMotion: config.requireMotion
+      }
     })
-    const diagnostics = summarizeDiagnostics(diagnosticsEvents, snapshots, scenarioStartedAt, stopRequestedAt, {
-      previewMeasurement,
-    })
+    const diagnostics = summarizeDiagnostics(
+      diagnosticsEvents,
+      snapshots,
+      scenarioStartedAt,
+      stopRequestedAt,
+      {
+        previewMeasurement
+      }
+    )
     const analyzerPaths = writeReports(report)
     const startupReport = await analyzeStartupResolution(outputPath, {
       ffmpegPath: config.ffmpegPath,
@@ -446,16 +527,16 @@ async function main() {
       intendedFps: config.fps,
       syntheticEvidence: diagnostics.encoderBridgeSyntheticFrames,
       gates: {
-        requireMotion: config.requireMotion,
-      },
+        requireMotion: config.requireMotion
+      }
     })
     const startupPaths = await writeStartupReports(startupReport, {
-      ffmpegPath: config.ffmpegPath,
+      ffmpegPath: config.ffmpegPath
     })
     const notesOverlay = config.notesOverlay
       ? await analyzeNotesOverlayArtifact(outputPath, {
           ffmpegPath: config.ffmpegPath,
-          maxMarkerPixelRatio: config.notesOverlayMaxMarkerPixelRatio,
+          maxMarkerPixelRatio: config.notesOverlayMaxMarkerPixelRatio
         })
       : null
     const claimsNative = claimsNativePreview({ previewTransport, diagnostics })
@@ -476,7 +557,7 @@ async function main() {
             requireGpuCompositor: true,
             requestedOutput: requestedOutputSettings(),
             require4kMediaEvidence: requires4kMediaEvidence(),
-            expectAudio: Boolean(sources.microphone),
+            expectAudio: Boolean(sources.microphone)
           },
           acceptanceGates()
         ),
@@ -492,14 +573,14 @@ async function main() {
       streamEnabled: config.streamEnabled,
       separateOutputEncoders: diagnostics.encoderBridgeSeparateOutputEncodersActive,
       streamOutput: outputProfileFromDiagnostics(diagnostics, 'stream'),
-      acceptancePass: acceptance.pass,
+      acceptancePass: acceptance.pass
     })
     const ownership = classifyObsParityEvidence({
       analyzerVerdict: report.verdict,
       startupVerdict: startupReport.verdict,
       diagnostics,
       claimsNative,
-      previewMeasured: !config.noPreviewSurface,
+      previewMeasured: !config.noPreviewSurface
     })
     const baselinePath = writeBaselineReport(outputPath, {
       sources,
@@ -513,7 +594,7 @@ async function main() {
       ownership,
       qualityMode,
       previewSurfaceOutputFailures,
-      notesOverlay,
+      notesOverlay
     })
     const evidenceManifestPath = writeEvidenceManifest(outputPath, {
       sources,
@@ -527,13 +608,13 @@ async function main() {
       acceptance,
       qualityMode,
       previewSurfaceOutputFailures,
-      notesOverlay,
+      notesOverlay
     })
     const screenRecording = config.screenRecordingGate
       ? appendNotesOverlayFailures(
           evaluateScreenRecordingEvidence(JSON.parse(readFileSync(evidenceManifestPath, 'utf8')), {
             checkFiles: true,
-            requireMotion: config.requireMotion,
+            requireMotion: config.requireMotion
           }),
           notesOverlay
         )
@@ -554,8 +635,10 @@ async function main() {
     )
     const notesOverlayVerdict = notesOverlay ?? {
       pass: false,
-      failures: ['notes-window: notes overlay gate was requested but no overlay evidence was produced'],
-      warnings: [],
+      failures: [
+        'notes-window: notes overlay gate was requested but no overlay evidence was produced'
+      ],
+      warnings: []
     }
     return config.notesOverlayGate ? notesOverlayVerdict : (screenRecording ?? acceptance)
   } finally {
@@ -574,18 +657,18 @@ function selectSources(devices) {
       nativePrefix: NATIVE_PREFIX.screen,
       requireNative: true,
       minimumWidth: requested4k?.width,
-      minimumHeight: requested4k?.height,
+      minimumHeight: requested4k?.height
     }),
     camera: pickDevice(devices, 'camera', {
       override: process.env.VIDEORC_BASELINE_CAMERA_ID,
       disabled: process.env.VIDEORC_BASELINE_NO_CAMERA === '1',
-      nativePrefix: NATIVE_PREFIX.camera,
+      nativePrefix: NATIVE_PREFIX.camera
     }),
     microphone: pickDevice(devices, 'microphone', {
       override: process.env.VIDEORC_BASELINE_MIC_ID,
       disabled: process.env.VIDEORC_BASELINE_NO_MIC === '1',
-      nativePrefix: NATIVE_PREFIX.microphone,
-    }),
+      nativePrefix: NATIVE_PREFIX.microphone
+    })
   }
 }
 
@@ -596,18 +679,18 @@ function assertRequiredSourcesAvailable(sources) {
       override: process.env.VIDEORC_BASELINE_SCREEN_ID,
       disableHint: 'VIDEORC_BASELINE_NO_SCREEN=1',
       requiredPrefix: NATIVE_PREFIX.screen,
-      allowForcedOverride: true,
+      allowForcedOverride: true
     }),
     requiredSourceBlocker('camera', sources.camera, {
       disabled: process.env.VIDEORC_BASELINE_NO_CAMERA === '1',
       override: process.env.VIDEORC_BASELINE_CAMERA_ID,
-      disableHint: 'VIDEORC_BASELINE_NO_CAMERA=1',
+      disableHint: 'VIDEORC_BASELINE_NO_CAMERA=1'
     }),
     requiredSourceBlocker('microphone', sources.microphone, {
       disabled: process.env.VIDEORC_BASELINE_NO_MIC === '1',
       override: process.env.VIDEORC_BASELINE_MIC_ID,
-      disableHint: 'VIDEORC_BASELINE_NO_MIC=1',
-    }),
+      disableHint: 'VIDEORC_BASELINE_NO_MIC=1'
+    })
   ].filter(Boolean)
 
   if (blockers.length > 0) {
@@ -621,7 +704,7 @@ function assertRequiredSourcesAvailable(sources) {
 function assertRequiredNativeSourcesForAccepted4k(sources) {
   if (!requires4kMediaEvidence()) return
   const preflight = evaluateRequired4kSourcePreflight(sources, requestedOutputSettings(), {
-    nativeScreenPrefix: NATIVE_PREFIX.screen,
+    nativeScreenPrefix: NATIVE_PREFIX.screen
   })
   if (!preflight.pass) {
     throw new Error(preflight.failures.join(' '))
@@ -664,7 +747,7 @@ async function setupNotesOverlay(screenSource) {
   await smokeCommand(smoke, 'notes-window-open')
   await smokeCommand(smoke, 'notes-window-save-document', {
     text: config.notesOverlayText,
-    fontScale: 'lg',
+    fontScale: 'lg'
   })
   notesOverlayBounds = notesOverlayBoundsForSource(screenSource)
   const state = await smokeCommand(smoke, 'notes-window-set-bounds', notesOverlayBounds)
@@ -685,7 +768,7 @@ async function requireMotionStimulusVisibleBeforeRecording() {
   if (!config.screenMotionStimulus || !motionStimulus) return
   const visibility = await refreshScreenMotionStimulusVisibility(motionStimulus, {
     outputDirectory: config.outputDirectory,
-    ffmpegPath: config.ffmpegPath,
+    ffmpegPath: config.ffmpegPath
   })
   console.log(
     `Screen motion stimulus pre-recording visibility: ${visibility?.visible ? 'PASS' : 'FAIL'} (${visibility?.reason ?? 'not measured'}; ${visibility?.screenshotPath ?? 'no screenshot'}).`
@@ -699,7 +782,12 @@ async function requireMotionStimulusVisibleBeforeRecording() {
 }
 
 function startMotionStimulusFocusKeepalive() {
-  if (!config.screenMotionStimulus || !motionStimulus || !Number.isFinite(config.screenMotionFocusIntervalMs)) return null
+  if (
+    !config.screenMotionStimulus ||
+    !motionStimulus ||
+    !Number.isFinite(config.screenMotionFocusIntervalMs)
+  )
+    return null
   if (config.screenMotionFocusIntervalMs <= 0) return null
   focusScreenMotionStimulus(motionStimulus)
   const timer = setInterval(() => {
@@ -717,7 +805,7 @@ function notesOverlayBoundsForSource(screenSource) {
           x: motionStimulus.x,
           y: motionStimulus.y,
           width: motionStimulus.width,
-          height: motionStimulus.height,
+          height: motionStimulus.height
         }
       : previewSurfaceBounds())
   const width = Math.min(640, Math.max(360, Math.round((area.width ?? 1280) * 0.44)))
@@ -726,7 +814,7 @@ function notesOverlayBoundsForSource(screenSource) {
     x: Math.round((area.x ?? area.screenX ?? 0) + ((area.width ?? 1280) - width) / 2),
     y: Math.round((area.y ?? area.screenY ?? 0) + ((area.height ?? 720) - height) / 2),
     width,
-    height,
+    height
   }
 }
 
@@ -734,25 +822,62 @@ function protectedOverlayWindowIdsFromNotesOverlay() {
   return typeof notesOverlayState?.windowId === 'number' ? [notesOverlayState.windowId] : []
 }
 
-async function waitForPreviewSourceReadiness(ws, sources) {
-  const deadline = Date.now() + Math.min(config.timeoutMs, 15_000)
+async function waitForPreviewSourceReadiness(ws, sources, screenPreviewParams) {
+  const deadline = Date.now() + Math.min(config.timeoutMs, config.sourceReadinessTimeoutMs)
+  let nextRestartAt = Date.now() + 4_000
+  let screenRestartCount = 0
   let lastCamera = null
   let lastScreen = null
+  let lastCompositor = null
   while (Date.now() < deadline) {
-    ;[lastCamera, lastScreen] = await Promise.all([
+    ;[lastCamera, lastScreen, lastCompositor] = await Promise.all([
       sources.camera ? requestSafe(ws, 'preview.camera.status') : Promise.resolve(null),
       sources.screen ? requestSafe(ws, 'preview.screen.status') : Promise.resolve(null),
+      requestSafe(ws, 'compositor.status')
     ])
-    if (previewCameraReady(lastCamera) && previewScreenReady(lastScreen)) {
+    if (
+      previewCameraReady(lastCamera, lastCompositor) &&
+      previewScreenReady(lastScreen, lastCompositor)
+    ) {
       console.log(
-        `Preview sources ready: camera ${describePreviewReadiness(lastCamera)}, screen ${describePreviewReadiness(lastScreen)}`
+        `Preview sources ready: camera ${describePreviewReadiness(lastCamera, lastCompositor, ['camera'])}, screen ${describePreviewReadiness(lastScreen, lastCompositor, ['screen', 'window'])}`
       )
       return
+    }
+    if (
+      sources.screen &&
+      screenPreviewParams &&
+      screenRestartCount < 3 &&
+      Date.now() >= nextRestartAt &&
+      !previewScreenReady(lastScreen, lastCompositor)
+    ) {
+      screenRestartCount += 1
+      console.log(
+        `Preview screen has not produced reusable frames; restarting preview.screen (${screenRestartCount}/3) before recording.`
+      )
+      await restartPreviewScreenSource(ws, screenPreviewParams)
+      nextRestartAt = Date.now() + 6_000
     }
     await sleep(250)
   }
   throw new Error(
-    `Timed out waiting for preview sources before recording: camera ${describePreviewReadiness(lastCamera)}, screen ${describePreviewReadiness(lastScreen)}`
+    `Timed out waiting for preview sources before recording: camera ${describePreviewReadiness(lastCamera, lastCompositor, ['camera'])}, screen ${describePreviewReadiness(lastScreen, lastCompositor, ['screen', 'window'])}`
+  )
+}
+
+async function restartPreviewScreenSource(ws, screenPreviewParams) {
+  await requestSafe(ws, 'preview.screen.stop')
+  await sleep(500)
+  await request(ws, config.timeoutMs, 'preview.screen.start', screenPreviewParams)
+  await sleep(500)
+}
+
+function isPreviewFrameStartupError(error) {
+  const message = String(error?.message ?? error)
+  return (
+    message.includes('preview source') ||
+    message.includes('preview sources before recording') ||
+    message.includes('produced no frames')
   )
 }
 
@@ -764,14 +889,20 @@ async function writeBlockedBeforeEncoding({
   healthEvents,
   scenarioStartedAt,
   error,
-  failurePrefix,
+  failurePrefix
 }) {
   await sleep(100)
   const blockedAt = Date.now()
   const snapshots = [await sampleDiagnosticsSnapshot(ws)]
-  const diagnostics = summarizeDiagnostics(diagnosticsEvents, snapshots, scenarioStartedAt, blockedAt, {
-    includePreStart: true,
-  })
+  const diagnostics = summarizeDiagnostics(
+    diagnosticsEvents,
+    snapshots,
+    scenarioStartedAt,
+    blockedAt,
+    {
+      includePreStart: true
+    }
+  )
   const previewSurfaceOutputFailures = previewSurfaceOutputGuard.failures()
   const qualityMode = classifyMediaQualityMode({
     diagnostics,
@@ -780,16 +911,18 @@ async function writeBlockedBeforeEncoding({
     streamEnabled: false,
     separateOutputEncoders: diagnostics.encoderBridgeSeparateOutputEncodersActive,
     streamOutput: outputProfileFromDiagnostics(diagnostics, 'stream'),
-    acceptancePass: false,
+    acceptancePass: false
   })
   const baselinePath = writeBlockedStartupReport({
     sources,
     previewTransport,
     diagnostics,
-    healthEvents: healthEvents.filter((event) => (event.receivedAt ?? 0) >= scenarioStartedAt - 250),
+    healthEvents: healthEvents.filter(
+      (event) => (event.receivedAt ?? 0) >= scenarioStartedAt - 250
+    ),
     error,
     qualityMode,
-    previewSurfaceOutputFailures,
+    previewSurfaceOutputFailures
   })
   const evidenceManifestPath = writeBlockedEvidenceManifest({
     sources,
@@ -798,33 +931,67 @@ async function writeBlockedBeforeEncoding({
     baselinePath,
     error,
     qualityMode,
-    previewSurfaceOutputFailures,
+    previewSurfaceOutputFailures
   })
-  printBlockedStartupSummary(error, diagnostics, previewTransport, baselinePath, evidenceManifestPath, qualityMode)
+  printBlockedStartupSummary(
+    error,
+    diagnostics,
+    previewTransport,
+    baselinePath,
+    evidenceManifestPath,
+    qualityMode
+  )
   return {
     pass: false,
     failures: [
       `${failurePrefix}: ${error?.message ?? error}`,
-      ...previewSurfaceOutputFailureMessages(previewSurfaceOutputFailures),
+      ...previewSurfaceOutputFailureMessages(previewSurfaceOutputFailures)
     ],
-    warnings: [],
+    warnings: []
   }
 }
 
-function previewCameraReady(status) {
+function previewCameraReady(status, compositor) {
   if (!status) return true
-  return status.state === 'live' && (status.framesCaptured ?? 0) > 0 && (status.frameAgeMs ?? Infinity) <= 2_000
+  return (
+    (status.state === 'live' &&
+      (status.framesCaptured ?? 0) > 0 &&
+      (status.frameAgeMs ?? Infinity) <= 2_000) ||
+    compositorSourceReady(compositor, ['camera'])
+  )
 }
 
-function previewScreenReady(status) {
+function previewScreenReady(status, compositor) {
   if (!status) return true
-  return status.state === 'live' && (status.framesCaptured ?? 0) > 0
+  return (
+    (status.state === 'live' && (status.framesCaptured ?? 0) > 0) ||
+    compositorSourceReady(compositor, ['screen', 'window'])
+  )
 }
 
-function describePreviewReadiness(status) {
+function compositorSourceReady(compositor, kinds) {
+  const source = compositorSource(compositor, kinds)
+  if (!source) return false
+  return (
+    source.state === 'live' &&
+    (source.sequence ?? 0) > 0 &&
+    (source.frameAgeMs ?? Infinity) <= 2_000
+  )
+}
+
+function compositorSource(compositor, kinds) {
+  const expected = new Set(kinds)
+  return (compositor?.sources ?? []).find((source) => expected.has(source.kind))
+}
+
+function describePreviewReadiness(status, compositor, compositorKinds = []) {
   if (!status) return 'not selected'
+  const source = compositorSource(compositor, compositorKinds)
+  const compositorDetail = source
+    ? ` compositor=${source.state ?? 'unknown'}#${source.sequence ?? 0} age=${source.frameAgeMs ?? 'n/a'}ms`
+    : ''
   const message = status.message ? ` message="${status.message}"` : ''
-  return `${status.state ?? 'unknown'} frames=${status.framesCaptured ?? 0} age=${status.frameAgeMs ?? 'n/a'}ms${message}`
+  return `${status.state ?? 'unknown'} frames=${status.framesCaptured ?? 0} age=${status.frameAgeMs ?? 'n/a'}ms${compositorDetail}${message}`
 }
 
 // --- Diagnostics sampling ---------------------------------------------------
@@ -862,7 +1029,7 @@ async function sampleDiagnosticsSnapshot(ws) {
     requestSafe(ws, 'compositor.status'),
     requestSafe(ws, 'preview.surface.status'),
     requestSafe(ws, 'preview.camera.status'),
-    requestSafe(ws, 'preview.screen.status'),
+    requestSafe(ws, 'preview.screen.status')
   ])
   return { at: Date.now(), diagnostics, compositor, surface, camera, screen }
 }
@@ -871,7 +1038,11 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
   const activeEvents = events.filter((s) => {
     const t = s.receivedAt ?? 0
-    return t >= startedAt && t <= stopRequestedAt && (options.includePreStart || s.activeOutputMode === 'record')
+    return (
+      t >= startedAt &&
+      t <= stopRequestedAt &&
+      (options.includePreStart || isRecordingOutputMode(s.activeOutputMode))
+    )
   })
   const activeSnapshots = options.includePreStart
     ? snapshots
@@ -882,7 +1053,8 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
   const steady = active.filter((s) => (s.receivedAt ?? 0) - startedAt >= config.warmupMs)
   const measured = steady.length ? steady : active
   const collect = (key) => measured.map((s) => num(s[key])).filter((v) => v !== null)
-  const collectBooleans = (key) => measured.map((s) => s[key]).filter((value) => typeof value === 'boolean')
+  const collectBooleans = (key) =>
+    measured.map((s) => s[key]).filter((value) => typeof value === 'boolean')
   const captureFps = collect('captureFps')
   const renderFps = collect('renderFps')
   const speed = collect('encoderSpeed')
@@ -911,7 +1083,7 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
   const compositorSamples = snapshots.map((s) => s.compositor).filter(Boolean)
   const surfaceSamples = [
     ...snapshots.map((s) => s.surface).filter(Boolean),
-    ...(previewMeasurementStatus ? [previewMeasurementStatus] : []),
+    ...(previewMeasurementStatus ? [previewMeasurementStatus] : [])
   ]
   const surfaceMetric = (key) => surfaceSamples.map((s) => num(s[key])).filter((v) => v !== null)
   const transportSamples = measured.map((s) => s.previewTransport).filter(Boolean)
@@ -936,7 +1108,7 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     cameraPng: pollDelta('cameraPng'),
     screenPng: pollDelta('screenPng'),
     liveJpeg: pollDelta('liveJpeg'),
-    liveMjpeg: pollDelta('liveMjpeg'),
+    liveMjpeg: pollDelta('liveMjpeg')
   }
   imagePollDuringSession.total =
     pollFirst && pollLast
@@ -956,52 +1128,75 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     }
     return null
   }
-  const previewDirectMeasuredFps = num(previewMeasurement?.measuredFps ?? previewMeasurementStatus?.presentFps)
-  const previewDirectIntervalP95Ms = num(previewMeasurement?.intervalP95Ms ?? previewMeasurementStatus?.intervalP95Ms)
-  const previewDirectInputToPresentP95Ms =
-    num(previewMeasurement?.inputToPresentLatencyP95Ms ?? previewMeasurementStatus?.inputToPresentLatencyP95Ms)
-  const previewDirectInputToPresentP99Ms =
-    num(previewMeasurement?.inputToPresentLatencyP99Ms ?? previewMeasurementStatus?.inputToPresentLatencyP99Ms)
-  const previewDirectCompositorFrameLag =
-    num(previewMeasurement?.compositorFrameLag ?? previewMeasurementStatus?.compositorFrameLag)
+  const previewDirectMeasuredFps = num(
+    previewMeasurement?.measuredFps ?? previewMeasurementStatus?.presentFps
+  )
+  const previewDirectIntervalP95Ms = num(
+    previewMeasurement?.intervalP95Ms ?? previewMeasurementStatus?.intervalP95Ms
+  )
+  const previewDirectInputToPresentP95Ms = num(
+    previewMeasurement?.inputToPresentLatencyP95Ms ??
+      previewMeasurementStatus?.inputToPresentLatencyP95Ms
+  )
+  const previewDirectInputToPresentP99Ms = num(
+    previewMeasurement?.inputToPresentLatencyP99Ms ??
+      previewMeasurementStatus?.inputToPresentLatencyP99Ms
+  )
+  const previewDirectCompositorFrameLag = num(
+    previewMeasurement?.compositorFrameLag ?? previewMeasurementStatus?.compositorFrameLag
+  )
   const passivePreviewPresentFps = minOf(collect('previewPresentFps'))
   const passivePreviewIntervalP95Ms = maxOf(collect('previewRenderFrameTimeP95Ms'))
-  const previewInputToPresentLatencyMs =
-    maxOf([...collect('previewInputToPresentLatencyMs'), ...surfaceMetric('inputToPresentLatencyMs')])
+  const previewInputToPresentLatencyMs = maxOf([
+    ...collect('previewInputToPresentLatencyMs'),
+    ...surfaceMetric('inputToPresentLatencyMs')
+  ])
   const previewInputToPresentLatencyP95Ms =
     previewDirectInputToPresentP95Ms ??
-    maxOf([...collect('previewInputToPresentLatencyP95Ms'), ...surfaceMetric('inputToPresentLatencyP95Ms')])
+    maxOf([
+      ...collect('previewInputToPresentLatencyP95Ms'),
+      ...surfaceMetric('inputToPresentLatencyP95Ms')
+    ])
   const previewInputToPresentLatencyP99Ms =
     previewDirectInputToPresentP99Ms ??
-    maxOf([...collect('previewInputToPresentLatencyP99Ms'), ...surfaceMetric('inputToPresentLatencyP99Ms')])
-  const nativePreviewRendererPollIntervalP95Ms =
-    maxOf(surfaceMetric('nativePreviewRendererPollIntervalP95Ms'))
-  const nativePreviewRendererPollRoundTripP95Ms =
-    maxOf(surfaceMetric('nativePreviewRendererPollRoundTripP95Ms'))
-  const nativePreviewRendererPresentRoundTripP95Ms =
-    maxOf(surfaceMetric('nativePreviewRendererPresentRoundTripP95Ms'))
+    maxOf([
+      ...collect('previewInputToPresentLatencyP99Ms'),
+      ...surfaceMetric('inputToPresentLatencyP99Ms')
+    ])
+  const nativePreviewRendererPollIntervalP95Ms = maxOf(
+    surfaceMetric('nativePreviewRendererPollIntervalP95Ms')
+  )
+  const nativePreviewRendererPollRoundTripP95Ms = maxOf(
+    surfaceMetric('nativePreviewRendererPollRoundTripP95Ms')
+  )
+  const nativePreviewRendererPresentRoundTripP95Ms = maxOf(
+    surfaceMetric('nativePreviewRendererPresentRoundTripP95Ms')
+  )
   const nativePreviewRendererPollInFlightSkips =
     maxOf(surfaceSamples.map((s) => s.nativePreviewRendererPollInFlightSkips ?? 0)) ?? 0
-  const nativePreviewMainQueueWaitP95Ms =
-    maxOf(surfaceMetric('nativePreviewMainQueueWaitP95Ms'))
-  const nativePreviewMainPresentP95Ms =
-    maxOf(surfaceMetric('nativePreviewMainPresentP95Ms'))
+  const nativePreviewMainQueueWaitP95Ms = maxOf(surfaceMetric('nativePreviewMainQueueWaitP95Ms'))
+  const nativePreviewMainPresentP95Ms = maxOf(surfaceMetric('nativePreviewMainPresentP95Ms'))
   const nativePreviewMainQueuedBehindCount =
     maxOf(surfaceSamples.map((s) => s.nativePreviewMainQueuedBehindCount ?? 0)) ?? 0
-  const nativePreviewHelperRoundTripP95Ms =
-    maxOf(surfaceMetric('nativePreviewHelperRoundTripP95Ms'))
-  const nativePreviewMainStatusFetchP95Ms =
-    maxOf(surfaceMetric('nativePreviewMainStatusFetchP95Ms'))
+  const nativePreviewHelperRoundTripP95Ms = maxOf(
+    surfaceMetric('nativePreviewHelperRoundTripP95Ms')
+  )
+  const nativePreviewMainStatusFetchP95Ms = maxOf(
+    surfaceMetric('nativePreviewMainStatusFetchP95Ms')
+  )
   const nativePreviewMainStatusFetchFailures =
     maxOf(surfaceSamples.map((s) => s.nativePreviewMainStatusFetchFailures ?? 0)) ?? 0
   const nativePreviewMainStatusFetchSuccesses =
     maxOf(surfaceSamples.map((s) => s.nativePreviewMainStatusFetchSuccesses ?? 0)) ?? 0
-  const nativePreviewMainPresentedStatusAgeMs =
-    maxOf(surfaceMetric('nativePreviewMainPresentedStatusAgeMs'))
-  const nativePreviewMainPresentedStatusAgeP95Ms =
-    maxOf(surfaceMetric('nativePreviewMainPresentedStatusAgeP95Ms'))
-  const nativePreviewMainPresentedFrameAgeP95Ms =
-    maxOf(surfaceMetric('nativePreviewMainPresentedFrameAgeP95Ms'))
+  const nativePreviewMainPresentedStatusAgeMs = maxOf(
+    surfaceMetric('nativePreviewMainPresentedStatusAgeMs')
+  )
+  const nativePreviewMainPresentedStatusAgeP95Ms = maxOf(
+    surfaceMetric('nativePreviewMainPresentedStatusAgeP95Ms')
+  )
+  const nativePreviewMainPresentedFrameAgeP95Ms = maxOf(
+    surfaceMetric('nativePreviewMainPresentedFrameAgeP95Ms')
+  )
 
   return {
     sampleCount: measured.length,
@@ -1010,34 +1205,51 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     minRenderFps: minOf(renderFps),
     minEncoderSpeed: minOf(speed),
     droppedFrames: maxOf(measured.map((s) => s.droppedFrames ?? 0)) ?? 0,
-    encodeBackend: measured.map((s) => s.encodeBackend).filter(Boolean).pop() ?? null,
-    compositorBackend: measured.map((s) => s.compositorBackend).filter(Boolean).pop() ?? null,
-    compositorFallbackReason: measured.map((s) => s.compositorFallbackReason).filter(Boolean).pop() ?? null,
-    compositorCpuFallbackFrames: maxOf(measured.map((s) => s.compositorCpuFallbackFrames ?? 0)) ?? 0,
+    encodeBackend:
+      measured
+        .map((s) => s.encodeBackend)
+        .filter(Boolean)
+        .pop() ?? null,
+    compositorBackend:
+      measured
+        .map((s) => s.compositorBackend)
+        .filter(Boolean)
+        .pop() ?? null,
+    compositorFallbackReason:
+      measured
+        .map((s) => s.compositorFallbackReason)
+        .filter(Boolean)
+        .pop() ?? null,
+    compositorCpuFallbackFrames:
+      maxOf(measured.map((s) => s.compositorCpuFallbackFrames ?? 0)) ?? 0,
     previewTransport: strongestPreviewTransport(transportSamples),
     previewSurfaceBacking: strongestPreviewBacking(backingSamples),
     previewFramePollingSuppressed: anyTrue([
       ...measured.map((s) => s.previewFramePollingSuppressed),
-      ...surfaceSamples.map((s) => s.framePollingSuppressed),
+      ...surfaceSamples.map((s) => s.framePollingSuppressed)
     ]),
     previewSourcePixelsPresent: anyTrue([
       ...measured.map((s) => s.previewSourcePixelsPresent),
-      ...surfaceSamples.map((s) => s.sourcePixelsPresent),
+      ...surfaceSamples.map((s) => s.sourcePixelsPresent)
     ]),
     previewPendingHostCommandCount:
       maxOf(surfaceSamples.map((s) => s.pendingHostCommandCount ?? 0)) ?? 0,
-    encoderBridgeRepeatedFrames: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrames ?? 0)) ?? 0,
-    encoderBridgeRepeatedFrameBursts: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrameBursts ?? 0)) ?? 0,
-    encoderBridgeMaxRepeatedFrameRun: maxOf(measured.map((s) => s.encoderBridgeMaxRepeatedFrameRun ?? 0)) ?? 0,
-    encoderBridgeSyntheticFrames: maxOf(measured.map((s) => s.encoderBridgeSyntheticFrames ?? 0)) ?? 0,
+    encoderBridgeRepeatedFrames:
+      maxOf(measured.map((s) => s.encoderBridgeRepeatedFrames ?? 0)) ?? 0,
+    encoderBridgeRepeatedFrameBursts:
+      maxOf(measured.map((s) => s.encoderBridgeRepeatedFrameBursts ?? 0)) ?? 0,
+    encoderBridgeMaxRepeatedFrameRun:
+      maxOf(measured.map((s) => s.encoderBridgeMaxRepeatedFrameRun ?? 0)) ?? 0,
+    encoderBridgeSyntheticFrames:
+      maxOf(measured.map((s) => s.encoderBridgeSyntheticFrames ?? 0)) ?? 0,
     encoderBridgeSourceAgeMs: maxOf(collect('encoderBridgeSourceAgeMs')),
-    encoderBridgeSourceAgeP95Ms:
-      maxOf(collect('encoderBridgeSourceAgeP95Ms')) ?? null,
+    encoderBridgeSourceAgeP95Ms: maxOf(collect('encoderBridgeSourceAgeP95Ms')) ?? null,
     encoderBridgeRepeatedFrameAgeP95Ms:
       maxOf(collect('encoderBridgeRepeatedFrameAgeP95Ms')) ?? null,
     encoderBridgeRepeatedFrameAgeMaxMs:
       maxOf(collect('encoderBridgeRepeatedFrameAgeMaxMs')) ?? null,
-    encoderBridgeMetalTargetFrames: maxOf(measured.map((s) => s.encoderBridgeMetalTargetFrames ?? 0)) ?? 0,
+    encoderBridgeMetalTargetFrames:
+      maxOf(measured.map((s) => s.encoderBridgeMetalTargetFrames ?? 0)) ?? 0,
     encoderBridgeRawVideoCopiedFrames:
       maxOf(measured.map((s) => s.encoderBridgeRawVideoCopiedFrames ?? 0)) ?? 0,
     encoderBridgeMetalTargetCopiedFrames:
@@ -1076,31 +1288,41 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
       maxOf(measured.map((s) => s.encoderBridgeStreamVideoToolboxOutputFrames ?? 0)) ?? 0,
     encoderBridgeStreamVideoToolboxOutputBytes:
       maxOf(measured.map((s) => s.encoderBridgeStreamVideoToolboxOutputBytes ?? 0)) ?? 0,
-    encoderBridgeSeparateOutputEncodersActive:
-      anyTrue(measured.map((s) => s.encoderBridgeSeparateOutputEncodersActive)),
-    encoderBridgeCompositorWaitP95Ms:
-      maxOf(collect('encoderBridgeCompositorWaitP95Ms')) ?? null,
+    encoderBridgeSeparateOutputEncodersActive: anyTrue(
+      measured.map((s) => s.encoderBridgeSeparateOutputEncodersActive)
+    ),
+    encoderBridgeCompositorWaitP95Ms: maxOf(collect('encoderBridgeCompositorWaitP95Ms')) ?? null,
     encoderBridgeVideoToolboxSubmitP95Ms:
       maxOf(collect('encoderBridgeVideoToolboxSubmitP95Ms')) ?? null,
     encoderBridgeVideoToolboxFifoWriteP95Ms:
       maxOf(collect('encoderBridgeVideoToolboxFifoWriteP95Ms')) ?? null,
-    encoderBridgeWriterLoopP95Ms:
-      maxOf(collect('encoderBridgeWriterLoopP95Ms')) ?? null,
-    encoderBridgeWriterSleepP95Ms:
-      maxOf(collect('encoderBridgeWriterSleepP95Ms')) ?? null,
-    encoderBridgeWriterActiveP95Ms:
-      maxOf(collect('encoderBridgeWriterActiveP95Ms')) ?? null,
-    encoderBridgeDeadlineLagP95Ms:
-      maxOf(collect('encoderBridgeDeadlineLagP95Ms')) ?? null,
-    encoderBridgeDeadlineLagMaxMs:
-      maxOf(collect('encoderBridgeDeadlineLagMaxMs')) ?? null,
+    encoderBridgeVideoToolboxFifoEnqueueP95Ms:
+      maxOf(collect('encoderBridgeVideoToolboxFifoEnqueueP95Ms')) ?? null,
+    encoderBridgeVideoToolboxFifoEnqueueMaxMs:
+      maxOf(collect('encoderBridgeVideoToolboxFifoEnqueueMaxMs')) ?? null,
+    encoderBridgeWriterLoopP95Ms: maxOf(collect('encoderBridgeWriterLoopP95Ms')) ?? null,
+    encoderBridgeWriterSleepP95Ms: maxOf(collect('encoderBridgeWriterSleepP95Ms')) ?? null,
+    encoderBridgeWriterActiveP95Ms: maxOf(collect('encoderBridgeWriterActiveP95Ms')) ?? null,
+    encoderBridgeDeadlineLagP95Ms: maxOf(collect('encoderBridgeDeadlineLagP95Ms')) ?? null,
+    encoderBridgeDeadlineLagMaxMs: maxOf(collect('encoderBridgeDeadlineLagMaxMs')) ?? null,
     encoderBridgeLateDeadlineTicks:
       maxOf(measured.map((s) => s.encoderBridgeLateDeadlineTicks ?? 0)) ?? 0,
-    recordingStartupBarrierState: measured.map((s) => s.recordingStartupBarrierState).filter(Boolean).pop() ?? null,
+    recordingStartupBarrierState:
+      measured
+        .map((s) => s.recordingStartupBarrierState)
+        .filter(Boolean)
+        .pop() ?? null,
     recordingStartupBarrierWaitMs: maxOf(collect('recordingStartupBarrierWaitMs')),
-    recordingStartupBarrierTimeoutReason: measured.map((s) => s.recordingStartupBarrierTimeoutReason).filter(Boolean).pop() ?? null,
+    recordingStartupBarrierTimeoutReason:
+      measured
+        .map((s) => s.recordingStartupBarrierTimeoutReason)
+        .filter(Boolean)
+        .pop() ?? null,
     firstSourceFrameMs: lastDefined(measured, 'firstSourceFrameMs'),
-    firstFullResolutionCompositorFrameMs: lastDefined(measured, 'firstFullResolutionCompositorFrameMs'),
+    firstFullResolutionCompositorFrameMs: lastDefined(
+      measured,
+      'firstFullResolutionCompositorFrameMs'
+    ),
     firstEncodedFrameMs: lastDefined(measured, 'firstEncodedFrameMs'),
     micCapturedFrames: lastDefined(measured, 'micCapturedFrames'),
     micDroppedFrames: maxOf(measured.map((s) => s.micDroppedFrames ?? 0)) ?? 0,
@@ -1109,7 +1331,7 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     previewDroppedFrames:
       maxOf([
         ...measured.map((s) => s.previewDroppedFrames ?? 0),
-        ...surfaceSamples.map((s) => s.droppedFrames ?? 0),
+        ...surfaceSamples.map((s) => s.droppedFrames ?? 0)
       ]) ?? 0,
     minPreviewPresentFps: previewDirectMeasuredFps ?? passivePreviewPresentFps,
     previewInputToPresentLatencyMs,
@@ -1139,7 +1361,7 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     previewMeasurementError,
     previewCompositorFrameLag: maxOf([
       ...collect('previewCompositorFrameLag'),
-      ...surfaceSamples.map((s) => num(s.compositorFrameLag)).filter((v) => v !== null),
+      ...surfaceSamples.map((s) => num(s.compositorFrameLag)).filter((v) => v !== null)
     ]),
     previewCameraFrameAgeMs: maxOf(collect('previewCameraFrameAgeMs')),
     previewCameraState: lastValue('previewCameraState'),
@@ -1166,7 +1388,12 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     previewCameraCapabilityDeviceId: lastValue('previewCameraCapabilityDeviceId'),
     previewCameraCapabilityFormats: lastValue('previewCameraCapabilityFormats') ?? [],
     previewCameraCapabilityError: lastValue('previewCameraCapabilityError'),
-    previewScreenMessage: lastValue('previewScreenMessage') ?? lastSnapshotValue(snapshots.map((s) => s.screen), 'message'),
+    previewScreenMessage:
+      lastValue('previewScreenMessage') ??
+      lastSnapshotValue(
+        snapshots.map((s) => s.screen),
+        'message'
+      ),
     previewScreenFrameAgeMs: maxOf(collect('previewScreenFrameAgeMs')),
     previewScreenNativeWidth: maxOf(collect('previewScreenNativeWidth')),
     previewScreenNativeHeight: maxOf(collect('previewScreenNativeHeight')),
@@ -1174,7 +1401,9 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     previewScreenRequestedHeight: maxOf(collect('previewScreenRequestedHeight')),
     previewScreenActualWidth: maxOf(collect('previewScreenActualWidth')),
     previewScreenActualHeight: maxOf(collect('previewScreenActualHeight')),
-    previewScreenIosurfaceAvailable: screenIosurfaceSamples.length ? anyTrue(screenIosurfaceSamples) : null,
+    previewScreenIosurfaceAvailable: screenIosurfaceSamples.length
+      ? anyTrue(screenIosurfaceSamples)
+      : null,
     previewScreenCaptureGapP95Ms: maxOf(collect('previewScreenCaptureGapP95Ms')),
     previewScreenCaptureGapMaxMs: maxOf(collect('previewScreenCaptureGapMaxMs')),
     previewScreenPixelBufferLockP95Ms: maxOf(collect('previewScreenPixelBufferLockP95Ms')),
@@ -1184,8 +1413,12 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     previewScreenCaptureQueueDepth: maxOf(collect('previewScreenCaptureQueueDepth')) ?? 0,
     compositorRepeatedFrames: maxOf(compositorSamples.map((s) => s.repeatedFrames ?? 0)) ?? 0,
     compositorDroppedFrames: maxOf(compositorSamples.map((s) => s.droppedFrames ?? 0)) ?? 0,
-    compositorFrameAgeMs: maxOf(compositorSamples.map((s) => num(s.frameAgeMs)).filter((v) => v !== null)),
-    compositorFrameTimeP95Ms: maxOf(compositorSamples.map((s) => num(s.frameTimeP95Ms)).filter((v) => v !== null)),
+    compositorFrameAgeMs: maxOf(
+      compositorSamples.map((s) => num(s.frameAgeMs)).filter((v) => v !== null)
+    ),
+    compositorFrameTimeP95Ms: maxOf(
+      compositorSamples.map((s) => num(s.frameTimeP95Ms)).filter((v) => v !== null)
+    ),
     compositorSourceFetchP95Ms: maxOf(collect('compositorSourceFetchP95Ms')),
     compositorSceneSnapshotP95Ms: maxOf(collect('compositorSceneSnapshotP95Ms')),
     compositorCameraFrameFetchP95Ms: maxOf(collect('compositorCameraFrameFetchP95Ms')),
@@ -1248,8 +1481,12 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     imagePollDuringSession,
     transports: [...transports],
     surfaceBackings: [...surfaceBackings],
-    bottlenecks: [...bottlenecks],
+    bottlenecks: [...bottlenecks]
   }
+}
+
+function isRecordingOutputMode(mode) {
+  return typeof mode === 'string' && mode.includes('record')
 }
 
 function summarizeMediaDimensions(snapshots) {
@@ -1264,38 +1501,47 @@ function summarizeMediaDimensions(snapshots) {
     cameraSource: summarizeDimensionSamples(cameraStatusSamples, {
       idKeys: ['cameraId', 'deviceUniqueId'],
       fpsKeys: ['sourceFps', 'targetFps'],
-      stateKey: 'state',
+      stateKey: 'state'
     }),
     screenSource: summarizeDimensionSamples(screenStatusSamples, {
       idKeys: ['sourceId'],
       fpsKeys: ['sourceFps', 'targetFps'],
-      stateKey: 'state',
+      stateKey: 'state'
     }),
-    screenSourceNative: summarizeDimensionSamples(remapDimensionSamples(screenStatusSamples, 'nativeWidth', 'nativeHeight'), {
-      idKeys: ['sourceId'],
-      fpsKeys: ['sourceFps', 'targetFps'],
-      stateKey: 'state',
-    }),
-    screenSourceRequested: summarizeDimensionSamples(remapDimensionSamples(screenStatusSamples, 'requestedWidth', 'requestedHeight'), {
-      idKeys: ['sourceId'],
-      fpsKeys: ['sourceFps', 'targetFps'],
-      stateKey: 'state',
-    }),
-    screenSourceActual: summarizeDimensionSamples(remapDimensionSamples(screenStatusSamples, 'actualWidth', 'actualHeight'), {
-      idKeys: ['sourceId'],
-      fpsKeys: ['sourceFps', 'targetFps'],
-      stateKey: 'state',
-    }),
+    screenSourceNative: summarizeDimensionSamples(
+      remapDimensionSamples(screenStatusSamples, 'nativeWidth', 'nativeHeight'),
+      {
+        idKeys: ['sourceId'],
+        fpsKeys: ['sourceFps', 'targetFps'],
+        stateKey: 'state'
+      }
+    ),
+    screenSourceRequested: summarizeDimensionSamples(
+      remapDimensionSamples(screenStatusSamples, 'requestedWidth', 'requestedHeight'),
+      {
+        idKeys: ['sourceId'],
+        fpsKeys: ['sourceFps', 'targetFps'],
+        stateKey: 'state'
+      }
+    ),
+    screenSourceActual: summarizeDimensionSamples(
+      remapDimensionSamples(screenStatusSamples, 'actualWidth', 'actualHeight'),
+      {
+        idKeys: ['sourceId'],
+        fpsKeys: ['sourceFps', 'targetFps'],
+        stateKey: 'state'
+      }
+    ),
     compositorTarget: summarizeDimensionSamples(compositorSamples, {
       fpsKeys: ['targetFps', 'renderFps'],
-      stateKey: 'state',
+      stateKey: 'state'
     }),
     compositorMetalTarget: summarizeDimensionSamples(
       compositorSamples.map((s) => ({
         width: s.metalTargetWidth,
         height: s.metalTargetHeight,
         state: s.state,
-        targetFps: s.targetFps,
+        targetFps: s.targetFps
       })),
       { fpsKeys: ['targetFps'], stateKey: 'state' }
     ),
@@ -1310,8 +1556,8 @@ function summarizeMediaDimensions(snapshots) {
     previewDrawable: summarizeDimensionSamples(surfaceSamples, {
       fpsKeys: ['targetFps', 'presentFps'],
       stateKey: 'state',
-      bounds: summarizeSurfaceBounds(surfaceSamples),
-    }),
+      bounds: summarizeSurfaceBounds(surfaceSamples)
+    })
   }
 }
 
@@ -1319,7 +1565,7 @@ function remapDimensionSamples(samples, widthKey, heightKey) {
   return samples.map((sample) => ({
     ...sample,
     width: sample?.[widthKey],
-    height: sample?.[heightKey],
+    height: sample?.[heightKey]
   }))
 }
 
@@ -1337,7 +1583,9 @@ function summarizeDimensionSamples(samples, options = {}) {
     if (!best) return current
     return current.width * current.height > best.width * best.height ? current : best
   }, null)
-  const observed = [...new Set(dimensions.map((d) => `${Math.round(d.width)}x${Math.round(d.height)}`))]
+  const observed = [
+    ...new Set(dimensions.map((d) => `${Math.round(d.width)}x${Math.round(d.height)}`))
+  ]
   const ids = uniqueValues(samples, options.idKeys ?? [])
   const states = options.stateKey ? uniqueValues(samples, [options.stateKey]) : []
   const fps = collectFinite(samples, options.fpsKeys ?? [])
@@ -1351,7 +1599,7 @@ function summarizeDimensionSamples(samples, options = {}) {
     fpsMin: fps.length ? Math.min(...fps) : null,
     fpsMax: fps.length ? Math.max(...fps) : null,
     sampleCount: samples.length,
-    bounds: options.bounds ?? null,
+    bounds: options.bounds ?? null
   }
 }
 
@@ -1363,13 +1611,13 @@ function summarizeSurfaceBounds(samples) {
   return {
     css: {
       width: finiteNumber(latest.width),
-      height: finiteNumber(latest.height),
+      height: finiteNumber(latest.height)
     },
     drawable: {
       width: finiteNumber(latest.width) != null ? finiteNumber(latest.width) * scale : null,
-      height: finiteNumber(latest.height) != null ? finiteNumber(latest.height) * scale : null,
+      height: finiteNumber(latest.height) != null ? finiteNumber(latest.height) * scale : null
     },
-    scaleFactor: scale,
+    scaleFactor: scale
   }
 }
 
@@ -1415,14 +1663,18 @@ function writeBaselineReport(
     ownership,
     qualityMode,
     previewSurfaceOutputFailures = [],
-    notesOverlay = null,
+    notesOverlay = null
   }
 ) {
-  const base = outputPath.split('/').pop().replace(/\.[^.]+$/, '')
+  const base = outputPath
+    .split('/')
+    .pop()
+    .replace(/\.[^.]+$/, '')
   const reportPath = join(dirname(outputPath), `${base}.baseline.md`)
   const m = report.metrics
   const fmt = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : 'n/a')
-  const fmtMs = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(d)}ms` : 'n/a')
+  const fmtMs = (v, d = 1) =>
+    typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(d)}ms` : 'n/a'
   const mib = (v) => (typeof v === 'number' ? `${(v / (1024 * 1024)).toFixed(1)} MiB` : 'n/a')
 
   const lines = []
@@ -1433,26 +1685,40 @@ function writeBaselineReport(
   lines.push(`- Recording: \`${outputPath}\` (${(size / (1024 * 1024)).toFixed(1)} MiB)`)
   lines.push(`- Evidence manifest: \`${evidenceManifestPathForOutput(outputPath)}\``)
   lines.push(`- Latest evidence copy: \`${latestEvidenceManifestPath()}\``)
-  lines.push(`- Output: ${config.width}×${config.height} @ ${config.fps}fps, ${config.bitrateKbps}kbps, ${(config.recordingMs / 1000).toFixed(0)}s`)
+  lines.push(
+    `- Output: ${config.width}×${config.height} @ ${config.fps}fps, ${config.bitrateKbps}kbps, ${(config.recordingMs / 1000).toFixed(0)}s`
+  )
   lines.push(`- Encoder bridge video output: \`${config.bridgeVideoOutput}\``)
   lines.push(`- Media quality mode: \`${qualityMode.mode}\` - ${qualityMode.label}`)
-  lines.push(`- Motion required: ${config.requireMotion ? 'yes' : 'no'}${config.screenMotionStimulus ? ' (screen stimulus)' : ''}`)
+  lines.push(
+    `- Motion required: ${config.requireMotion ? 'yes' : 'no'}${config.screenMotionStimulus ? ' (screen stimulus)' : ''}`
+  )
   lines.push(`- Microphone sync offset: ${config.microphoneSyncOffsetMs}ms`)
   if (config.avSyncStimulus) {
-    lines.push('- A/V sync stimulus: preview cadence FPS/interval gates relaxed; use the motion stimulus gate for preview smoothness.')
+    lines.push(
+      '- A/V sync stimulus: preview cadence FPS/interval gates relaxed; use the motion stimulus gate for preview smoothness.'
+    )
   }
   lines.push('')
   lines.push('## Selected real sources')
   lines.push('')
-  lines.push(`- Screen: ${sources.screen ? `${sources.screen.name} \`${sources.screen.id}\`` : 'none'}`)
-  lines.push(`- Camera: ${sources.camera ? `${sources.camera.name} \`${sources.camera.id}\`` : 'none'}`)
-  lines.push(`- Microphone: ${sources.microphone ? `${sources.microphone.name} \`${sources.microphone.id}\`` : 'none'}`)
+  lines.push(
+    `- Screen: ${sources.screen ? `${sources.screen.name} \`${sources.screen.id}\`` : 'none'}`
+  )
+  lines.push(
+    `- Camera: ${sources.camera ? `${sources.camera.name} \`${sources.camera.id}\`` : 'none'}`
+  )
+  lines.push(
+    `- Microphone: ${sources.microphone ? `${sources.microphone.name} \`${sources.microphone.id}\`` : 'none'}`
+  )
   lines.push(`- testPattern: false (real capture)`)
   if (config.screenMotionStimulus) {
     const stimulusWindow = motionStimulus
       ? `${motionStimulus.width}x${motionStimulus.height} @ ${motionStimulus.x},${motionStimulus.y}`
       : 'window unavailable'
-    lines.push(`- screenMotionStimulus: true (${motionStimulus?.browserPath ?? motionStimulus?.driver ?? 'stimulus'}; ${stimulusWindow})`)
+    lines.push(
+      `- screenMotionStimulus: true (${motionStimulus?.browserPath ?? motionStimulus?.driver ?? 'stimulus'}; ${stimulusWindow})`
+    )
     if (motionStimulus?.visibility) {
       lines.push(
         `- screenMotionStimulusVisibility: ${motionStimulus.visibility.visible ? 'PASS' : 'FAIL'} (${motionStimulus.visibility.reason}; ${motionStimulus.visibility.screenshotPath})`
@@ -1463,7 +1729,9 @@ function writeBaselineReport(
     const stimulusWindow = avSyncStimulus
       ? `${avSyncStimulus.width}x${avSyncStimulus.height} @ ${avSyncStimulus.x},${avSyncStimulus.y}`
       : 'window unavailable'
-    lines.push(`- avSyncStimulus: true (${avSyncStimulus?.browserPath ?? 'browser'}; ${stimulusWindow})`)
+    lines.push(
+      `- avSyncStimulus: true (${avSyncStimulus?.browserPath ?? 'browser'}; ${stimulusWindow})`
+    )
   }
   if (config.notesOverlay) {
     lines.push(
@@ -1485,12 +1753,22 @@ function writeBaselineReport(
   lines.push('')
   lines.push('### Final-file metrics')
   lines.push('')
-  lines.push(`- Codec/encoder: ${m.codec ?? 'n/a'} / ${m.encoderTag ?? 'n/a'} (${m.width}×${m.height} ${m.pixFmt ?? ''})`.trim())
-  lines.push(`- Frames: observed ${m.observedFrames ?? 'n/a'} vs expected ~${m.expectedFrames ?? 'n/a'} | observed fps ${fmt(m.observedFps, 2)}`)
-  lines.push(`- Frame pacing: mean ${fmt(m.meanIntervalMs)}ms | max gap ${fmt(m.maxFrameGapMs)}ms | jitter ${fmt(m.frameJitterMs)}ms`)
+  lines.push(
+    `- Codec/encoder: ${m.codec ?? 'n/a'} / ${m.encoderTag ?? 'n/a'} (${m.width}×${m.height} ${m.pixFmt ?? ''})`.trim()
+  )
+  lines.push(
+    `- Frames: observed ${m.observedFrames ?? 'n/a'} vs expected ~${m.expectedFrames ?? 'n/a'} | observed fps ${fmt(m.observedFps, 2)}`
+  )
+  lines.push(
+    `- Frame pacing: mean ${fmt(m.meanIntervalMs)}ms | max gap ${fmt(m.maxFrameGapMs)}ms | jitter ${fmt(m.frameJitterMs)}ms`
+  )
   lines.push(`- Freeze: longest ${fmt(m.longestFreezeMs)}ms / ${m.freezeCount} segment(s)`)
-  lines.push(`- Repeated frames: max run ${m.maxRepeatedFrameRun ?? 'n/a'} / ${m.repeatedBurstCount} burst(s)`)
-  lines.push(`- Audio gaps: max ${fmt(m.maxAudioGapMs)}ms / ${m.audioGapCount ?? 0} | silence longest ${fmt(m.longestSilenceMs)}ms`)
+  lines.push(
+    `- Repeated frames: max run ${m.maxRepeatedFrameRun ?? 'n/a'} / ${m.repeatedBurstCount} burst(s)`
+  )
+  lines.push(
+    `- Audio gaps: max ${fmt(m.maxAudioGapMs)}ms / ${m.audioGapCount ?? 0} | silence longest ${fmt(m.longestSilenceMs)}ms`
+  )
   lines.push(`- A/V skew: ${m.avSkewMs == null ? 'n/a' : `${fmt(m.avSkewMs)}ms`}`)
   lines.push('')
   if (notesOverlay) {
@@ -1520,20 +1798,33 @@ function writeBaselineReport(
     }
     lines.push('')
     lines.push(`- Report: \`${startupPaths?.mdPath ?? 'n/a'}\``)
-    if (startupPaths?.thumbnailPath) lines.push(`- Thumbnail sheet: \`${startupPaths.thumbnailPath}\``)
-    lines.push(`- Metadata resolution: ${s.metadataWidth ?? 'n/a'}x${s.metadataHeight ?? 'n/a'} | expected ${s.expectedWidth ?? 'n/a'}x${s.expectedHeight ?? 'n/a'}`)
-    lines.push(`- Startup frames: decoded ${s.startupFrameCount} | expected ~${s.expectedStartupFrames ?? 'n/a'} | hashes ${s.hashCount}`)
-    lines.push(`- Dimension mismatches: ${s.dimensionMismatchCount} | preview-sized frames: ${s.previewSizedFrameCount}`)
-    lines.push(`- Repeated frames: max run ${s.maxRepeatedFrameRun ?? 'n/a'} / ${s.repeatedBurstCount} burst(s)`)
-    lines.push(`- Near-black frames: ${s.blackFrameCount} | letterbox/pillarbox candidates: ${s.letterboxCandidateCount}`)
-    lines.push(`- Synthetic evidence: ${s.syntheticEvidence == null ? 'not available' : `${s.syntheticEvidence} diagnostic frame(s)`}`)
+    if (startupPaths?.thumbnailPath)
+      lines.push(`- Thumbnail sheet: \`${startupPaths.thumbnailPath}\``)
+    lines.push(
+      `- Metadata resolution: ${s.metadataWidth ?? 'n/a'}x${s.metadataHeight ?? 'n/a'} | expected ${s.expectedWidth ?? 'n/a'}x${s.expectedHeight ?? 'n/a'}`
+    )
+    lines.push(
+      `- Startup frames: decoded ${s.startupFrameCount} | expected ~${s.expectedStartupFrames ?? 'n/a'} | hashes ${s.hashCount}`
+    )
+    lines.push(
+      `- Dimension mismatches: ${s.dimensionMismatchCount} | preview-sized frames: ${s.previewSizedFrameCount}`
+    )
+    lines.push(
+      `- Repeated frames: max run ${s.maxRepeatedFrameRun ?? 'n/a'} / ${s.repeatedBurstCount} burst(s)`
+    )
+    lines.push(
+      `- Near-black frames: ${s.blackFrameCount} | letterbox/pillarbox candidates: ${s.letterboxCandidateCount}`
+    )
+    lines.push(
+      `- Synthetic evidence: ${s.syntheticEvidence == null ? 'not available' : `${s.syntheticEvidence} diagnostic frame(s)`}`
+    )
     lines.push('')
   }
   append4kMediaPathEvidence(lines, {
     sources,
     diagnostics,
     report,
-    startupReport,
+    startupReport
   })
   lines.push('## Media quality mode')
   lines.push('')
@@ -1542,18 +1833,25 @@ function writeBaselineReport(
   if (qualityMode.reasons.length) {
     for (const reason of qualityMode.reasons) lines.push(`- Evidence: ${reason}`)
   }
-  lines.push('- Scope: diagnostics/reporting vocabulary only. UI health remains Ready/Live/Degraded/Blocked until a later native-preview UI slice promotes this mode.')
+  lines.push(
+    '- Scope: diagnostics/reporting vocabulary only. UI health remains Ready/Live/Degraded/Blocked until a later native-preview UI slice promotes this mode.'
+  )
   lines.push('')
   lines.push('## Live diagnostics during recording')
   lines.push('')
-  lines.push(`- Preview transport(s) reported: ${diagnostics.transports.join(', ') || 'unknown'} (baseline preview request said: ${previewTransport})`)
+  lines.push(
+    `- Preview transport(s) reported: ${diagnostics.transports.join(', ') || 'unknown'} (baseline preview request said: ${previewTransport})`
+  )
   lines.push(
     `- Preview surface backing(s) reported: ${diagnostics.surfaceBackings.join(', ') || 'unknown'} ` +
       `(strict OBS backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'})`
   )
   {
     const p = diagnostics.imagePollDuringSession
-    const honest = p.total === 0 ? '✅ none (consistent with native)' : `⚠️ ${p.total} image-poll request(s) during session — NOT native`
+    const honest =
+      p.total === 0
+        ? '✅ none (consistent with native)'
+        : `⚠️ ${p.total} image-poll request(s) during session — NOT native`
     lines.push(
       `- Transport honesty — image-poll requests during session: ${honest} ` +
         `(camera.png ${p.cameraPng ?? 'n/a'}, screen.png ${p.screenPng ?? 'n/a'}, live.jpg ${p.liveJpeg ?? 'n/a'}, live.mjpeg ${p.liveMjpeg ?? 'n/a'})`
@@ -1563,14 +1861,21 @@ function writeBaselineReport(
   lines.push(`- Encode backend (requested): ${diagnostics.encodeBackend ?? 'unknown'}`)
   lines.push(
     `- Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}` +
-      (diagnostics.compositorFallbackReason ? ` | reason: ${diagnostics.compositorFallbackReason}` : '')
+      (diagnostics.compositorFallbackReason
+        ? ` | reason: ${diagnostics.compositorFallbackReason}`
+        : '')
   )
-  lines.push(`- Encoder: min speed ${fmt(diagnostics.minEncoderSpeed, 2)}x | dropped ${diagnostics.droppedFrames}`)
-  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age p95/max ${fmt(diagnostics.encoderBridgeSourceAgeP95Ms)}/${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | repeat age p95/max ${fmt(diagnostics.encoderBridgeRepeatedFrameAgeP95Ms)}/${fmt(diagnostics.encoderBridgeRepeatedFrameAgeMaxMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} (${diagnostics.encoderBridgeVideoToolboxOutputBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxOutputEncodeMs}ms max encode) | split encoders ${diagnostics.encoderBridgeActiveVideoToolboxOutputEncoders} (separate ${formatBoolean(diagnostics.encoderBridgeSeparateOutputEncodersActive)}, record ${diagnostics.encoderBridgeRecordingVideoToolboxOutputFrames}/${diagnostics.encoderBridgeRecordingVideoToolboxOutputBytes} bytes, stream ${diagnostics.encoderBridgeStreamVideoToolboxOutputFrames}/${diagnostics.encoderBridgeStreamVideoToolboxOutputBytes} bytes) | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`)
+  lines.push(
+    `- Encoder: min speed ${fmt(diagnostics.minEncoderSpeed, 2)}x | dropped ${diagnostics.droppedFrames}`
+  )
+  lines.push(
+    `- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age p95/max ${fmt(diagnostics.encoderBridgeSourceAgeP95Ms)}/${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | repeat age p95/max ${fmt(diagnostics.encoderBridgeRepeatedFrameAgeP95Ms)}/${fmt(diagnostics.encoderBridgeRepeatedFrameAgeMaxMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} (${diagnostics.encoderBridgeVideoToolboxOutputBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxOutputEncodeMs}ms max encode) | split encoders ${diagnostics.encoderBridgeActiveVideoToolboxOutputEncoders} (separate ${formatBoolean(diagnostics.encoderBridgeSeparateOutputEncodersActive)}, record ${diagnostics.encoderBridgeRecordingVideoToolboxOutputFrames}/${diagnostics.encoderBridgeRecordingVideoToolboxOutputBytes} bytes, stream ${diagnostics.encoderBridgeStreamVideoToolboxOutputFrames}/${diagnostics.encoderBridgeStreamVideoToolboxOutputBytes} bytes) | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`
+  )
   lines.push(
     `- Recording bridge timings p95: compositor wait ${fmt(diagnostics.encoderBridgeCompositorWaitP95Ms)}ms | ` +
       `VT submit ${fmt(diagnostics.encoderBridgeVideoToolboxSubmitP95Ms)}ms | ` +
-      `H.264 FIFO write ${fmt(diagnostics.encoderBridgeVideoToolboxFifoWriteP95Ms)}ms | ` +
+      `H.264 FIFO write/enqueue ${fmt(diagnostics.encoderBridgeVideoToolboxFifoWriteP95Ms)}/${fmt(diagnostics.encoderBridgeVideoToolboxFifoEnqueueP95Ms)}ms | ` +
+      `FIFO enqueue max ${fmt(diagnostics.encoderBridgeVideoToolboxFifoEnqueueMaxMs)}ms | ` +
       `writer total ${fmt(diagnostics.encoderBridgeWriterLoopP95Ms)}ms | ` +
       `writer sleep/active ${fmt(diagnostics.encoderBridgeWriterSleepP95Ms)}/${fmt(diagnostics.encoderBridgeWriterActiveP95Ms)}ms | ` +
       `deadline lag p95/max ${fmt(diagnostics.encoderBridgeDeadlineLagP95Ms)}/${fmt(diagnostics.encoderBridgeDeadlineLagMaxMs)}ms (${diagnostics.encoderBridgeLateDeadlineTicks} late tick(s))`
@@ -1580,9 +1885,13 @@ function writeBaselineReport(
       `first source ${fmt(diagnostics.firstSourceFrameMs, 0)}ms | full-res compositor ${fmt(diagnostics.firstFullResolutionCompositorFrameMs, 0)}ms | encoding ${fmt(diagnostics.firstEncodedFrameMs, 0)}ms`
   )
   if (diagnostics.recordingStartupBarrierTimeoutReason) {
-    lines.push(`- Startup barrier timeout reason: ${diagnostics.recordingStartupBarrierTimeoutReason}`)
+    lines.push(
+      `- Startup barrier timeout reason: ${diagnostics.recordingStartupBarrierTimeoutReason}`
+    )
   }
-  lines.push(`- Capture/render fps (min): ${fmt(diagnostics.minCaptureFps, 1)} / ${fmt(diagnostics.minRenderFps, 1)}`)
+  lines.push(
+    `- Capture/render fps (min): ${fmt(diagnostics.minCaptureFps, 1)} / ${fmt(diagnostics.minRenderFps, 1)}`
+  )
   lines.push(
     `- Mic: captured ${diagnostics.micCapturedFrames ?? 'n/a'} | dropped ${diagnostics.micDroppedFrames} | min capture coverage ${fmt(diagnostics.minMicCaptureCoverage, 2)} (1.0 = no gaps)`
   )
@@ -1607,7 +1916,9 @@ function writeBaselineReport(
       `presented frame age p95 ${fmtMs(diagnostics.nativePreviewMainPresentedFrameAgeP95Ms)}`
   )
   if (diagnostics.previewMeasurementError) {
-    lines.push(`- Native preview direct measurement: failed (${diagnostics.previewMeasurementError})`)
+    lines.push(
+      `- Native preview direct measurement: failed (${diagnostics.previewMeasurementError})`
+    )
   } else if (diagnostics.previewDirectMeasuredFps != null) {
     lines.push(
       `- Native preview direct measurement: ${fmt(diagnostics.previewDirectMeasuredFps, 1)}fps | ` +
@@ -1616,13 +1927,17 @@ function writeBaselineReport(
         `compositor lag ${fmt(diagnostics.previewDirectCompositorFrameLag, 0)} | blanks ${diagnostics.previewDirectBlankFrames}`
     )
   }
-  lines.push(`- Preview frame lag/dropped frames: ${fmt(diagnostics.previewCompositorFrameLag, 0)} / ${diagnostics.previewDroppedFrames}`)
+  lines.push(
+    `- Preview frame lag/dropped frames: ${fmt(diagnostics.previewCompositorFrameLag, 0)} / ${diagnostics.previewDroppedFrames}`
+  )
   lines.push(
     `- Preview source pixels: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed during run: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
   )
   lines.push(`- Preview host commands pending: ${diagnostics.previewPendingHostCommandCount}`)
   lines.push(`- Preview repeated frames: ${diagnostics.previewRepeatedFrames}`)
-  lines.push(`- Source frame age (max): camera ${fmt(diagnostics.previewCameraFrameAgeMs, 0)}ms | screen ${fmt(diagnostics.previewScreenFrameAgeMs, 0)}ms`)
+  lines.push(
+    `- Source frame age (max): camera ${fmt(diagnostics.previewCameraFrameAgeMs, 0)}ms | screen ${fmt(diagnostics.previewScreenFrameAgeMs, 0)}ms`
+  )
   lines.push(
     `- Camera capture cadence: callback gap p95 ${fmt(diagnostics.previewCameraCaptureGapP95Ms)}ms / max ${fmt(diagnostics.previewCameraCaptureGapMaxMs)}ms | ` +
       `sample PTS gap p95 ${fmt(diagnostics.previewCameraSamplePtsGapP95Ms)}ms / max ${fmt(diagnostics.previewCameraSamplePtsGapMaxMs)}ms | ` +
@@ -1655,8 +1970,12 @@ function writeBaselineReport(
     `- Compositor source freshness: camera try-lock misses ${diagnostics.compositorCameraSourceTryLockMisses} / blocking refreshes ${diagnostics.compositorCameraSourceBlockingRefreshes} | ` +
       `screen try-lock misses ${diagnostics.compositorScreenSourceTryLockMisses} / blocking refreshes ${diagnostics.compositorScreenSourceBlockingRefreshes}`
   )
-  lines.push(`- Backend RSS max: ${mib(diagnostics.maxBackendRssBytes)} | ffmpeg procs ${diagnostics.maxActiveFfmpegProcesses} | ffprobe procs ${diagnostics.maxActiveFfprobeProcesses}`)
-  lines.push(`- Maintenance overlap samples: ${diagnostics.maintenanceSamples} | duplicate-capture samples: ${diagnostics.duplicateCaptureSamples}`)
+  lines.push(
+    `- Backend RSS max: ${mib(diagnostics.maxBackendRssBytes)} | ffmpeg procs ${diagnostics.maxActiveFfmpegProcesses} | ffprobe procs ${diagnostics.maxActiveFfprobeProcesses}`
+  )
+  lines.push(
+    `- Maintenance overlap samples: ${diagnostics.maintenanceSamples} | duplicate-capture samples: ${diagnostics.duplicateCaptureSamples}`
+  )
   if (previewSurfaceOutputFailures.length) {
     lines.push('')
     lines.push('## Preview Surface Host Output Guard')
@@ -1685,22 +2004,46 @@ function writeBaselineReport(
   lines.push('## Honest-metric status')
   lines.push('')
   lines.push('Now measured (trust the values above):')
-  lines.push('- **Compositor repeated frames** — real per-tick source-sequence diff (was structurally always 0).')
-  lines.push('- **Recording repeated / synthetic-filler frames** — the encoder bridge now counts stale re-feeds and source→encode age.')
+  lines.push(
+    '- **Compositor repeated frames** — real per-tick source-sequence diff (was structurally always 0).'
+  )
+  lines.push(
+    '- **Recording repeated / synthetic-filler frames** — the encoder bridge now counts stale re-feeds and source→encode age.'
+  )
   lines.push('- **Requested encode backend** — software-x264 vs hardware-videotoolbox is recorded.')
-  lines.push('- **Final-file freeze / repeated-frame bursts / pacing** — the analyzer verdict above decodes the actual artifact.')
-  lines.push('- **Transport honesty** — image-poll request counts (above) reveal whether a "native" preview is really PNG/JPEG/MJPEG polling.')
-  lines.push('- **Live mic capture** — dropped frames and the capture-coverage gap signal now update during the run, not only at stop.')
-  if (claimsNativePreview({ previewTransport, diagnostics }) && diagnostics.previewSourcePixelsPresent) {
-    lines.push('- **Native CAMetalLayer source-to-present latency** — diagnostics saw native-surface/cametal-layer presents with source-pixel proof while fallback image polling was suppressed.')
+  lines.push(
+    '- **Final-file freeze / repeated-frame bursts / pacing** — the analyzer verdict above decodes the actual artifact.'
+  )
+  lines.push(
+    '- **Transport honesty** — image-poll request counts (above) reveal whether a "native" preview is really PNG/JPEG/MJPEG polling.'
+  )
+  lines.push(
+    '- **Live mic capture** — dropped frames and the capture-coverage gap signal now update during the run, not only at stop.'
+  )
+  if (
+    claimsNativePreview({ previewTransport, diagnostics }) &&
+    diagnostics.previewSourcePixelsPresent
+  ) {
+    lines.push(
+      '- **Native CAMetalLayer source-to-present latency** — diagnostics saw native-surface/cametal-layer presents with source-pixel proof while fallback image polling was suppressed.'
+    )
   }
   lines.push('')
   lines.push('Still NOT proven here:')
-  if (!claimsNativePreview({ previewTransport, diagnostics }) || !diagnostics.previewSourcePixelsPresent) {
-    lines.push('- **True CAMetalLayer source-to-present latency**: this run did not prove native-surface/cametal-layer presents with source pixels.')
+  if (
+    !claimsNativePreview({ previewTransport, diagnostics }) ||
+    !diagnostics.previewSourcePixelsPresent
+  ) {
+    lines.push(
+      '- **True CAMetalLayer source-to-present latency**: this run did not prove native-surface/cametal-layer presents with source pixels.'
+    )
   }
-  lines.push('- **OBS side-by-side visual quality**: screen text sharpness, cursor edges, camera detail, crop/mirror behavior, and color still need a human comparison at the same preview size.')
-  lines.push('- **Lip-sync**: A/V skew here is a container duration delta, not measured mouth/voice alignment — that needs capture-clock PTS instrumentation (the native part of slice #8). The live mic capture-coverage signal above is the honest gap indicator, since final-file audio gaps are masked by the muxer/aresample.')
+  lines.push(
+    '- **OBS side-by-side visual quality**: screen text sharpness, cursor edges, camera detail, crop/mirror behavior, and color still need a human comparison at the same preview size.'
+  )
+  lines.push(
+    '- **Lip-sync**: A/V skew here is a container duration delta, not measured mouth/voice alignment — that needs capture-clock PTS instrumentation (the native part of slice #8). The live mic capture-coverage signal above is the honest gap indicator, since final-file audio gaps are masked by the muxer/aresample.'
+  )
   lines.push('')
 
   writeFileSync(reportPath, lines.join('\n'))
@@ -1721,7 +2064,7 @@ function writeEvidenceManifest(
     acceptance,
     qualityMode,
     previewSurfaceOutputFailures = [],
-    notesOverlay = null,
+    notesOverlay = null
   }
 ) {
   const manifestPath = evidenceManifestPathForOutput(outputPath)
@@ -1732,7 +2075,7 @@ function writeEvidenceManifest(
       argv: process.argv.slice(2),
       gate: config.gate,
       screenRecordingGate: config.screenRecordingGate,
-      notesOverlayGate: config.notesOverlayGate,
+      notesOverlayGate: config.notesOverlayGate
     },
     request: realSourceGateRequest(),
     result: {
@@ -1745,7 +2088,7 @@ function writeEvidenceManifest(
       notesOverlayFailures: notesOverlay?.failures ?? [],
       mediaQualityMode: qualityMode?.mode ?? 'unknown',
       mediaQualityLabel: qualityMode?.label ?? 'unknown',
-      mediaQualityReasons: qualityMode?.reasons ?? [],
+      mediaQualityReasons: qualityMode?.reasons ?? []
     },
     paths: {
       recording: outputPath,
@@ -1755,7 +2098,7 @@ function writeEvidenceManifest(
       qualityReport: analyzerPaths?.mdPath ?? null,
       startupJson: startupPaths?.jsonPath ?? null,
       startupReport: startupPaths?.mdPath ?? null,
-      startupThumbnail: startupPaths?.thumbnailPath ?? null,
+      startupThumbnail: startupPaths?.thumbnailPath ?? null
     },
     sources: selectedSourcesManifest(sources),
     diagnostics: gateDiagnosticsManifest(diagnostics, {
@@ -1764,8 +2107,8 @@ function writeEvidenceManifest(
       startupMetrics: startupReport?.metrics,
       previewTransport,
       previewSurfaceOutputFailures,
-      notesOverlay,
-    }),
+      notesOverlay
+    })
   }
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
   writeLatestEvidenceManifest(manifest)
@@ -1779,7 +2122,7 @@ function writeBlockedEvidenceManifest({
   baselinePath,
   error,
   qualityMode,
-  previewSurfaceOutputFailures = [],
+  previewSurfaceOutputFailures = []
 }) {
   const manifestPath = evidenceManifestPathForReport(baselinePath)
   const manifest = {
@@ -1789,7 +2132,7 @@ function writeBlockedEvidenceManifest({
       argv: process.argv.slice(2),
       gate: config.gate,
       screenRecordingGate: config.screenRecordingGate,
-      notesOverlayGate: config.notesOverlayGate,
+      notesOverlayGate: config.notesOverlayGate
     },
     request: realSourceGateRequest(),
     result: {
@@ -1797,13 +2140,13 @@ function writeBlockedEvidenceManifest({
       acceptancePass: false,
       acceptanceFailures: [
         `session.start failed before encoding: ${error?.message ?? error}`,
-        ...previewSurfaceOutputFailureMessages(previewSurfaceOutputFailures),
+        ...previewSurfaceOutputFailureMessages(previewSurfaceOutputFailures)
       ],
       finalFilePass: false,
       startupPass: false,
       mediaQualityMode: qualityMode?.mode ?? 'unknown',
       mediaQualityLabel: qualityMode?.label ?? 'unknown',
-      mediaQualityReasons: qualityMode?.reasons ?? [],
+      mediaQualityReasons: qualityMode?.reasons ?? []
     },
     paths: {
       recording: null,
@@ -1813,15 +2156,15 @@ function writeBlockedEvidenceManifest({
       qualityReport: null,
       startupJson: null,
       startupReport: null,
-      startupThumbnail: null,
+      startupThumbnail: null
     },
     sources: selectedSourcesManifest(sources),
     diagnostics: gateDiagnosticsManifest(diagnostics, {
       finalMetrics: null,
       startupMetrics: null,
       previewTransport,
-      previewSurfaceOutputFailures,
-    }),
+      previewSurfaceOutputFailures
+    })
   }
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
   writeLatestEvidenceManifest(manifest)
@@ -1829,7 +2172,10 @@ function writeBlockedEvidenceManifest({
 }
 
 function evidenceManifestPathForOutput(outputPath) {
-  const base = outputPath.split('/').pop().replace(/\.[^.]+$/, '')
+  const base = outputPath
+    .split('/')
+    .pop()
+    .replace(/\.[^.]+$/, '')
   return join(dirname(outputPath), `${base}.evidence.json`)
 }
 
@@ -1849,8 +2195,8 @@ function writeLatestEvidenceManifest(manifest) {
         ...manifest,
         latestPointer: {
           updatedAtIso: new Date().toISOString(),
-          canonicalEvidenceManifest: manifest.paths?.evidenceManifest ?? null,
-        },
+          canonicalEvidenceManifest: manifest.paths?.evidenceManifest ?? null
+        }
       },
       null,
       2
@@ -1868,15 +2214,15 @@ function realSourceGateRequest() {
     bridgeVideoOutput: config.bridgeVideoOutput ?? 'backend-default',
     streamEnabled: config.streamEnabled,
     // Stream key is never written to evidence; mirror the backend's redaction shape.
-    streamRedactedUrl: config.streamEnabled ? `${config.streamServerUrl.replace(/\/+$/, '')}/••••` : null,
+    streamRedactedUrl: config.streamEnabled
+      ? `${config.streamServerUrl.replace(/\/+$/, '')}/••••`
+      : null,
     streamingSettingsEnabled: config.streamingSettingsEnabled,
     streamOutputPreset: config.streamingSettingsEnabled ? config.streamOutputPreset : null,
     streamBitrateKbps: config.streamingSettingsEnabled ? config.streamBitrateKbps : null,
     streamTargetId: config.streamingSettingsEnabled ? config.streamTargetId : null,
     streamTargetPlatform: config.streamingSettingsEnabled ? config.streamTargetPlatform : null,
-    streamCompanionEnabled: config.streamingSettingsEnabled
-      ? config.streamCompanionEnabled
-      : false,
+    streamCompanionEnabled: config.streamingSettingsEnabled ? config.streamCompanionEnabled : false,
     streamCompanionId:
       config.streamingSettingsEnabled && config.streamCompanionEnabled
         ? config.streamCompanionId
@@ -1896,7 +2242,7 @@ function realSourceGateRequest() {
     noPreviewSurface: config.noPreviewSurface,
     fallbackLivePreview: config.fallbackLivePreview,
     requestedOutput: requestedOutputSettings(),
-    require4kMediaEvidence: requires4kMediaEvidence(),
+    require4kMediaEvidence: requires4kMediaEvidence()
   }
 }
 
@@ -1922,9 +2268,9 @@ function motionStimulusVisibilityManifest() {
           counts: motionStimulus.visibility.counts ?? null,
           passingColors: motionStimulus.visibility.passingColors ?? [],
           missingColors: motionStimulus.visibility.missingColors ?? [],
-          missingRequiredColors: motionStimulus.visibility.missingRequiredColors ?? [],
+          missingRequiredColors: motionStimulus.visibility.missingRequiredColors ?? []
         }
-      : null,
+      : null
   }
 }
 
@@ -1932,7 +2278,7 @@ function selectedSourcesManifest(sources) {
   return {
     screen: sourceManifest(sources.screen),
     camera: sourceManifest(sources.camera),
-    microphone: sourceManifest(sources.microphone),
+    microphone: sourceManifest(sources.microphone)
   }
 }
 
@@ -1942,13 +2288,20 @@ function sourceManifest(source) {
     id: source.id ?? null,
     name: source.name ?? null,
     width: source.width ?? null,
-    height: source.height ?? null,
+    height: source.height ?? null
   }
 }
 
 function gateDiagnosticsManifest(
   diagnostics,
-  { finalMetrics, finalFilePath = null, startupMetrics, previewTransport, previewSurfaceOutputFailures = [], notesOverlay = null }
+  {
+    finalMetrics,
+    finalFilePath = null,
+    startupMetrics,
+    previewTransport,
+    previewSurfaceOutputFailures = [],
+    notesOverlay = null
+  }
 ) {
   return {
     previewTransportRequested: previewTransport,
@@ -2006,7 +2359,7 @@ function gateDiagnosticsManifest(
           observedFps: finalMetrics.observedFps ?? null,
           maxRepeatedFrameRun: finalMetrics.maxRepeatedFrameRun ?? null,
           longestFreezeMs: finalMetrics.longestFreezeMs ?? null,
-          avSkewMs: finalMetrics.avSkewMs ?? null,
+          avSkewMs: finalMetrics.avSkewMs ?? null
         }
       : null,
     startup: startupMetrics
@@ -2018,7 +2371,7 @@ function gateDiagnosticsManifest(
           startupFrameCount: startupMetrics.startupFrameCount ?? null,
           dimensionMismatchCount: startupMetrics.dimensionMismatchCount ?? null,
           previewSizedFrameCount: startupMetrics.previewSizedFrameCount ?? null,
-          maxRepeatedFrameRun: startupMetrics.maxRepeatedFrameRun ?? null,
+          maxRepeatedFrameRun: startupMetrics.maxRepeatedFrameRun ?? null
         }
       : null,
     previewSurfaceOutputFailures,
@@ -2029,13 +2382,16 @@ function gateDiagnosticsManifest(
           thresholds: notesOverlay.thresholds,
           metrics: notesOverlay.metrics,
           bounds: notesOverlayBounds,
-          windowId: notesOverlayState?.windowId ?? null,
+          windowId: notesOverlayState?.windowId ?? null
         }
-      : null,
+      : null
   }
 }
 
-function append4kMediaPathEvidence(lines, { sources, diagnostics, report, startupReport, blocked = false }) {
+function append4kMediaPathEvidence(
+  lines,
+  { sources, diagnostics, report, startupReport, blocked = false }
+) {
   const media = diagnostics.mediaDimensions ?? {}
   const requested = media.requestedOutput ?? requestedOutputSettings()
   const final = report?.metrics ?? {}
@@ -2097,7 +2453,10 @@ function append4kMediaPathEvidence(lines, { sources, diagnostics, report, startu
 function dimensionTriage({ requested, media, final, startup, blocked }) {
   if (blocked) return 'recording blocked before encoder/final-file dimensions existed'
   const problems = []
-  if (dimensionBelow(media.cameraSource?.max, requested) || dimensionBelow(media.screenSource?.max, requested)) {
+  if (
+    dimensionBelow(media.cameraSource?.max, requested) ||
+    dimensionBelow(media.screenSource?.max, requested)
+  ) {
     problems.push('source below requested output')
   }
   if (dimensionBelow(media.compositorTarget?.max, requested)) {
@@ -2115,7 +2474,9 @@ function dimensionTriage({ requested, media, final, startup, blocked }) {
   if (dimensionMismatch(final.width, final.height, requested)) {
     problems.push('final-file mismatch')
   }
-  return problems.length ? problems.join('; ') : 'no dimension mismatch detected from collected evidence'
+  return problems.length
+    ? problems.join('; ')
+    : 'no dimension mismatch detected from collected evidence'
 }
 
 function dimensionBelow(dimension, requested) {
@@ -2160,12 +2521,18 @@ function formatCameraCapabilityMatrix(formats) {
   const ranked = [...formats].sort((left, right) => {
     const leftPixels = (finiteNumber(left.width) ?? 0) * (finiteNumber(left.height) ?? 0)
     const rightPixels = (finiteNumber(right.width) ?? 0) * (finiteNumber(right.height) ?? 0)
-    return rightPixels - leftPixels || (finiteNumber(right.maxFps) ?? 0) - (finiteNumber(left.maxFps) ?? 0)
+    return (
+      rightPixels - leftPixels ||
+      (finiteNumber(right.maxFps) ?? 0) - (finiteNumber(left.maxFps) ?? 0)
+    )
   })
   const examples = ranked.slice(0, 8).map((format) => {
     const minFps = finiteNumber(format.minFps)
     const maxFps = finiteNumber(format.maxFps)
-    const fps = minFps === maxFps ? `${formatNumber(maxFps)}fps` : `${formatNumber(minFps)}-${formatNumber(maxFps)}fps`
+    const fps =
+      minFps === maxFps
+        ? `${formatNumber(maxFps)}fps`
+        : `${formatNumber(minFps)}-${formatNumber(maxFps)}fps`
     return `${formatDimension(format.width, format.height)}@${fps}`
   })
   return `${formats.length} ranges; top ${examples.join(', ')}`
@@ -2200,7 +2567,7 @@ function outputProfileFromDiagnostics(diagnostics, prefix) {
     width: typeof width === 'number' ? width : null,
     height: typeof height === 'number' ? height : null,
     fps: typeof fps === 'number' ? fps : null,
-    bitrateKbps: typeof bitrateKbps === 'number' ? bitrateKbps : null,
+    bitrateKbps: typeof bitrateKbps === 'number' ? bitrateKbps : null
   }
 }
 
@@ -2234,7 +2601,9 @@ function formatRange(min, max) {
 }
 
 function formatNumber(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(value % 1 === 0 ? 0 : 1) : 'n/a'
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(value % 1 === 0 ? 0 : 1)
+    : 'n/a'
 }
 
 function writeBlockedStartupReport({
@@ -2244,23 +2613,35 @@ function writeBlockedStartupReport({
   healthEvents,
   error,
   qualityMode,
-  previewSurfaceOutputFailures = [],
+  previewSurfaceOutputFailures = []
 }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const reportPath = join(config.outputDirectory, `videorc-session-${stamp}.blocked-start.md`)
   const fmt = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : 'n/a')
   const errorMessage = error?.message ?? String(error)
   const blockedCadence = blockedStartupCameraCadence(errorMessage, healthEvents)
-  const cameraCallbackP95 = fmtOrFallback(diagnostics.previewCameraCaptureGapP95Ms, blockedCadence?.callbackP95)
-  const cameraSamplePtsP95 = fmtOrFallback(diagnostics.previewCameraSamplePtsGapP95Ms, blockedCadence?.samplePtsP95)
-  const cameraFrameAge = fmtOrFallback(diagnostics.previewCameraFrameAgeMs, blockedCadence?.frameAge, 0)
+  const cameraCallbackP95 = fmtOrFallback(
+    diagnostics.previewCameraCaptureGapP95Ms,
+    blockedCadence?.callbackP95
+  )
+  const cameraSamplePtsP95 = fmtOrFallback(
+    diagnostics.previewCameraSamplePtsGapP95Ms,
+    blockedCadence?.samplePtsP95
+  )
+  const cameraFrameAge = fmtOrFallback(
+    diagnostics.previewCameraFrameAgeMs,
+    blockedCadence?.frameAge,
+    0
+  )
 
   const lines = []
   lines.push('# Real-Source Baseline Blocked Before Encoding')
   lines.push('')
   lines.push(`- Generated: ${new Date().toISOString()}`)
   lines.push(`- Platform: ${process.platform}`)
-  lines.push(`- Output request: ${config.width}x${config.height} @ ${config.fps}fps, ${config.bitrateKbps}kbps`)
+  lines.push(
+    `- Output request: ${config.width}x${config.height} @ ${config.fps}fps, ${config.bitrateKbps}kbps`
+  )
   lines.push(`- Encoder bridge video output: \`${config.bridgeVideoOutput}\``)
   lines.push(`- Media quality mode: \`${qualityMode.mode}\` - ${qualityMode.label}`)
   lines.push('- Result: BLOCKED before encoding')
@@ -2268,16 +2649,24 @@ function writeBlockedStartupReport({
   lines.push('')
   lines.push('## Selected real sources')
   lines.push('')
-  lines.push(`- Screen: ${sources.screen ? `${sources.screen.name} \`${sources.screen.id}\`` : 'none'}`)
-  lines.push(`- Camera: ${sources.camera ? `${sources.camera.name} \`${sources.camera.id}\`` : 'none'}`)
-  lines.push(`- Microphone: ${sources.microphone ? `${sources.microphone.name} \`${sources.microphone.id}\`` : 'none'}`)
+  lines.push(
+    `- Screen: ${sources.screen ? `${sources.screen.name} \`${sources.screen.id}\`` : 'none'}`
+  )
+  lines.push(
+    `- Camera: ${sources.camera ? `${sources.camera.name} \`${sources.camera.id}\`` : 'none'}`
+  )
+  lines.push(
+    `- Microphone: ${sources.microphone ? `${sources.microphone.name} \`${sources.microphone.id}\`` : 'none'}`
+  )
   lines.push('- testPattern: false (real capture)')
   lines.push('')
   lines.push('## Health events during start')
   lines.push('')
   if (healthEvents.length) {
     for (const event of healthEvents) {
-      lines.push(`- ${event.level ?? 'unknown'} ${event.code ?? 'unknown'}: ${event.message ?? 'no message'}`)
+      lines.push(
+        `- ${event.level ?? 'unknown'} ${event.code ?? 'unknown'}: ${event.message ?? 'no message'}`
+      )
     }
   } else {
     lines.push('- None observed on the socket before the start request failed.')
@@ -2285,7 +2674,9 @@ function writeBlockedStartupReport({
   lines.push('')
   lines.push('## Live diagnostics at block')
   lines.push('')
-  lines.push(`- Preview transport(s): ${diagnostics.transports.join(', ') || 'unknown'} (baseline preview request said: ${previewTransport})`)
+  lines.push(
+    `- Preview transport(s): ${diagnostics.transports.join(', ') || 'unknown'} (baseline preview request said: ${previewTransport})`
+  )
   lines.push(
     `- Preview surface backing(s): ${diagnostics.surfaceBackings.join(', ') || 'unknown'} ` +
       `(strict backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'})`
@@ -2317,9 +2708,15 @@ function writeBlockedStartupReport({
   lines.push(
     `- Preview source pixels at block: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
   )
-  lines.push(`- Preview host commands pending at block: ${diagnostics.previewPendingHostCommandCount}`)
-  lines.push(`- Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}`)
-  lines.push(`- Mic: captured ${diagnostics.micCapturedFrames ?? 'n/a'} | dropped ${diagnostics.micDroppedFrames}`)
+  lines.push(
+    `- Preview host commands pending at block: ${diagnostics.previewPendingHostCommandCount}`
+  )
+  lines.push(
+    `- Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}`
+  )
+  lines.push(
+    `- Mic: captured ${diagnostics.micCapturedFrames ?? 'n/a'} | dropped ${diagnostics.micDroppedFrames}`
+  )
   if (previewSurfaceOutputFailures.length) {
     lines.push('')
     lines.push('## Preview Surface Host Output Guard')
@@ -2335,23 +2732,33 @@ function writeBlockedStartupReport({
     diagnostics,
     report: null,
     startupReport: null,
-    blocked: true,
+    blocked: true
   })
   lines.push('## Media quality mode')
   lines.push('')
   lines.push(`- Mode: \`${qualityMode.mode}\` - ${qualityMode.description}`)
   for (const reason of qualityMode.reasons) lines.push(`- Evidence: ${reason}`)
-  lines.push('- Scope: diagnostics/reporting vocabulary only. The blocked startup state remains the user-facing health signal.')
+  lines.push(
+    '- Scope: diagnostics/reporting vocabulary only. The blocked startup state remains the user-facing health signal.'
+  )
   lines.push('')
   lines.push('## Problem ownership triage')
   lines.push('')
-  lines.push('- First 2 seconds: startup guard/camera cadence. No MP4 was written, so the run avoided encoding damaged startup frames.')
-  lines.push('- Preview lag: not measured in this blocked run; rerun after cadence settles or with a source preset that passes startup.')
-  lines.push('- Preview quality: not measured in this blocked run; native CAMetalLayer acceptance is still required before claiming OBS-native quality.')
+  lines.push(
+    '- First 2 seconds: startup guard/camera cadence. No MP4 was written, so the run avoided encoding damaged startup frames.'
+  )
+  lines.push(
+    '- Preview lag: not measured in this blocked run; rerun after cadence settles or with a source preset that passes startup.'
+  )
+  lines.push(
+    '- Preview quality: not measured in this blocked run; native CAMetalLayer acceptance is still required before claiming OBS-native quality.'
+  )
   lines.push('')
   lines.push('## Gate verdict')
   lines.push('')
-  lines.push('- Non-gated baseline mode records this as a failed OBS-parity verdict, not a harness crash.')
+  lines.push(
+    '- Non-gated baseline mode records this as a failed OBS-parity verdict, not a harness crash.'
+  )
   lines.push('- `--gate` mode should fail because recording did not start.')
   lines.push('')
 
@@ -2367,12 +2774,14 @@ function appendPreviewSurfaceOutputFailures(acceptance, failures) {
   return {
     ...acceptance,
     pass: false,
-    failures: [...(acceptance.failures ?? []), ...outputFailures],
+    failures: [...(acceptance.failures ?? []), ...outputFailures]
   }
 }
 
 function previewSurfaceOutputFailureMessages(failures) {
-  return (failures ?? []).map((failure) => `preview-surface: host emitted handler error: ${failure}`)
+  return (failures ?? []).map(
+    (failure) => `preview-surface: host emitted handler error: ${failure}`
+  )
 }
 
 function acceptanceGates() {
@@ -2380,7 +2789,7 @@ function acceptanceGates() {
   return {
     ...DEFAULT_ACCEPTANCE_GATES,
     minPreviewPresentFps: 0,
-    maxPreviewIntervalP95Ms: Number.POSITIVE_INFINITY,
+    maxPreviewIntervalP95Ms: Number.POSITIVE_INFINITY
   }
 }
 
@@ -2397,7 +2806,8 @@ function printSummary(
   screenRecording,
   notesOverlay
 ) {
-  const fmtMs = (value) => typeof value === 'number' && Number.isFinite(value) ? `${value}ms` : 'n/a'
+  const fmtMs = (value) =>
+    typeof value === 'number' && Number.isFinite(value) ? `${value}ms` : 'n/a'
   console.log('')
   console.log('════════ REAL-SOURCE BASELINE ════════')
   console.log(
@@ -2421,19 +2831,21 @@ function printSummary(
   console.log(`Startup verdict: ${startupReport.verdict.pass ? 'PASS' : 'FAIL'}`)
   for (const f of startupReport.verdict.failures) console.log(`  ✗ ${f}`)
   for (const w of startupReport.verdict.warnings) console.log(`  ! ${w}`)
-  console.log(`Preview transport: ${previewTransport} (diagnostics saw: ${diagnostics.transports.join(', ') || 'unknown'})`)
+  console.log(
+    `Preview transport: ${previewTransport} (diagnostics saw: ${diagnostics.transports.join(', ') || 'unknown'})`
+  )
   console.log(`Encoder bridge video output: ${config.bridgeVideoOutput}`)
   console.log(
     `Preview backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'} (saw: ${diagnostics.surfaceBackings.join(', ') || 'unknown'})`
   )
-  console.log(
-    `Transport honesty: ${formatTransportHonesty({ previewTransport, diagnostics })}`
-  )
+  console.log(`Transport honesty: ${formatTransportHonesty({ previewTransport, diagnostics })}`)
   console.log(
     `Preview source pixels: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
   )
   if (diagnostics.previewMeasurementError) {
-    console.log(`Native preview direct measurement: failed (${diagnostics.previewMeasurementError})`)
+    console.log(
+      `Native preview direct measurement: failed (${diagnostics.previewMeasurementError})`
+    )
   } else if (diagnostics.previewDirectMeasuredFps != null) {
     console.log(
       `Native preview direct measurement: ${diagnostics.previewDirectMeasuredFps.toFixed(1)}fps | interval p95 ${diagnostics.previewDirectIntervalP95Ms ?? 'n/a'}ms | source-to-present p95/p99 ${diagnostics.previewDirectInputToPresentP95Ms ?? 'n/a'}/${diagnostics.previewDirectInputToPresentP99Ms ?? 'n/a'}ms | compositor lag ${diagnostics.previewDirectCompositorFrameLag ?? 'n/a'} | blanks ${diagnostics.previewDirectBlankFrames}`
@@ -2454,7 +2866,7 @@ function printSummary(
     `Recording bridge: repeated ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | source age p95/max ${diagnostics.encoderBridgeSourceAgeP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeSourceAgeMs ?? 'n/a'}ms | repeat age p95/max ${diagnostics.encoderBridgeRepeatedFrameAgeP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeRepeatedFrameAgeMaxMs ?? 'n/a'}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} | split encoders ${diagnostics.encoderBridgeActiveVideoToolboxOutputEncoders} (separate ${formatBoolean(diagnostics.encoderBridgeSeparateOutputEncodersActive)})`
   )
   console.log(
-    `Recording bridge timings p95: compositor wait ${diagnostics.encoderBridgeCompositorWaitP95Ms ?? 'n/a'}ms | VT submit ${diagnostics.encoderBridgeVideoToolboxSubmitP95Ms ?? 'n/a'}ms | H.264 FIFO write ${diagnostics.encoderBridgeVideoToolboxFifoWriteP95Ms ?? 'n/a'}ms | writer total ${diagnostics.encoderBridgeWriterLoopP95Ms ?? 'n/a'}ms | writer sleep/active ${diagnostics.encoderBridgeWriterSleepP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeWriterActiveP95Ms ?? 'n/a'}ms | deadline lag p95/max ${diagnostics.encoderBridgeDeadlineLagP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeDeadlineLagMaxMs ?? 'n/a'}ms (${diagnostics.encoderBridgeLateDeadlineTicks ?? 0} late tick(s))`
+    `Recording bridge timings p95: compositor wait ${diagnostics.encoderBridgeCompositorWaitP95Ms ?? 'n/a'}ms | VT submit ${diagnostics.encoderBridgeVideoToolboxSubmitP95Ms ?? 'n/a'}ms | H.264 FIFO write/enqueue ${diagnostics.encoderBridgeVideoToolboxFifoWriteP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeVideoToolboxFifoEnqueueP95Ms ?? 'n/a'}ms | FIFO enqueue max ${diagnostics.encoderBridgeVideoToolboxFifoEnqueueMaxMs ?? 'n/a'}ms | writer total ${diagnostics.encoderBridgeWriterLoopP95Ms ?? 'n/a'}ms | writer sleep/active ${diagnostics.encoderBridgeWriterSleepP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeWriterActiveP95Ms ?? 'n/a'}ms | deadline lag p95/max ${diagnostics.encoderBridgeDeadlineLagP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeDeadlineLagMaxMs ?? 'n/a'}ms (${diagnostics.encoderBridgeLateDeadlineTicks ?? 0} late tick(s))`
   )
   const activeOwners = (ownership ?? []).filter((item) => item.status !== 'pass')
   console.log(
@@ -2464,7 +2876,9 @@ function printSummary(
         : 'none from automated metrics'
     }`
   )
-  console.log(`Encoder min speed: ${diagnostics.minEncoderSpeed ?? 'n/a'}x | mic dropped: ${diagnostics.micDroppedFrames}`)
+  console.log(
+    `Encoder min speed: ${diagnostics.minEncoderSpeed ?? 'n/a'}x | mic dropped: ${diagnostics.micDroppedFrames}`
+  )
   console.log(
     `Screen capture: gap p95 ${diagnostics.previewScreenCaptureGapP95Ms ?? 'n/a'}ms / max ${diagnostics.previewScreenCaptureGapMaxMs ?? 'n/a'}ms | copy p95 ${diagnostics.previewScreenRowCopyP95Ms ?? 'n/a'}ms | publish p95 ${diagnostics.previewScreenPublishP95Ms ?? 'n/a'}ms`
   )
@@ -2496,7 +2910,9 @@ function printBlockedStartupSummary(
   console.log(`Media quality mode: ${qualityMode.mode} (${qualityMode.label})`)
   if (qualityMode.reasons.length) console.log(`Quality evidence: ${qualityMode.reasons.join('; ')}`)
   console.log(`Start blocked before encoding: ${error?.message ?? error}`)
-  console.log(`Preview transport: ${previewTransport} (diagnostics saw: ${diagnostics.transports.join(', ') || 'unknown'})`)
+  console.log(
+    `Preview transport: ${previewTransport} (diagnostics saw: ${diagnostics.transports.join(', ') || 'unknown'})`
+  )
   console.log(
     `Camera capture: callback p95 ${fmtOrFallback(diagnostics.previewCameraCaptureGapP95Ms, cadence?.callbackP95)} / ` +
       `sample PTS p95 ${fmtOrFallback(diagnostics.previewCameraSamplePtsGapP95Ms, cadence?.samplePtsP95)} / ` +
@@ -2511,13 +2927,16 @@ function printBlockedStartupSummary(
 function blockedStartupCameraCadence(errorMessage, healthEvents) {
   const messages = [errorMessage, ...healthEvents.map((event) => event.message).filter(Boolean)]
   for (const message of messages) {
-    const match = /sample PTS p95 ([^,]+), threshold ([^,]+), callback p95 ([^,]+), frame age ([^)]+)\)/.exec(message)
+    const match =
+      /sample PTS p95 ([^,]+), threshold ([^,]+), callback p95 ([^,]+), frame age ([^)]+)\)/.exec(
+        message
+      )
     if (match) {
       return {
         samplePtsP95: match[1],
         threshold: match[2],
         callbackP95: match[3],
-        frameAge: match[4],
+        frameAge: match[4]
       }
     }
   }
@@ -2546,16 +2965,27 @@ function layoutSettings(sources) {
     cameraOffsetX: 0,
     cameraOffsetY: 0,
     sideBySideSplit: '70-30',
-    sideBySideCameraSide: 'right',
+    sideBySideCameraSide: 'right'
   }
 }
 
 function videoSettings() {
-  return { preset: 'custom', width: config.width, height: config.height, fps: config.fps, bitrateKbps: config.bitrateKbps }
+  return {
+    preset: 'custom',
+    width: config.width,
+    height: config.height,
+    fps: config.fps,
+    bitrateKbps: config.bitrateKbps
+  }
 }
 
 function requestedOutputSettings() {
-  return { width: config.width, height: config.height, fps: config.fps, bitrateKbps: config.bitrateKbps }
+  return {
+    width: config.width,
+    height: config.height,
+    fps: config.fps,
+    bitrateKbps: config.bitrateKbps
+  }
 }
 
 function requires4kMediaEvidence() {
@@ -2567,7 +2997,7 @@ function previewSourceParams(sources, { protectedOverlayWindowIds = [] } = {}) {
     sources,
     layout: layoutSettings(sources),
     video: videoSettings(),
-    ...(protectedOverlayWindowIds.length > 0 ? { protectedOverlayWindowIds } : {}),
+    ...(protectedOverlayWindowIds.length > 0 ? { protectedOverlayWindowIds } : {})
   }
 }
 
@@ -2585,7 +3015,7 @@ function previewSurfaceBounds() {
     width: 1280,
     height: 720,
     scaleFactor: 1,
-    screenHeight: 900,
+    screenHeight: 900
   }
 }
 
@@ -2606,16 +3036,25 @@ function sessionParams(sources) {
       video: videoSettings(),
       rtmp: config.streamEnabled
         ? { preset: 'custom', serverUrl: config.streamServerUrl, streamKey: config.streamKey }
-        : { preset: 'custom', serverUrl: '', streamKey: '' },
+        : { preset: 'custom', serverUrl: '', streamKey: '' }
     },
     ...(config.streamEnabled && config.streamingSettingsEnabled
       ? { streaming: streamingSettings() }
       : {}),
+    ...(config.captionsEnabled ? { captions: captionSessionParams() } : {}),
     audio: {
       microphoneGainDb: 0,
       microphoneMuted: false,
-      microphoneSyncOffsetMs: config.microphoneSyncOffsetMs,
-    },
+      microphoneSyncOffsetMs: config.microphoneSyncOffsetMs
+    }
+  }
+}
+
+function captionSessionParams() {
+  return {
+    burnTarget: config.captionBurnTarget,
+    position: 'bottom',
+    textSize: 'm'
   }
 }
 
@@ -2635,8 +3074,8 @@ function streamingSettings() {
       streamKeyPresent: Boolean(config.streamKey),
       authMode: 'manual-rtmp',
       createdAt: timestamp,
-      updatedAt: timestamp,
-    },
+      updatedAt: timestamp
+    }
   ]
   if (config.streamCompanionEnabled) {
     targets.push({
@@ -2650,7 +3089,7 @@ function streamingSettings() {
       streamKeyPresent: Boolean(config.streamCompanionKey),
       authMode: 'manual-rtmp',
       createdAt: timestamp,
-      updatedAt: timestamp,
+      updatedAt: timestamp
     })
   }
   return {
@@ -2660,7 +3099,7 @@ function streamingSettings() {
     defaultOutputPreset: config.streamOutputPreset,
     defaultBitrateKbps: config.streamBitrateKbps,
     enabledTargetIds: targets.map((target) => target.id),
-    targets,
+    targets
   }
 }
 
@@ -2714,6 +3153,150 @@ async function requestSafe(ws, method, params) {
   }
 }
 
+function normalizeCaptionBurnTarget(value) {
+  const normalized = String(value ?? 'stream')
+    .trim()
+    .toLowerCase()
+  if (['off', 'stream', 'recording', 'both'].includes(normalized)) return normalized
+  throw new Error(
+    `VIDEORC_BASELINE_CAPTION_BURN_TARGET must be off, stream, recording, or both; got ${value}.`
+  )
+}
+
+function startCaptionOverlayStimulus(ws) {
+  if (!config.captionOverlayStimulus) return null
+
+  console.log(
+    `Caption overlay stimulus enabled: burnTarget=${config.captionBurnTarget}, interval=${config.captionOverlayStimulusIntervalMs}ms`
+  )
+  let stopped = false
+  let sequence = 0
+  let pending = Promise.resolve()
+  const push = () => {
+    if (stopped) return
+    sequence += 1
+    const pngBase64 = captionOverlayPngBase64(sequence)
+    pending = request(ws, config.timeoutMs, 'captions.overlay.set', {
+      pngBase64,
+      position: 'bottom'
+    }).catch((error) => {
+      console.log(`  (caption overlay stimulus push skipped: ${error?.message ?? error})`)
+    })
+  }
+  push()
+  const interval = setInterval(push, Math.max(250, config.captionOverlayStimulusIntervalMs))
+  return async () => {
+    stopped = true
+    clearInterval(interval)
+    await pending.catch(() => {})
+    await requestSafe(ws, 'captions.overlay.clear')
+  }
+}
+
+function captionOverlayPngBase64(sequence) {
+  const width = Math.max(320, Math.min(4096, config.width))
+  const height = Math.max(72, Math.min(220, Math.round(width * 0.06)))
+  return encodeRgbaPngBase64(width, height, renderCaptionOverlayRgba(width, height, sequence))
+}
+
+function renderCaptionOverlayRgba(width, height, sequence) {
+  const rgba = Buffer.alloc(width * height * 4)
+  const marginX = Math.max(18, Math.round(width * 0.03))
+  const panelY = Math.max(8, Math.round(height * 0.16))
+  const panelHeight = Math.max(48, Math.round(height * 0.66))
+  drawRgbaRect(
+    rgba,
+    width,
+    height,
+    marginX,
+    panelY,
+    width - marginX * 2,
+    panelHeight,
+    [6, 11, 18, 210]
+  )
+
+  const textY = panelY + Math.round(panelHeight * 0.34)
+  const textHeight = Math.max(12, Math.round(panelHeight * 0.22))
+  const pulseWidth = Math.max(18, Math.round(width * 0.025))
+  const pulseX = marginX + Math.round(width * 0.025) + (sequence % 4) * Math.round(width * 0.012)
+  drawRgbaRect(rgba, width, height, pulseX, textY, pulseWidth, textHeight, [82, 224, 172, 240])
+
+  const starts = [0.11, 0.22, 0.35, 0.49, 0.63]
+  const widths = [0.08, 0.1, 0.08, 0.11, 0.07]
+  for (let index = 0; index < starts.length; index += 1) {
+    const blockX = marginX + Math.round(width * starts[index])
+    const blockWidth = Math.round(width * widths[(index + sequence) % widths.length])
+    drawRgbaRect(rgba, width, height, blockX, textY, blockWidth, textHeight, [246, 248, 250, 235])
+  }
+  return rgba
+}
+
+function drawRgbaRect(rgba, canvasWidth, canvasHeight, x, y, width, height, color) {
+  const left = Math.max(0, Math.min(canvasWidth, Math.round(x)))
+  const top = Math.max(0, Math.min(canvasHeight, Math.round(y)))
+  const right = Math.max(left, Math.min(canvasWidth, Math.round(x + width)))
+  const bottom = Math.max(top, Math.min(canvasHeight, Math.round(y + height)))
+  for (let row = top; row < bottom; row += 1) {
+    for (let column = left; column < right; column += 1) {
+      const offset = (row * canvasWidth + column) * 4
+      rgba[offset] = color[0]
+      rgba[offset + 1] = color[1]
+      rgba[offset + 2] = color[2]
+      rgba[offset + 3] = color[3]
+    }
+  }
+}
+
+function encodeRgbaPngBase64(width, height, rgba) {
+  const bytesPerRow = width * 4
+  const stride = bytesPerRow + 1
+  const raw = Buffer.alloc(stride * height)
+  for (let row = 0; row < height; row += 1) {
+    raw[row * stride] = 0
+    rgba.copy(raw, row * stride + 1, row * bytesPerRow, (row + 1) * bytesPerRow)
+  }
+
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8
+  ihdr[9] = 6
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0))
+  ]).toString('base64')
+}
+
+function pngChunk(type, data) {
+  const typeBytes = Buffer.from(type, 'ascii')
+  const length = Buffer.alloc(4)
+  length.writeUInt32BE(data.length, 0)
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])), 0)
+  return Buffer.concat([length, typeBytes, data, crc])
+}
+
+var crc32Table
+function crc32(bytes) {
+  if (!crc32Table) {
+    crc32Table = Array.from({ length: 256 }, (_, value) => {
+      let c = value
+      for (let bit = 0; bit < 8; bit += 1) {
+        c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      }
+      return c >>> 0
+    })
+  }
+  let c = 0xffffffff
+  for (const byte of bytes) {
+    c = crc32Table[(c ^ byte) & 0xff] ^ (c >>> 8)
+  }
+  return (c ^ 0xffffffff) >>> 0
+}
+
 async function applyPendingNativePreviewHostCommands(ws) {
   const smoke = launched?.connections?.['preview-motion-ready']
   if (!smoke) {
@@ -2726,7 +3309,9 @@ async function applyPendingNativePreviewHostCommands(ws) {
   if (commands.length === 0) {
     return await smokeCommand(smoke, 'native-preview-surface-status')
   }
-  console.log(`Applying ${commands.length} native preview host command(s) to Electron preview host.`)
+  console.log(
+    `Applying ${commands.length} native preview host command(s) to Electron preview host.`
+  )
   return await smokeCommand(smoke, 'apply-native-preview-host-commands', { commands })
 }
 
@@ -2738,7 +3323,7 @@ async function smokeCommand(smoke, command, params = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command, params }),
-      signal: controller.signal,
+      signal: controller.signal
     })
     const text = await response.text()
     let payload

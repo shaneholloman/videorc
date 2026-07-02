@@ -3704,8 +3704,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
     const burnIn = captureConfig.captions.burnTarget !== 'off'
     const latest = captionLines.at(-1)
-    const captionsRunning =
-      captionsStatus.state === 'live' || captionsStatus.state === 'degraded'
+    const captionsRunning = captionsStatus.state === 'live' || captionsStatus.state === 'degraded'
     if (!burnIn || !captionsRunning || !isSessionActive) {
       if (captionOverlayPushedKey.current !== null) {
         captionOverlayPushedKey.current = null

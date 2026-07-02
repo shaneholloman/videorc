@@ -173,12 +173,24 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         encoder_bridge_compositor_wait_p95_ms: None,
         encoder_bridge_video_toolbox_submit_p95_ms: None,
         encoder_bridge_video_toolbox_fifo_write_p95_ms: None,
+        encoder_bridge_video_toolbox_fifo_enqueue_p95_ms: None,
+        encoder_bridge_video_toolbox_fifo_enqueue_max_ms: None,
         encoder_bridge_writer_loop_p95_ms: None,
         encoder_bridge_writer_sleep_p95_ms: None,
         encoder_bridge_writer_active_p95_ms: None,
         encoder_bridge_deadline_lag_p95_ms: None,
         encoder_bridge_deadline_lag_max_ms: None,
         encoder_bridge_late_deadline_ticks: 0,
+        encoder_bridge_recording_input_fps: None,
+        encoder_bridge_stream_input_fps: None,
+        encoder_bridge_recording_writer_loop_p95_ms: None,
+        encoder_bridge_stream_writer_loop_p95_ms: None,
+        encoder_bridge_recording_writer_active_p95_ms: None,
+        encoder_bridge_stream_writer_active_p95_ms: None,
+        encoder_bridge_recording_video_toolbox_fifo_enqueue_p95_ms: None,
+        encoder_bridge_stream_video_toolbox_fifo_enqueue_p95_ms: None,
+        encoder_bridge_recording_video_toolbox_fifo_enqueue_max_ms: None,
+        encoder_bridge_stream_video_toolbox_fifo_enqueue_max_ms: None,
         encoder_bridge_error: None,
         encode_backend: None,
         compositor_backend: None,
@@ -353,8 +365,12 @@ pub fn apply_runtime_resource_snapshot(mut stats: DiagnosticStats) -> Diagnostic
 const RISK_ENCODER_SPEED_MIN: f64 = 0.98;
 /// Mic capture coverage below this fraction during a run is a capture gap.
 const RISK_MIC_COVERAGE_MIN: f64 = 0.95;
+/// Video cadence below this fraction of target FPS is user-visible stutter/freeze.
+const RISK_VIDEO_FPS_MIN_RATIO: f64 = 0.80;
 /// Strict post-recording analysis treats freezes longer than this as quality defects.
 const RISK_FRAME_FRESHNESS_BUDGET_MS: f64 = 100.0;
+/// Writer work above this p95 budget means encoding/output is blocking frame cadence.
+const RISK_WRITER_LOOP_BUDGET_MS: f64 = 100.0;
 
 fn push_ms_budget_risk(
     reasons: &mut Vec<String>,
@@ -375,6 +391,26 @@ fn push_ms_budget_risk(
         .collect::<Vec<_>>()
         .join(", ");
     reasons.push(format!("{label} over {budget_ms:.0}ms budget ({detail})"));
+}
+
+fn push_video_cadence_risk(
+    reasons: &mut Vec<String>,
+    label: &str,
+    target_fps: Option<f64>,
+    actual_fps: Option<f64>,
+) {
+    let Some(target_fps) = target_fps.filter(|fps| fps.is_finite() && *fps > 0.0) else {
+        return;
+    };
+    let Some(actual_fps) = actual_fps.filter(|fps| fps.is_finite() && *fps >= 0.0) else {
+        return;
+    };
+    let floor = target_fps * RISK_VIDEO_FPS_MIN_RATIO;
+    if actual_fps < floor {
+        reasons.push(format!(
+            "{label} video cadence {actual_fps:.1}fps below {floor:.1}fps floor for {target_fps:.0}fps target"
+        ));
+    }
 }
 
 /// Whether an active recording session is currently being compromised, and why. Pure and
@@ -399,6 +435,28 @@ pub fn classify_recording_risk(stats: &DiagnosticStats) -> (bool, Vec<String>) {
     {
         reasons.push(format!("encoder behind real-time ({speed:.2}x)"));
     }
+    push_video_cadence_risk(
+        &mut reasons,
+        "capture",
+        stats.target_fps,
+        stats.capture_fps.or(stats.encoder_bridge_input_fps),
+    );
+    push_video_cadence_risk(&mut reasons, "render", stats.target_fps, stats.render_fps);
+    push_video_cadence_risk(
+        &mut reasons,
+        "recording output",
+        stats
+            .recording_output_fps
+            .map(f64::from)
+            .or(stats.target_fps),
+        stats.encoder_bridge_recording_input_fps,
+    );
+    push_video_cadence_risk(
+        &mut reasons,
+        "stream output",
+        stats.stream_output_fps.map(f64::from).or(stats.target_fps),
+        stats.encoder_bridge_stream_input_fps,
+    );
     if stats.dropped_frames > 0 {
         reasons.push(format!("encoder dropped {} frame(s)", stats.dropped_frames));
     }
@@ -455,6 +513,66 @@ pub fn classify_recording_risk(stats: &DiagnosticStats) -> (bool, Vec<String>) {
         &[
             ("p95 lag", stats.encoder_bridge_deadline_lag_p95_ms),
             ("max lag", stats.encoder_bridge_deadline_lag_max_ms),
+        ],
+    );
+    push_ms_budget_risk(
+        &mut reasons,
+        "encoder writer loop",
+        RISK_WRITER_LOOP_BUDGET_MS,
+        &[
+            ("p95 total", stats.encoder_bridge_writer_loop_p95_ms),
+            ("p95 active", stats.encoder_bridge_writer_active_p95_ms),
+            (
+                "p95 FIFO enqueue",
+                stats.encoder_bridge_video_toolbox_fifo_enqueue_p95_ms,
+            ),
+            (
+                "max FIFO enqueue",
+                stats.encoder_bridge_video_toolbox_fifo_enqueue_max_ms,
+            ),
+        ],
+    );
+    push_ms_budget_risk(
+        &mut reasons,
+        "recording encoder writer loop",
+        RISK_WRITER_LOOP_BUDGET_MS,
+        &[
+            (
+                "p95 total",
+                stats.encoder_bridge_recording_writer_loop_p95_ms,
+            ),
+            (
+                "p95 active",
+                stats.encoder_bridge_recording_writer_active_p95_ms,
+            ),
+            (
+                "p95 FIFO enqueue",
+                stats.encoder_bridge_recording_video_toolbox_fifo_enqueue_p95_ms,
+            ),
+            (
+                "max FIFO enqueue",
+                stats.encoder_bridge_recording_video_toolbox_fifo_enqueue_max_ms,
+            ),
+        ],
+    );
+    push_ms_budget_risk(
+        &mut reasons,
+        "stream encoder writer loop",
+        RISK_WRITER_LOOP_BUDGET_MS,
+        &[
+            ("p95 total", stats.encoder_bridge_stream_writer_loop_p95_ms),
+            (
+                "p95 active",
+                stats.encoder_bridge_stream_writer_active_p95_ms,
+            ),
+            (
+                "p95 FIFO enqueue",
+                stats.encoder_bridge_stream_video_toolbox_fifo_enqueue_p95_ms,
+            ),
+            (
+                "max FIFO enqueue",
+                stats.encoder_bridge_stream_video_toolbox_fifo_enqueue_max_ms,
+            ),
         ],
     );
     if stats.mic_dropped_frames > 0 {
@@ -602,12 +720,24 @@ pub struct EncoderBridgeDiagnosticSnapshot {
     pub compositor_wait_p95_ms: Option<f64>,
     pub video_toolbox_submit_p95_ms: Option<f64>,
     pub video_toolbox_fifo_write_p95_ms: Option<f64>,
+    pub video_toolbox_fifo_enqueue_p95_ms: Option<f64>,
+    pub video_toolbox_fifo_enqueue_max_ms: Option<f64>,
     pub writer_loop_p95_ms: Option<f64>,
     pub writer_sleep_p95_ms: Option<f64>,
     pub writer_active_p95_ms: Option<f64>,
     pub deadline_lag_p95_ms: Option<f64>,
     pub deadline_lag_max_ms: Option<f64>,
     pub late_deadline_ticks: u64,
+    pub recording_input_fps: Option<f64>,
+    pub stream_input_fps: Option<f64>,
+    pub recording_writer_loop_p95_ms: Option<f64>,
+    pub stream_writer_loop_p95_ms: Option<f64>,
+    pub recording_writer_active_p95_ms: Option<f64>,
+    pub stream_writer_active_p95_ms: Option<f64>,
+    pub recording_video_toolbox_fifo_enqueue_p95_ms: Option<f64>,
+    pub stream_video_toolbox_fifo_enqueue_p95_ms: Option<f64>,
+    pub recording_video_toolbox_fifo_enqueue_max_ms: Option<f64>,
+    pub stream_video_toolbox_fifo_enqueue_max_ms: Option<f64>,
     pub error: Option<String>,
 }
 
@@ -660,12 +790,30 @@ pub fn apply_encoder_bridge_stats(
     stats.encoder_bridge_compositor_wait_p95_ms = bridge.compositor_wait_p95_ms;
     stats.encoder_bridge_video_toolbox_submit_p95_ms = bridge.video_toolbox_submit_p95_ms;
     stats.encoder_bridge_video_toolbox_fifo_write_p95_ms = bridge.video_toolbox_fifo_write_p95_ms;
+    stats.encoder_bridge_video_toolbox_fifo_enqueue_p95_ms =
+        bridge.video_toolbox_fifo_enqueue_p95_ms;
+    stats.encoder_bridge_video_toolbox_fifo_enqueue_max_ms =
+        bridge.video_toolbox_fifo_enqueue_max_ms;
     stats.encoder_bridge_writer_loop_p95_ms = bridge.writer_loop_p95_ms;
     stats.encoder_bridge_writer_sleep_p95_ms = bridge.writer_sleep_p95_ms;
     stats.encoder_bridge_writer_active_p95_ms = bridge.writer_active_p95_ms;
     stats.encoder_bridge_deadline_lag_p95_ms = bridge.deadline_lag_p95_ms;
     stats.encoder_bridge_deadline_lag_max_ms = bridge.deadline_lag_max_ms;
     stats.encoder_bridge_late_deadline_ticks = bridge.late_deadline_ticks;
+    stats.encoder_bridge_recording_input_fps = bridge.recording_input_fps;
+    stats.encoder_bridge_stream_input_fps = bridge.stream_input_fps;
+    stats.encoder_bridge_recording_writer_loop_p95_ms = bridge.recording_writer_loop_p95_ms;
+    stats.encoder_bridge_stream_writer_loop_p95_ms = bridge.stream_writer_loop_p95_ms;
+    stats.encoder_bridge_recording_writer_active_p95_ms = bridge.recording_writer_active_p95_ms;
+    stats.encoder_bridge_stream_writer_active_p95_ms = bridge.stream_writer_active_p95_ms;
+    stats.encoder_bridge_recording_video_toolbox_fifo_enqueue_p95_ms =
+        bridge.recording_video_toolbox_fifo_enqueue_p95_ms;
+    stats.encoder_bridge_stream_video_toolbox_fifo_enqueue_p95_ms =
+        bridge.stream_video_toolbox_fifo_enqueue_p95_ms;
+    stats.encoder_bridge_recording_video_toolbox_fifo_enqueue_max_ms =
+        bridge.recording_video_toolbox_fifo_enqueue_max_ms;
+    stats.encoder_bridge_stream_video_toolbox_fifo_enqueue_max_ms =
+        bridge.stream_video_toolbox_fifo_enqueue_max_ms;
     stats.encoder_bridge_error = bridge.error;
     stats.capture_fps = stats.encoder_bridge_input_fps;
     stats.dropped_frames = bridge.dropped_frames;
@@ -1340,6 +1488,36 @@ mod tests {
     }
 
     #[test]
+    fn recording_risk_flags_incident_low_video_cadence() {
+        let mut incident = starting_diagnostics("live", 30, "record+stream");
+        incident.capture_fps = Some(8.88);
+        incident.render_fps = Some(8.88);
+        incident.encoder_bridge_input_fps = Some(8.88);
+        incident.encoder_bridge_writer_loop_p95_ms = Some(662.57);
+        incident.encoder_bridge_writer_active_p95_ms = Some(628.24);
+        incident.encoder_bridge_compositor_wait_p95_ms = Some(0.0018);
+        incident.encoder_bridge_video_toolbox_submit_p95_ms = Some(0.0907);
+        incident.encoder_bridge_video_toolbox_fifo_write_p95_ms = Some(0.449);
+        incident.encoder_bridge_deadline_lag_p95_ms = Some(6.10);
+        incident.encoder_bridge_deadline_lag_max_ms = Some(6.10);
+        incident.encoder_bridge_late_deadline_ticks = 1;
+        incident.encoder_bridge_recording_video_toolbox_output_frames = 493;
+        incident.encoder_bridge_stream_video_toolbox_output_frames = 1704;
+        incident.encoder_bridge_separate_output_encoders_active = true;
+        incident.mic_dropped_frames = 0;
+        incident.mic_capture_coverage = Some(1.0);
+
+        let (risk, reasons) = classify_recording_risk(&incident);
+        assert!(risk, "incident diagnostics were not flagged: {reasons:?}");
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("video cadence")),
+            "risk reasons did not explain the cadence collapse: {reasons:?}"
+        );
+    }
+
+    #[test]
     fn startup_barrier_stats_are_recorded_in_diagnostics() {
         let stats = apply_recording_startup_barrier_stats(
             starting_diagnostics("s", 30, "record"),
@@ -1847,12 +2025,24 @@ mod tests {
                 compositor_wait_p95_ms: None,
                 video_toolbox_submit_p95_ms: None,
                 video_toolbox_fifo_write_p95_ms: None,
+                video_toolbox_fifo_enqueue_p95_ms: None,
+                video_toolbox_fifo_enqueue_max_ms: None,
                 writer_loop_p95_ms: None,
                 writer_sleep_p95_ms: None,
                 writer_active_p95_ms: None,
                 deadline_lag_p95_ms: None,
                 deadline_lag_max_ms: None,
                 late_deadline_ticks: 0,
+                recording_input_fps: None,
+                stream_input_fps: None,
+                recording_writer_loop_p95_ms: None,
+                stream_writer_loop_p95_ms: None,
+                recording_writer_active_p95_ms: None,
+                stream_writer_active_p95_ms: None,
+                recording_video_toolbox_fifo_enqueue_p95_ms: None,
+                stream_video_toolbox_fifo_enqueue_p95_ms: None,
+                recording_video_toolbox_fifo_enqueue_max_ms: None,
+                stream_video_toolbox_fifo_enqueue_max_ms: None,
                 error: None,
             },
             30,
@@ -1907,12 +2097,24 @@ mod tests {
                 compositor_wait_p95_ms: Some(5.0),
                 video_toolbox_submit_p95_ms: Some(2.0),
                 video_toolbox_fifo_write_p95_ms: Some(3.0),
+                video_toolbox_fifo_enqueue_p95_ms: Some(7.0),
+                video_toolbox_fifo_enqueue_max_ms: Some(14.0),
                 writer_loop_p95_ms: Some(12.0),
                 writer_sleep_p95_ms: Some(8.0),
                 writer_active_p95_ms: Some(4.0),
                 deadline_lag_p95_ms: Some(4.0),
                 deadline_lag_max_ms: Some(9.0),
                 late_deadline_ticks: 7,
+                recording_input_fps: Some(29.0),
+                stream_input_fps: Some(28.0),
+                recording_writer_loop_p95_ms: Some(12.0),
+                stream_writer_loop_p95_ms: Some(16.0),
+                recording_writer_active_p95_ms: Some(4.0),
+                stream_writer_active_p95_ms: Some(6.0),
+                recording_video_toolbox_fifo_enqueue_p95_ms: Some(7.0),
+                stream_video_toolbox_fifo_enqueue_p95_ms: Some(9.0),
+                recording_video_toolbox_fifo_enqueue_max_ms: Some(14.0),
+                stream_video_toolbox_fifo_enqueue_max_ms: Some(18.0),
                 error: None,
             },
             30,
@@ -1969,9 +2171,48 @@ mod tests {
         assert!(lagging.encoder_bridge_separate_output_encoders_active);
         assert_eq!(lagging.encoder_bridge_deadline_lag_p95_ms, Some(4.0));
         assert_eq!(lagging.encoder_bridge_deadline_lag_max_ms, Some(9.0));
+        assert_eq!(
+            lagging.encoder_bridge_video_toolbox_fifo_enqueue_p95_ms,
+            Some(7.0)
+        );
+        assert_eq!(
+            lagging.encoder_bridge_video_toolbox_fifo_enqueue_max_ms,
+            Some(14.0)
+        );
         assert_eq!(lagging.encoder_bridge_writer_sleep_p95_ms, Some(8.0));
         assert_eq!(lagging.encoder_bridge_writer_active_p95_ms, Some(4.0));
         assert_eq!(lagging.encoder_bridge_late_deadline_ticks, 7);
+        assert_eq!(lagging.encoder_bridge_recording_input_fps, Some(29.0));
+        assert_eq!(lagging.encoder_bridge_stream_input_fps, Some(28.0));
+        assert_eq!(
+            lagging.encoder_bridge_recording_writer_loop_p95_ms,
+            Some(12.0)
+        );
+        assert_eq!(lagging.encoder_bridge_stream_writer_loop_p95_ms, Some(16.0));
+        assert_eq!(
+            lagging.encoder_bridge_recording_writer_active_p95_ms,
+            Some(4.0)
+        );
+        assert_eq!(
+            lagging.encoder_bridge_stream_writer_active_p95_ms,
+            Some(6.0)
+        );
+        assert_eq!(
+            lagging.encoder_bridge_recording_video_toolbox_fifo_enqueue_p95_ms,
+            Some(7.0)
+        );
+        assert_eq!(
+            lagging.encoder_bridge_stream_video_toolbox_fifo_enqueue_p95_ms,
+            Some(9.0)
+        );
+        assert_eq!(
+            lagging.encoder_bridge_recording_video_toolbox_fifo_enqueue_max_ms,
+            Some(14.0)
+        );
+        assert_eq!(
+            lagging.encoder_bridge_stream_video_toolbox_fifo_enqueue_max_ms,
+            Some(18.0)
+        );
         assert_eq!(lagging.bottleneck, DiagnosticBottleneck::Encoder);
     }
 }

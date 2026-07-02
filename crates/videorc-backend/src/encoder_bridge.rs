@@ -36,6 +36,7 @@ const ENCODER_BRIDGE_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
 const ENCODER_BRIDGE_DEADLINE_LAG_THRESHOLD: Duration = Duration::from_millis(1);
 const VIDEOTOOLBOX_FRESH_FRAME_HEADROOM: Duration = Duration::from_millis(4);
 const VIDEOTOOLBOX_FIFO_WRITER_QUEUE_FRAMES: usize = 240;
+const VIDEOTOOLBOX_OUTPUT_DRAIN_MAX_FRAMES_PER_TICK: usize = 8;
 const VIDEOTOOLBOX_PROBE_ENV: &str = "VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_PROBE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +167,8 @@ struct EncoderBridgeRuntimeStats {
     compositor_wait_p95_ms: Option<f64>,
     video_toolbox_submit_p95_ms: Option<f64>,
     video_toolbox_fifo_write_p95_ms: Option<f64>,
+    video_toolbox_fifo_enqueue_p95_ms: Option<f64>,
+    video_toolbox_fifo_enqueue_max_ms: Option<f64>,
     writer_loop_p95_ms: Option<f64>,
     writer_sleep_p95_ms: Option<f64>,
     writer_active_p95_ms: Option<f64>,
@@ -773,6 +776,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut compositor_wait_times_ms = Vec::with_capacity(128);
     let mut video_toolbox_submit_times_ms = Vec::with_capacity(128);
     let mut video_toolbox_fifo_write_times_ms = Vec::with_capacity(128);
+    let mut video_toolbox_fifo_enqueue_times_ms = Vec::with_capacity(128);
+    let mut max_video_toolbox_fifo_enqueue_ms: Option<f64> = None;
     let mut writer_loop_times_ms = Vec::with_capacity(128);
     let mut writer_sleep_times_ms = Vec::with_capacity(128);
     let mut writer_active_times_ms = Vec::with_capacity(128);
@@ -905,6 +910,10 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                             video_toolbox_fifo_write_p95_ms: p95_ms(
                                 &video_toolbox_fifo_write_times_ms,
                             ),
+                            video_toolbox_fifo_enqueue_p95_ms: p95_ms(
+                                &video_toolbox_fifo_enqueue_times_ms,
+                            ),
+                            video_toolbox_fifo_enqueue_max_ms: max_video_toolbox_fifo_enqueue_ms,
                             writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
                             writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
                             writer_active_p95_ms: p95_ms(&writer_active_times_ms),
@@ -1090,6 +1099,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     compositor_wait_p95_ms: p95_ms(&compositor_wait_times_ms),
                     video_toolbox_submit_p95_ms: p95_ms(&video_toolbox_submit_times_ms),
                     video_toolbox_fifo_write_p95_ms: p95_ms(&video_toolbox_fifo_write_times_ms),
+                    video_toolbox_fifo_enqueue_p95_ms: p95_ms(&video_toolbox_fifo_enqueue_times_ms),
+                    video_toolbox_fifo_enqueue_max_ms: max_video_toolbox_fifo_enqueue_ms,
                     writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
                     writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
                     writer_active_p95_ms: p95_ms(&writer_active_times_ms),
@@ -1114,6 +1125,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                 &mut pending_video_toolbox_output_frames,
                 &mut pending_video_toolbox_fifo_frames,
                 &mut video_toolbox_probe_errors,
+                &mut video_toolbox_fifo_enqueue_times_ms,
+                &mut max_video_toolbox_fifo_enqueue_ms,
+                Some(VIDEOTOOLBOX_OUTPUT_DRAIN_MAX_FRAMES_PER_TICK),
             )
             .and_then(|()| {
                 drain_video_toolbox_fifo_writer_results(
@@ -1160,6 +1174,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     compositor_wait_p95_ms: p95_ms(&compositor_wait_times_ms),
                     video_toolbox_submit_p95_ms: p95_ms(&video_toolbox_submit_times_ms),
                     video_toolbox_fifo_write_p95_ms: p95_ms(&video_toolbox_fifo_write_times_ms),
+                    video_toolbox_fifo_enqueue_p95_ms: p95_ms(&video_toolbox_fifo_enqueue_times_ms),
+                    video_toolbox_fifo_enqueue_max_ms: max_video_toolbox_fifo_enqueue_ms,
                     writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
                     writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
                     writer_active_p95_ms: p95_ms(&writer_active_times_ms),
@@ -1222,6 +1238,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     compositor_wait_p95_ms: p95_ms(&compositor_wait_times_ms),
                     video_toolbox_submit_p95_ms: p95_ms(&video_toolbox_submit_times_ms),
                     video_toolbox_fifo_write_p95_ms: p95_ms(&video_toolbox_fifo_write_times_ms),
+                    video_toolbox_fifo_enqueue_p95_ms: p95_ms(&video_toolbox_fifo_enqueue_times_ms),
+                    video_toolbox_fifo_enqueue_max_ms: max_video_toolbox_fifo_enqueue_ms,
                     writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
                     writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
                     writer_active_p95_ms: p95_ms(&writer_active_times_ms),
@@ -1237,6 +1255,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             compositor_wait_times_ms.clear();
             video_toolbox_submit_times_ms.clear();
             video_toolbox_fifo_write_times_ms.clear();
+            video_toolbox_fifo_enqueue_times_ms.clear();
             writer_loop_times_ms.clear();
             writer_sleep_times_ms.clear();
             writer_active_times_ms.clear();
@@ -1263,6 +1282,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                 &mut pending_video_toolbox_output_frames,
                 &mut pending_video_toolbox_fifo_frames,
                 &mut video_toolbox_probe_errors,
+                &mut video_toolbox_fifo_enqueue_times_ms,
+                &mut max_video_toolbox_fifo_enqueue_ms,
+                None,
             )
             .and_then(|()| {
                 drain_video_toolbox_fifo_writer_results(
@@ -1332,6 +1354,8 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             compositor_wait_p95_ms: p95_ms(&compositor_wait_times_ms),
             video_toolbox_submit_p95_ms: p95_ms(&video_toolbox_submit_times_ms),
             video_toolbox_fifo_write_p95_ms: p95_ms(&video_toolbox_fifo_write_times_ms),
+            video_toolbox_fifo_enqueue_p95_ms: p95_ms(&video_toolbox_fifo_enqueue_times_ms),
+            video_toolbox_fifo_enqueue_max_ms: max_video_toolbox_fifo_enqueue_ms,
             writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
             writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
             writer_active_p95_ms: p95_ms(&writer_active_times_ms),
@@ -1699,14 +1723,28 @@ fn drain_video_toolbox_output_frames(
     pending_video_toolbox_output_frames: &mut u64,
     pending_video_toolbox_fifo_frames: &mut u64,
     video_toolbox_probe_errors: &mut u64,
+    video_toolbox_fifo_enqueue_times_ms: &mut Vec<f64>,
+    max_video_toolbox_fifo_enqueue_ms: &mut Option<f64>,
+    max_frames: Option<usize>,
 ) -> io::Result<()> {
-    while let Some(message) = video_toolbox.try_recv_output() {
+    let mut drained = 0_usize;
+    while max_frames.is_none_or(|limit| drained < limit) {
+        let Some(message) = video_toolbox.try_recv_output() else {
+            break;
+        };
         let _frame_index = message.frame_index;
         *pending_video_toolbox_output_frames =
             pending_video_toolbox_output_frames.saturating_sub(1);
         match message.result {
             Ok(frame) => {
+                let enqueue_started_at = Instant::now();
                 fifo_writer.enqueue(frame)?;
+                let enqueue_ms = enqueue_started_at.elapsed().as_secs_f64() * 1000.0;
+                video_toolbox_fifo_enqueue_times_ms.push(enqueue_ms);
+                *max_video_toolbox_fifo_enqueue_ms = Some(
+                    max_video_toolbox_fifo_enqueue_ms
+                        .map_or(enqueue_ms, |current| current.max(enqueue_ms)),
+                );
                 *pending_video_toolbox_fifo_frames =
                     pending_video_toolbox_fifo_frames.saturating_add(1);
             }
@@ -1715,6 +1753,7 @@ fn drain_video_toolbox_output_frames(
                 return Err(io::Error::other(error));
             }
         }
+        drained = drained.saturating_add(1);
     }
     Ok(())
 }
@@ -2019,6 +2058,79 @@ async fn emit_encoder_bridge_diagnostics(
         } else {
             runtime.video_toolbox_output_bytes
         };
+        let max_option = |left: Option<f64>, right: Option<f64>| match (left, right) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        };
+        let (
+            recording_input_fps,
+            stream_input_fps,
+            recording_writer_loop_p95_ms,
+            stream_writer_loop_p95_ms,
+            recording_writer_active_p95_ms,
+            stream_writer_active_p95_ms,
+            recording_video_toolbox_fifo_enqueue_p95_ms,
+            stream_video_toolbox_fifo_enqueue_p95_ms,
+            recording_video_toolbox_fifo_enqueue_max_ms,
+            stream_video_toolbox_fifo_enqueue_max_ms,
+        ) = match diagnostics_context.role {
+            EncoderBridgeOutputRole::Recording => (
+                runtime.input_fps,
+                base.encoder_bridge_stream_input_fps,
+                runtime.writer_loop_p95_ms,
+                base.encoder_bridge_stream_writer_loop_p95_ms,
+                runtime.writer_active_p95_ms,
+                base.encoder_bridge_stream_writer_active_p95_ms,
+                runtime.video_toolbox_fifo_enqueue_p95_ms,
+                base.encoder_bridge_stream_video_toolbox_fifo_enqueue_p95_ms,
+                runtime.video_toolbox_fifo_enqueue_max_ms,
+                base.encoder_bridge_stream_video_toolbox_fifo_enqueue_max_ms,
+            ),
+            EncoderBridgeOutputRole::Stream => (
+                base.encoder_bridge_recording_input_fps,
+                runtime.input_fps,
+                base.encoder_bridge_recording_writer_loop_p95_ms,
+                runtime.writer_loop_p95_ms,
+                base.encoder_bridge_recording_writer_active_p95_ms,
+                runtime.writer_active_p95_ms,
+                base.encoder_bridge_recording_video_toolbox_fifo_enqueue_p95_ms,
+                runtime.video_toolbox_fifo_enqueue_p95_ms,
+                base.encoder_bridge_recording_video_toolbox_fifo_enqueue_max_ms,
+                runtime.video_toolbox_fifo_enqueue_max_ms,
+            ),
+            EncoderBridgeOutputRole::Shared => {
+                (None, None, None, None, None, None, None, None, None, None)
+            }
+        };
+        let writer_loop_p95_ms = if diagnostics_context.separate_output_encoders_active {
+            max_option(recording_writer_loop_p95_ms, stream_writer_loop_p95_ms)
+        } else {
+            runtime.writer_loop_p95_ms
+        };
+        let writer_active_p95_ms = if diagnostics_context.separate_output_encoders_active {
+            max_option(recording_writer_active_p95_ms, stream_writer_active_p95_ms)
+        } else {
+            runtime.writer_active_p95_ms
+        };
+        let video_toolbox_fifo_enqueue_p95_ms =
+            if diagnostics_context.separate_output_encoders_active {
+                max_option(
+                    recording_video_toolbox_fifo_enqueue_p95_ms,
+                    stream_video_toolbox_fifo_enqueue_p95_ms,
+                )
+            } else {
+                runtime.video_toolbox_fifo_enqueue_p95_ms
+            };
+        let video_toolbox_fifo_enqueue_max_ms =
+            if diagnostics_context.separate_output_encoders_active {
+                max_option(
+                    recording_video_toolbox_fifo_enqueue_max_ms,
+                    stream_video_toolbox_fifo_enqueue_max_ms,
+                )
+            } else {
+                runtime.video_toolbox_fifo_enqueue_max_ms
+            };
         let error = if diagnostics_context.separate_output_encoders_active {
             error.or_else(|| base.encoder_bridge_error.clone())
         } else {
@@ -2069,12 +2181,24 @@ async fn emit_encoder_bridge_diagnostics(
                 compositor_wait_p95_ms: runtime.compositor_wait_p95_ms,
                 video_toolbox_submit_p95_ms: runtime.video_toolbox_submit_p95_ms,
                 video_toolbox_fifo_write_p95_ms: runtime.video_toolbox_fifo_write_p95_ms,
-                writer_loop_p95_ms: runtime.writer_loop_p95_ms,
+                video_toolbox_fifo_enqueue_p95_ms,
+                video_toolbox_fifo_enqueue_max_ms,
+                writer_loop_p95_ms,
                 writer_sleep_p95_ms: runtime.writer_sleep_p95_ms,
-                writer_active_p95_ms: runtime.writer_active_p95_ms,
+                writer_active_p95_ms,
                 deadline_lag_p95_ms: runtime.deadline_lag_p95_ms,
                 deadline_lag_max_ms: runtime.deadline_lag_max_ms,
                 late_deadline_ticks: runtime.late_deadline_ticks,
+                recording_input_fps,
+                stream_input_fps,
+                recording_writer_loop_p95_ms,
+                stream_writer_loop_p95_ms,
+                recording_writer_active_p95_ms,
+                stream_writer_active_p95_ms,
+                recording_video_toolbox_fifo_enqueue_p95_ms,
+                stream_video_toolbox_fifo_enqueue_p95_ms,
+                recording_video_toolbox_fifo_enqueue_max_ms,
+                stream_video_toolbox_fifo_enqueue_max_ms,
                 error,
             },
             target_fps,

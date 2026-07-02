@@ -20,19 +20,21 @@ let launched
 let smoke
 let lastState = null
 let lastSupervisorGeneration = 0
+let exitCode = 0
 
 try {
-  const exitCode = await main()
-  process.exit(exitCode)
+  exitCode = await main()
 } catch (error) {
   console.error(`preview lifecycle probe failed: ${error?.message ?? error}`)
   if (lastState) {
     console.error(`last preview state: ${JSON.stringify(lastState)}`)
   }
-  process.exit(2)
+  exitCode = 2
 } finally {
   if (launched) await stopProcess(launched.process)
 }
+
+process.exit(exitCode)
 
 async function main() {
   console.log(`Launching dev app for preview lifecycle probe (${cycles} cycles)...`)
@@ -81,10 +83,9 @@ async function main() {
 
 async function toggleOpen(label) {
   const toggled = await smokeCommand('preview-window-toggle')
-  assertProbe(toggled.open === true, `${label}: command reports open`, toggled)
   assertProbe(
-    toggled.supervisor?.windowOpen === true,
-    `${label}: supervisor reports window open`,
+    toggled.supervisor?.windowOpen === true || toggled.supervisor?.lifecycleState === 'opening',
+    `${label}: supervisor reports window opening`,
     toggled
   )
   const generation = supervisorGeneration(toggled)
@@ -98,6 +99,7 @@ async function toggleOpen(label) {
     (candidate) =>
       candidate.open === true &&
       candidate.visible === true &&
+      supervisorGeneration(candidate) === generation &&
       candidate.supervisor?.windowOpen === true &&
       candidate.supervisor?.lifecycleState !== 'closed' &&
       candidate.supervisor?.lifecycleState !== 'closing' &&
@@ -131,10 +133,9 @@ async function closeWithOsFrame(label) {
 
 async function shortcutOpen(label) {
   const opened = await smokeCommand('dispatch-preview-shortcut', { expectedOpen: true })
-  assertProbe(opened.open === true, `${label}: shortcut reports open`, opened)
   assertProbe(
-    opened.supervisor?.windowOpen === true,
-    `${label}: supervisor reports window open`,
+    opened.supervisor?.windowOpen === true || opened.supervisor?.lifecycleState === 'opening',
+    `${label}: supervisor reports window opening`,
     opened
   )
   const generation = supervisorGeneration(opened)
@@ -148,6 +149,7 @@ async function shortcutOpen(label) {
     (candidate) =>
       candidate.open === true &&
       candidate.visible === true &&
+      supervisorGeneration(candidate) === generation &&
       candidate.supervisor?.windowOpen === true &&
       candidate.supervisor?.lifecycleState !== 'closed' &&
       candidate.supervisor?.lifecycleState !== 'closing' &&
@@ -285,16 +287,37 @@ async function waitForState(predicate, timeoutMsLocal) {
 }
 
 async function smokeCommand(command, params = {}) {
-  const response = await fetch(`http://${smoke.host}:${smoke.port}/command`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, params })
-  })
-  const payload = await response.json()
-  if (!response.ok || !payload.ok) {
-    throw new Error(payload?.error ?? `${command} smoke command failed`)
-  }
-  return payload.result
+  const deadline = Date.now() + 5000
+  let lastError = null
+  do {
+    try {
+      const response = await fetch(`http://${smoke.host}:${smoke.port}/command`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command, params })
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload?.error ?? `${command} smoke command failed`)
+      }
+      return payload.result
+    } catch (error) {
+      lastError = error
+      if (!isRetryableSmokeCommandError(error)) {
+        throw error
+      }
+      await sleep(150)
+    }
+  } while (Date.now() < deadline)
+  throw lastError ?? new Error(`${command} smoke command failed`)
+}
+
+function isRetryableSmokeCommandError(error) {
+  const message = String(error?.message ?? error)
+  return (
+    message.includes('Main window is not ready') ||
+    message.includes('Timed out waiting for active tab')
+  )
 }
 
 function assertProbe(condition, label, detail) {

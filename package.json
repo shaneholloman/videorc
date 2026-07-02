@@ -58,6 +58,7 @@
     "baseline:evidence:4k30:endurance": "node scripts/check-real-source-evidence.mjs --require-motion --min-recording-ms=600000",
     "baseline:real-source:av-sync-mpegts-output": "VIDEORC_BASELINE_AV_SYNC_STIMULUS=1 VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT=videotoolbox-h264-mpegts node scripts/real-source-baseline-app.mjs",
     "baseline:stream:av-sync": "VIDEORC_PREMIUM_FEATURES=1 node scripts/stream-av-sync-baseline.mjs",
+    "baseline:stream:caption-burn-av-sync": "VIDEORC_PREMIUM_FEATURES=1 VIDEORC_BASELINE_CAPTIONS=1 VIDEORC_BASELINE_CAPTION_BURN_TARGET=stream VIDEORC_BASELINE_CAPTION_OVERLAY_STIMULUS=1 node scripts/stream-av-sync-baseline.mjs",
     "baseline:stream:av-sync:endurance": "VIDEORC_PREMIUM_FEATURES=1 VIDEORC_BASELINE_RECORDING_MS=600000 VIDEORC_SMOKE_TIMEOUT_MS=900000 node scripts/stream-av-sync-baseline.mjs",
     "baseline:stream:split-output-4k-record": "VIDEORC_PREMIUM_FEATURES=1 node scripts/stream-av-sync-baseline.mjs --gate --skip-record-only --require-split-output-4k-record",
     "baseline:stream:youtube-4k30": "VIDEORC_PREMIUM_FEATURES=1 node scripts/stream-av-sync-baseline.mjs --gate --skip-record-only --require-youtube-4k-stream",

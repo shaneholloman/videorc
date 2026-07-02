@@ -12,7 +12,7 @@ export function summarizeNativePreviewRecordingDiagnostics(
 ) {
   const activeSamples = samples.filter((sample) => {
     const receivedAt = sample.receivedAt ?? 0
-    return sample.activeOutputMode === 'record' && receivedAt >= startedAt && receivedAt <= stopRequestedAt
+    return isRecordingMode(sample.activeOutputMode) && receivedAt >= startedAt && receivedAt <= stopRequestedAt
   })
   const steadySamples = activeSamples.filter((sample) => (sample.receivedAt ?? 0) - startedAt >= warmupMs)
   const measuredSamples = steadySamples.length ? steadySamples : activeSamples
@@ -89,6 +89,10 @@ export function summarizeNativePreviewRecordingDiagnostics(
       maxOf(collect('encoderBridgeVideoToolboxSubmitP95Ms')) ?? null,
     maxEncoderBridgeVideoToolboxFifoWriteP95Ms:
       maxOf(collect('encoderBridgeVideoToolboxFifoWriteP95Ms')) ?? null,
+    maxEncoderBridgeVideoToolboxFifoEnqueueP95Ms:
+      maxOf(collect('encoderBridgeVideoToolboxFifoEnqueueP95Ms')) ?? null,
+    maxEncoderBridgeVideoToolboxFifoEnqueueMaxMs:
+      maxOf(collect('encoderBridgeVideoToolboxFifoEnqueueMaxMs')) ?? null,
     maxEncoderBridgeWriterLoopP95Ms: maxOf(collect('encoderBridgeWriterLoopP95Ms')) ?? null,
     maxEncoderBridgeWriterSleepP95Ms: maxOf(collect('encoderBridgeWriterSleepP95Ms')) ?? null,
     maxEncoderBridgeWriterActiveP95Ms: maxOf(collect('encoderBridgeWriterActiveP95Ms')) ?? null,
@@ -199,6 +203,10 @@ export function summarizeNativePreviewRecordingDiagnostics(
     steadySurfaceSamples: steadySurfaceSamples.length,
     targetFps
   }
+}
+
+function isRecordingMode(mode) {
+  return typeof mode === 'string' && mode.includes('record')
 }
 
 function numeric(value) {

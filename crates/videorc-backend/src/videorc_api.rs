@@ -389,11 +389,12 @@ impl VideorcApiClient {
 
         let status = response.status();
         if status.is_success() {
-            return response.json().await.map_err(|error| {
-                CaptionChunkFailure::Transient {
+            return response
+                .json()
+                .await
+                .map_err(|error| CaptionChunkFailure::Transient {
                     message: format!("Could not read the streaming token: {error}"),
-                }
-            });
+                });
         }
         let (code, message) = read_error_code_and_message(response).await;
         Err(classify_caption_failure(status.as_u16(), code, message))
