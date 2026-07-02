@@ -799,7 +799,9 @@ describe('videoProfileCompatibility', () => {
     })
   })
 
-  it('allows 4K local recording with a stream-safe split output profile', () => {
+  it('warns (never blocks) on 4K local recording while streaming — the reproduced freeze profile', () => {
+    // docs/live-video-freeze-incident-plan.md: split-output 4K record + stream
+    // drops recorded video to ~8fps. Warning only, until LVF2–LVF4 land.
     const config = captureConfigFixture()
     config.recordEnabled = true
     config.streamEnabled = true
@@ -811,18 +813,16 @@ describe('videoProfileCompatibility', () => {
       defaultBitrateKbps: 6000
     }
 
-    expect(videoProfileCompatibility(config)).toEqual({
-      blockingReason: null,
-      warning: null
-    })
+    const result = videoProfileCompatibility(config)
+    expect(result.blockingReason).toBeNull()
+    expect(result.warning).toMatch(/4K local recording while livestreaming/)
   })
 
-  it('is permissive now — guardrails removed, never blocks or warns on a profile', () => {
-    // 4K livestreaming (YouTube 4K30), higher-bitrate and non-YouTube outputs ship
-    // now; videoProfileCompatibility no longer pre-blocks any profile. Unsupported
-    // combinations are rejected by the platform/backend at runtime.
-    const cases: Parameters<typeof videoProfileCompatibility>[0][] = [
-      { recordEnabled: true, streamEnabled: true, video: videoPresets['record-4k30'] },
+  it('never blocks, and only the 4K record+stream profile warns', () => {
+    // Guardrails stay removed (owner 2026-06-24) except the freeze-incident
+    // warning above; everything else passes clean and the backend rejects
+    // genuinely-unsupported combinations at runtime.
+    const cleanCases: Parameters<typeof videoProfileCompatibility>[0][] = [
       { recordEnabled: false, streamEnabled: true, video: videoPresets['record-4k30'] },
       { recordEnabled: false, streamEnabled: true, video: videoPresets['stream-1080p60'] },
       {
@@ -831,9 +831,16 @@ describe('videoProfileCompatibility', () => {
         video: videoPresets['record-4k60-experimental']
       }
     ]
-    for (const config of cases) {
+    for (const config of cleanCases) {
       expect(videoProfileCompatibility(config)).toEqual({ blockingReason: null, warning: null })
     }
+    const warned = videoProfileCompatibility({
+      recordEnabled: true,
+      streamEnabled: true,
+      video: videoPresets['record-4k30']
+    })
+    expect(warned.blockingReason).toBeNull()
+    expect(warned.warning).not.toBeNull()
   })
 })
 

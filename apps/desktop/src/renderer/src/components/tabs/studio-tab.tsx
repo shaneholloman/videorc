@@ -231,8 +231,17 @@ export function StudioTab(): ReactElement {
             />
           ) : null}
 
-          {/* Soft, dismissible compatibility warning (the mockup's 4K banner). */}
-          <StudioWarningBanner reason={!active ? liveStreamBlockedReason : null} />
+          {/* Soft, dismissible compatibility warning (the mockup's 4K banner).
+              Falls through to the freeze-incident warning (4K record + stream)
+              when nothing blocks outright and streaming is actually set up. */}
+          <StudioWarningBanner
+            reason={
+              !active
+                ? (liveStreamBlockedReason ??
+                  (captureConfig.streaming.enabled ? liveStreamCompatibility.warning : null))
+                : null
+            }
+          />
 
           {/* Preview (left, the hero) + Session facts & controls (right). */}
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">

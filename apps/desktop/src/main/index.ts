@@ -5918,6 +5918,15 @@ function smokeRendererScript(command: string, params: Record<string, unknown>): 
         throw new Error('Timed out enabling synthetic source.');
       }
 
+      if (${JSON.stringify(command)} === 'eval-js') {
+        // QA-harness escape hatch: run arbitrary renderer JS with the helper
+        // kit in scope. Only reachable through the smoke command server, which
+        // never runs in packaged builds.
+        const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+        const fn = new AsyncFunction('params', 'waitFor', 'openTab', 'sleep', String(params.code ?? 'return null'));
+        return { result: await fn(params, waitFor, openTab, sleep) };
+      }
+
       if (${JSON.stringify(command)} === 'select-camera-device') {
         const deadline = Date.now() + Number(params.timeoutMs ?? 10000);
         while (Date.now() < deadline) {

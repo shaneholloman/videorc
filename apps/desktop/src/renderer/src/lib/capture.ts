@@ -321,7 +321,24 @@ export function videoProfileCompatibility(
   // livestreaming (YouTube 4K30), higher-bitrate and non-YouTube stream outputs
   // ship now, so the app no longer pre-blocks these profiles. Platforms and the
   // backend reject genuinely-unsupported combinations at runtime.
-  void config
+  //
+  // One WARNING (not a block) restored 2026-07-02 for the reproduced
+  // split-output freeze incident (docs/live-video-freeze-incident-plan.md):
+  // 4K local recording while livestreaming drops the recording to ~8fps while
+  // audio continues. Warn until LVF2–LVF4 land; the session still starts.
+  if (
+    config.recordEnabled &&
+    config.streamEnabled &&
+    Math.min(config.video.width, config.video.height) >= 2160
+  ) {
+    return {
+      blockingReason: null,
+      warning:
+        '4K local recording while livestreaming is known to drop recorded video to ~8fps ' +
+        '(audio keeps running). Until the split-output fix ships, record at 1080p/2K while ' +
+        'streaming, stream without local 4K recording, or record 4K without streaming.'
+    }
+  }
   return { blockingReason: null, warning: null }
 }
 
