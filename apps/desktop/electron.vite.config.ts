@@ -23,7 +23,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/renderer/index.html'),
-          comments: resolve('src/renderer/comments.html')
+          comments: resolve('src/renderer/comments.html'),
+          captions: resolve('src/renderer/captions.html')
         }
       }
     }

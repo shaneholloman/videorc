@@ -2087,6 +2087,15 @@ export interface VideorcApi {
   onCommentsSnapshot: (callback: (snapshot: LiveChatSnapshot) => void) => () => void
   clearComments: () => Promise<void>
   onCommentsClearRequest: (callback: () => void) => () => void
+  openCaptionsWindow: () => Promise<CaptionsWindowState>
+  closeCaptionsWindow: () => Promise<CaptionsWindowState>
+  toggleCaptionsWindow: () => Promise<CaptionsWindowState>
+  getCaptionsWindowState: () => Promise<CaptionsWindowState>
+  setCaptionsWindowAlwaysOnTop: (alwaysOnTop: boolean) => Promise<CaptionsWindowState>
+  onCaptionsWindowState: (callback: (state: CaptionsWindowState) => void) => () => void
+  pushCaptionLines: (lines: CaptionsUpdate[]) => Promise<void>
+  getCaptionLines: () => Promise<CaptionsUpdate[] | null>
+  onCaptionLines: (callback: (lines: CaptionsUpdate[]) => void) => () => void
   createNativePreviewSurface: (
     bounds: PreviewSurfaceBounds,
     generation?: number
@@ -2318,4 +2327,15 @@ export interface CaptionsUpdate {
   text: string
   chunkSeconds: number
   remainingSeconds?: number
+}
+
+/** Detached captions window shell state (clone of the Comments window shape). */
+export interface CaptionsWindowState {
+  open: boolean
+  visible: boolean
+  bounds: { x: number; y: number; width: number; height: number } | null
+  windowId?: number
+  alwaysOnTop: boolean
+  enabled: boolean
+  message?: string
 }

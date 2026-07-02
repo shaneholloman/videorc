@@ -76,6 +76,8 @@ import type {
   BackendConnection,
   BackendLogEvent,
   CameraShape,
+  CaptionsUpdate,
+  CaptionsWindowState,
   CommentsWindowState,
   CompositorStatus,
   LayoutSettings,
@@ -112,6 +114,11 @@ let commentsWindowLastFrame: Electron.Rectangle | null = null
 let commentsWindowAlwaysOnTop = false
 let commentsWindowClosing = false
 let latestCommentsSnapshot: LiveChatSnapshot | null = null
+let captionsWindow: BrowserWindow | null = null
+let captionsWindowLastFrame: Electron.Rectangle | null = null
+let captionsWindowAlwaysOnTop = false
+let captionsWindowClosing = false
+let latestCaptionLines: CaptionsUpdate[] = []
 let nativePreviewSurfaceStatus: PreviewSurfaceStatus = idleNativePreviewSurfaceStatus()
 let nativePreviewSurfaceCompositorUpdateInFlight: Promise<PreviewSurfaceStatus> | null = null
 let nativePreviewSurfaceCompositorRequestSerial = 0
@@ -147,6 +154,7 @@ const nativePreviewFramePollingEnabled = process.env.VIDEORC_SMOKE_PREVIEW_MOTIO
 // Keep a developer kill switch for emergency rollback.
 const notesWindowFeatureEnabled = process.env.VIDEORC_NOTES_WINDOW !== '0'
 const commentsWindowFeatureEnabled = process.env.VIDEORC_COMMENTS_WINDOW !== '0'
+const captionsWindowFeatureEnabled = process.env.VIDEORC_CAPTIONS_WINDOW !== '0'
 const notesWindowSmokeMarkerEnabled =
   notesWindowFeatureEnabled &&
   process.env.VIDEORC_NOTES_SMOKE_MARKER === '1' &&
@@ -643,6 +651,9 @@ function createWindow(): void {
     if (commentsWindow && !commentsWindow.isDestroyed()) {
       commentsWindow.close()
     }
+    if (captionsWindow && !captionsWindow.isDestroyed()) {
+      captionsWindow.close()
+    }
     mainWindow = null
   })
 
@@ -670,6 +681,7 @@ function createWindow(): void {
     restorePreviewWindowOnLaunch()
     restoreNotesWindowOnLaunch()
     restoreCommentsWindowOnLaunch()
+    restoreCaptionsWindowOnLaunch()
   })
 }
 
@@ -1317,6 +1329,9 @@ function commentsWindowState(message?: string): CommentsWindowState {
     bounds: open ? window!.getBounds() : null,
     windowId: commentsWindowGlobalId(),
     alwaysOnTop: commentsWindowAlwaysOnTop,
+    // Content protection for the comments window is being wired in a parallel
+    // change; false keeps the committed type satisfied until it lands.
+    protected: false,
     enabled: commentsWindowFeatureEnabled,
     message:
       message ??
@@ -1455,6 +1470,212 @@ function restoreCommentsWindowOnLaunch(): void {
   const prefs = loadCommentsWindowPrefs()
   if (prefs.open === true) {
     void openCommentsWindow()
+  }
+}
+
+// --- Detached captions window (live captions P4) -----------------------------
+// Clone of the Comments window shell: a big-text caption display for a second
+// monitor (also capturable into the scene as a poor-man's burn-in). Data is
+// relayed via main: the main renderer pushes its caption-line buffer, main
+// caches it for first paint and forwards live updates.
+type CaptionsWindowPrefs = {
+  frame?: Electron.Rectangle
+  alwaysOnTop?: boolean
+  alwaysOnTopPreferenceVersion?: number
+  open?: boolean
+}
+
+function captionsWindowPrefsPath(): string {
+  return join(app.getPath('userData'), 'captions-window.json')
+}
+
+function loadCaptionsWindowPrefs(): CaptionsWindowPrefs {
+  try {
+    return JSON.parse(readFileSync(captionsWindowPrefsPath(), 'utf8')) as CaptionsWindowPrefs
+  } catch {
+    return {}
+  }
+}
+
+function saveCaptionsWindowPrefs(patch: CaptionsWindowPrefs): void {
+  if (!captionsWindowFeatureEnabled || process.env.VIDEORC_SMOKE_OUTPUT_DIR) {
+    return
+  }
+  try {
+    writeFileSync(
+      captionsWindowPrefsPath(),
+      JSON.stringify({ ...loadCaptionsWindowPrefs(), ...patch })
+    )
+  } catch {
+    // A failed preference write must never break capture.
+  }
+}
+
+function captionsWindowAlwaysOnTopPreference(prefs: CaptionsWindowPrefs): boolean {
+  return prefs.alwaysOnTopPreferenceVersion === 1 && prefs.alwaysOnTop === true
+}
+
+function captionsWindowIsOpen(): boolean {
+  return Boolean(captionsWindow && !captionsWindow.isDestroyed() && !captionsWindowClosing)
+}
+
+function captionsWindowGlobalId(): number | undefined {
+  const window = captionsWindow
+  if (!captionsWindowIsOpen() || !window) {
+    return undefined
+  }
+  const match = /^window:(\d+):/.exec(window.getMediaSourceId())
+  const id = match ? Number(match[1]) : Number.NaN
+  return Number.isFinite(id) && id > 0 ? id : undefined
+}
+
+function captionsWindowState(message?: string): CaptionsWindowState {
+  const window = captionsWindow
+  const open = captionsWindowIsOpen()
+  return {
+    open,
+    visible: open ? window!.isVisible() && !window!.isMinimized() : false,
+    bounds: open ? window!.getBounds() : null,
+    windowId: captionsWindowGlobalId(),
+    alwaysOnTop: captionsWindowAlwaysOnTop,
+    enabled: captionsWindowFeatureEnabled,
+    message:
+      message ??
+      (captionsWindowFeatureEnabled
+        ? undefined
+        : 'Captions window is disabled by VIDEORC_CAPTIONS_WINDOW=0.')
+  }
+}
+
+function emitCaptionsWindowState(message?: string): void {
+  if (appIsQuitting) {
+    return
+  }
+  const state = captionsWindowState(message)
+  for (const window of [mainWindow, captionsWindow]) {
+    if (window && !window.webContents.isDestroyed()) {
+      try {
+        window.webContents.send('captions-window:state', state)
+      } catch (error) {
+        if (!appIsQuitting) {
+          safeConsole.warn('Captions window state emit failed:', error)
+        }
+      }
+    }
+  }
+}
+
+async function openCaptionsWindow(): Promise<CaptionsWindowState> {
+  if (!captionsWindowFeatureEnabled) {
+    return captionsWindowState()
+  }
+  const existingWindow = captionsWindow
+  if (captionsWindowIsOpen() && existingWindow) {
+    if (existingWindow.isMinimized()) {
+      existingWindow.restore()
+    }
+    existingWindow.show()
+    existingWindow.focus()
+    emitCaptionsWindowState()
+    return captionsWindowState()
+  }
+
+  const prefs = loadCaptionsWindowPrefs()
+  const rememberedFrame = captionsWindowLastFrame ?? prefs.frame ?? null
+  const frame = rememberedFrame ? clampFrameToWorkArea(rememberedFrame) : null
+  const window = new BrowserWindow({
+    width: frame?.width ?? 640,
+    height: frame?.height ?? 320,
+    ...(frame ? { x: frame.x, y: frame.y } : {}),
+    minWidth: 360,
+    minHeight: 200,
+    title: 'Videorc Captions',
+    ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
+    backgroundColor: '#101012',
+    show: false,
+    ...appWindowIconOptions(),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  })
+  captionsWindowClosing = false
+  captionsWindow = window
+  captionsWindowAlwaysOnTop = captionsWindowAlwaysOnTopPreference(prefs)
+  if (captionsWindowAlwaysOnTop) {
+    applyNotesWindowAlwaysOnTop(window, true)
+  }
+  saveCaptionsWindowPrefs({ open: true })
+
+  for (const event of ['move', 'resize', 'show', 'hide', 'minimize', 'restore', 'focus'] as const) {
+    window.on(event as 'move', () => {
+      if (captionsWindow === window) {
+        emitCaptionsWindowState()
+      }
+    })
+  }
+  window.on('close', () => {
+    if (captionsWindow === window) {
+      captionsWindowClosing = true
+      captionsWindowLastFrame = window.getBounds()
+      saveCaptionsWindowPrefs({ frame: captionsWindowLastFrame, open: false })
+    }
+  })
+  window.on('closed', () => {
+    if (captionsWindow === window) {
+      captionsWindow = null
+      captionsWindowClosing = false
+      emitCaptionsWindowState()
+    }
+  })
+
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL
+  if (rendererUrl) {
+    await window.loadURL(`${rendererUrl}/captions.html`)
+  } else {
+    await window.loadFile(join(__dirname, '../renderer/captions.html'))
+  }
+  window.show()
+  window.focus()
+  emitCaptionsWindowState()
+  return captionsWindowState()
+}
+
+function closeCaptionsWindow(message?: string): CaptionsWindowState {
+  if (captionsWindow && !captionsWindow.isDestroyed()) {
+    captionsWindowClosing = true
+    captionsWindow.close()
+  }
+  return captionsWindowState(message)
+}
+
+async function toggleCaptionsWindow(): Promise<CaptionsWindowState> {
+  if (captionsWindowIsOpen()) {
+    return closeCaptionsWindow()
+  }
+  return openCaptionsWindow()
+}
+
+function setCaptionsWindowAlwaysOnTop(alwaysOnTop: boolean): CaptionsWindowState {
+  captionsWindowAlwaysOnTop = alwaysOnTop
+  if (captionsWindow && !captionsWindow.isDestroyed()) {
+    applyNotesWindowAlwaysOnTop(captionsWindow, alwaysOnTop)
+  }
+  saveCaptionsWindowPrefs({ alwaysOnTop, alwaysOnTopPreferenceVersion: 1 })
+  emitCaptionsWindowState()
+  return captionsWindowState()
+}
+
+function restoreCaptionsWindowOnLaunch(): void {
+  if (!captionsWindowFeatureEnabled || !previewWindowAutoRestoreEnabled) {
+    return
+  }
+  const prefs = loadCaptionsWindowPrefs()
+  if (prefs.open === true) {
+    void openCaptionsWindow()
   }
 }
 
@@ -6300,6 +6521,22 @@ app.whenReady().then(async () => {
       mainWindow.webContents.send('comments-window:clear-request')
     }
   })
+  ipcMain.handle('captions-window:open', () => openCaptionsWindow())
+  ipcMain.handle('captions-window:close', () => closeCaptionsWindow())
+  ipcMain.handle('captions-window:toggle', () => toggleCaptionsWindow())
+  ipcMain.handle('captions-window:get-state', () => captionsWindowState())
+  ipcMain.handle('captions-window:set-always-on-top', (_event, alwaysOnTop: boolean) =>
+    setCaptionsWindowAlwaysOnTop(Boolean(alwaysOnTop))
+  )
+  // Same relay shape as comments: the main renderer owns the backend WS and
+  // pushes its caption-line buffer; main caches it for the window's first paint.
+  ipcMain.handle('captions-window:push-lines', (_event, lines: CaptionsUpdate[]) => {
+    latestCaptionLines = Array.isArray(lines) ? lines : []
+    if (captionsWindow && !captionsWindow.webContents.isDestroyed()) {
+      captionsWindow.webContents.send('captions-window:lines', latestCaptionLines)
+    }
+  })
+  ipcMain.handle('captions-window:get-lines', () => latestCaptionLines)
   ipcMain.handle('preview-surface:create', (_event, bounds: PreviewSurfaceBounds, generation) => {
     const requestedGeneration = previewSurfaceGenerationFromIpc(generation)
     return runNativePreviewSurfaceMutation(() =>

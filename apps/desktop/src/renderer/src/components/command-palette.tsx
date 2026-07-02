@@ -31,7 +31,7 @@ export function CommandPalette({
   onOpenChange: (open: boolean) => void
 }): ReactElement {
   const { setActive, openStudioPanel } = useWorkspaceNav()
-  const { recording, startSession, stopSession, commentsWindowOpen, toggleCommentsWindow } =
+  const { recording, startSession, stopSession, commentsWindow, toggleCommentsWindow } =
     useStudio()
   const { setTheme } = useTheme()
 
@@ -120,7 +120,7 @@ export function CommandPalette({
             onSelect={() => run(() => toggleCommentsWindow())}
           >
             <ChatCircle className="size-4" />
-            {commentsWindowOpen ? 'Close comments window' : 'Open comments window'}
+            {commentsWindow.open ? 'Close comments window' : 'Open comments window'}
             <CommandShortcut className="tracking-normal">
               <Kbd>⌘⇧J</Kbd>
             </CommandShortcut>

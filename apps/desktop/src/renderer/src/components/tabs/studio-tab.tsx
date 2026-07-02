@@ -295,7 +295,7 @@ export function StudioTab(): ReactElement {
       {chatRailOpen && streamingActive ? (
         <LiveChatRail
           snapshot={studio.liveChatSnapshot}
-          windowOpen={studio.commentsWindowOpen}
+          windowOpen={studio.commentsWindow.open}
           onClearLocal={studio.clearLiveChat}
           onClose={() => setChatRailOpen(false)}
           onPopOut={studio.toggleCommentsWindow}

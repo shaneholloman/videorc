@@ -279,7 +279,15 @@ export function StreamingTab(): ReactElement {
  * the consent line below states that plainly (AI privacy tone).
  */
 function LiveCaptionsSection(): ReactElement {
-  const { entitlements, captionsStatus, captionLines, startCaptions, stopCaptions } = useStudio()
+  const {
+    entitlements,
+    captionsStatus,
+    captionLines,
+    startCaptions,
+    stopCaptions,
+    captionsWindow,
+    toggleCaptionsWindow
+  } = useStudio()
   const [pending, setPending] = useState(false)
   const gate = cloudAiUploadGate(entitlements)
   const active = captionsStatus.state === 'live'
@@ -362,6 +370,16 @@ function LiveCaptionsSection(): ReactElement {
               ))
             )}
           </div>
+        ) : null}
+        {captionsWindow.enabled || captionsWindow.open ? (
+          <Button
+            className="w-fit"
+            size="sm"
+            variant="ghost"
+            onClick={() => void toggleCaptionsWindow()}
+          >
+            {captionsWindow.open ? 'Close captions window' : 'Open captions window'}
+          </Button>
         ) : null}
       </div>
     </PanelSection>

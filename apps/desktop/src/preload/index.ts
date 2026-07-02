@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   BackendConnection,
   BackendLogEvent,
+  CaptionsUpdate,
+  CaptionsWindowState,
   CommentsWindowState,
   GlassWallpaperState,
   LiveChatSnapshot,
@@ -91,6 +93,26 @@ const api: VideorcApi = {
     const listener = (): void => callback()
     ipcRenderer.on('comments-window:clear-request', listener)
     return () => ipcRenderer.removeListener('comments-window:clear-request', listener)
+  },
+  openCaptionsWindow: () => ipcRenderer.invoke('captions-window:open'),
+  closeCaptionsWindow: () => ipcRenderer.invoke('captions-window:close'),
+  toggleCaptionsWindow: () => ipcRenderer.invoke('captions-window:toggle'),
+  getCaptionsWindowState: () => ipcRenderer.invoke('captions-window:get-state'),
+  setCaptionsWindowAlwaysOnTop: (alwaysOnTop) =>
+    ipcRenderer.invoke('captions-window:set-always-on-top', alwaysOnTop),
+  onCaptionsWindowState: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: CaptionsWindowState): void =>
+      callback(state)
+    ipcRenderer.on('captions-window:state', listener)
+    return () => ipcRenderer.removeListener('captions-window:state', listener)
+  },
+  pushCaptionLines: (lines) => ipcRenderer.invoke('captions-window:push-lines', lines),
+  getCaptionLines: () => ipcRenderer.invoke('captions-window:get-lines'),
+  onCaptionLines: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, lines: CaptionsUpdate[]): void =>
+      callback(lines)
+    ipcRenderer.on('captions-window:lines', listener)
+    return () => ipcRenderer.removeListener('captions-window:lines', listener)
   },
   createNativePreviewSurface: (bounds, generation) =>
     ipcRenderer.invoke('preview-surface:create', bounds, generation),

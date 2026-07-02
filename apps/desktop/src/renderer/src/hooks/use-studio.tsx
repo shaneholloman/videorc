@@ -85,6 +85,7 @@ import type {
   LiveChatProviderState,
   CaptionsStatus,
   CaptionsUpdate,
+  CaptionsWindowState,
   LiveChatSnapshot,
   NativePreviewHostCommand,
   NotesWindowState,
@@ -339,6 +340,10 @@ export type StudioContextValue = {
   captionLines: CaptionsUpdate[]
   startCaptions: () => Promise<void>
   stopCaptions: () => Promise<void>
+  captionsWindow: CaptionsWindowState
+  openCaptionsWindow: () => Promise<void>
+  closeCaptionsWindow: () => Promise<void>
+  toggleCaptionsWindow: () => Promise<void>
   commentsWindow: CommentsWindowState
   openCommentsWindow: () => Promise<void>
   closeCommentsWindow: () => Promise<void>
@@ -735,6 +740,15 @@ const idleCommentsWindowState = (): CommentsWindowState => ({
   message: 'Comments window is disabled by VIDEORC_COMMENTS_WINDOW=0.'
 })
 
+const idleCaptionsWindowState = (): CaptionsWindowState => ({
+  open: false,
+  visible: false,
+  bounds: null,
+  alwaysOnTop: false,
+  enabled: false,
+  message: 'Captions window is disabled by VIDEORC_CAPTIONS_WINDOW=0.'
+})
+
 const idlePreviewSupervisorState = (): PreviewSupervisorState => ({
   lifecycleState: 'closed',
   generation: 0,
@@ -835,6 +849,44 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     const status = await client.request<CaptionsStatus>('captions.stop')
     setCaptionsStatus(status)
   }, [client])
+  // Detached captions window: same relay-via-main pattern as Comments — the
+  // caption-line buffer is pushed to main, which caches + forwards it.
+  const [captionsWindow, setCaptionsWindow] = useState<CaptionsWindowState>(idleCaptionsWindowState)
+  useEffect(() => {
+    let cancelled = false
+    const reconcile = async (): Promise<void> => {
+      const fresh = await window.videorc?.getCaptionsWindowState?.()
+      if (!fresh || cancelled) {
+        return
+      }
+      setCaptionsWindow((current) =>
+        JSON.stringify(current) === JSON.stringify(fresh) ? current : fresh
+      )
+    }
+    void reconcile()
+    const offState = window.videorc?.onCaptionsWindowState?.((state) => setCaptionsWindow(state))
+    return () => {
+      cancelled = true
+      offState?.()
+    }
+  }, [])
+  useEffect(() => {
+    void window.videorc?.pushCaptionLines?.(captionLines)
+  }, [captionLines])
+  const openCaptionsWindow = useCallback(async () => {
+    await window.videorc?.pushCaptionLines?.(captionLines).catch(() => {})
+    await window.videorc?.openCaptionsWindow?.()
+  }, [captionLines])
+  const closeCaptionsWindow = useCallback(async () => {
+    await window.videorc?.closeCaptionsWindow?.()
+  }, [])
+  const toggleCaptionsWindow = useCallback(async () => {
+    if (captionsWindow.open) {
+      await closeCaptionsWindow()
+      return
+    }
+    await openCaptionsWindow()
+  }, [captionsWindow.open, closeCaptionsWindow, openCaptionsWindow])
   const [commentsWindow, setCommentsWindow] = useState<CommentsWindowState>(idleCommentsWindowState)
   useEffect(() => {
     let cancelled = false
@@ -5014,6 +5066,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       captionLines,
       startCaptions,
       stopCaptions,
+      captionsWindow,
+      openCaptionsWindow,
+      closeCaptionsWindow,
+      toggleCaptionsWindow,
       commentsWindow,
       openCommentsWindow,
       closeCommentsWindow,
@@ -5172,6 +5228,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       captionLines,
       startCaptions,
       stopCaptions,
+      captionsWindow,
+      openCaptionsWindow,
+      closeCaptionsWindow,
+      toggleCaptionsWindow,
       commentsWindow,
       openCommentsWindow,
       closeCommentsWindow,
