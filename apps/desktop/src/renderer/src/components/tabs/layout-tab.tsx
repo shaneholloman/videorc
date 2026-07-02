@@ -70,6 +70,7 @@ export function LayoutTab(): ReactElement {
     setSelectedSceneSourceId,
     resetSceneSource,
     nudgeSceneSource,
+    setSceneSourceTransform,
     applyCameraPreset,
     setSceneSourceVisible,
     moveSceneSource,
@@ -153,16 +154,21 @@ export function LayoutTab(): ReactElement {
               real normalized transforms (pure SVG, zero idle IPC). Live pixels
               stay in the detached preview window. */}
           <SceneStage
+            dragEnabled={showOverlayControls && !isSessionActive}
             hasBackground={Boolean(scene?.background)}
             previewOpen={previewWindow.open}
             scene={scene}
             selectedSourceId={selectedSceneSourceId}
+            onCommitPosition={(sourceId, position) =>
+              void setSceneSourceTransform(sourceId, position)
+            }
             onSelectSource={(sourceId) => {
               setSelectedSceneSourceId(sourceId)
               if (!sceneEditMode) {
                 setSceneEditMode(true)
               }
             }}
+            onSnapCorner={(cameraCorner) => applyCameraPreset({ cameraCorner })}
             onTogglePreview={() => void togglePreviewWindow()}
           />
 

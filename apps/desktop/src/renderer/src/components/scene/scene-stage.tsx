@@ -1,5 +1,5 @@
 import { ArrowSquareOut, Monitor, VideoCamera } from '@phosphor-icons/react'
-import type { ReactElement } from 'react'
+import { useRef, useState, type ReactElement } from 'react'
 
 import { Button } from '@/components/ui/button'
 import type { Scene, SceneSource } from '@/lib/backend'
@@ -19,21 +19,122 @@ export function SceneStage({
   selectedSourceId,
   hasBackground,
   previewOpen,
+  dragEnabled = false,
   onSelectSource,
-  onTogglePreview
+  onTogglePreview,
+  onCommitPosition,
+  onSnapCorner
 }: {
   scene: Scene | null
   selectedSourceId: string | null
   hasBackground: boolean
   previewOpen: boolean
+  /** SC3: allow dragging the camera rect (disabled in split/full layouts + live sessions). */
+  dragEnabled?: boolean
   onSelectSource: (sourceId: string) => void
   onTogglePreview: () => void
+  onCommitPosition?: (sourceId: string, position: { x: number; y: number }) => void
+  onSnapCorner?: (corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right') => void
 }): ReactElement {
   const sources = scene?.sources ?? []
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const dragRef = useRef<{
+    sourceId: string
+    pointerId: number
+    startClientX: number
+    startClientY: number
+    startX: number
+    startY: number
+    width: number
+    height: number
+    moved: boolean
+  } | null>(null)
+  // Live drag position (normalized) — visual only until pointerup commits.
+  const [dragPosition, setDragPosition] = useState<{
+    sourceId: string
+    x: number
+    y: number
+  } | null>(null)
+
+  const normalizedDelta = (event: { clientX: number; clientY: number }) => {
+    const drag = dragRef.current
+    const rect = svgRef.current?.getBoundingClientRect()
+    if (!drag || !rect) {
+      return null
+    }
+    const dx = (event.clientX - drag.startClientX) / rect.width
+    const dy = (event.clientY - drag.startClientY) / rect.height
+    return {
+      x: Math.min(Math.max(drag.startX + dx, 0), 1 - drag.width),
+      y: Math.min(Math.max(drag.startY + dy, 0), 1 - drag.height)
+    }
+  }
+
+  const beginDrag = (source: SceneSource, event: React.PointerEvent<SVGGElement>): void => {
+    if (!dragEnabled || source.kind !== 'camera' || source.transform.width >= 1) {
+      return
+    }
+    dragRef.current = {
+      sourceId: source.id,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: source.transform.x,
+      startY: source.transform.y,
+      width: source.transform.width,
+      height: source.transform.height,
+      moved: false
+    }
+    ;(event.target as Element).setPointerCapture?.(event.pointerId)
+  }
+
+  const moveDrag = (event: React.PointerEvent<SVGGElement>): void => {
+    const drag = dragRef.current
+    if (!drag || event.pointerId !== drag.pointerId) {
+      return
+    }
+    const next = normalizedDelta(event)
+    if (!next) {
+      return
+    }
+    drag.moved = true
+    setDragPosition({ sourceId: drag.sourceId, ...next })
+  }
+
+  const endDrag = (event: React.PointerEvent<SVGGElement>): void => {
+    const drag = dragRef.current
+    if (!drag || event.pointerId !== drag.pointerId) {
+      return
+    }
+    dragRef.current = null
+    const next = normalizedDelta(event)
+    setDragPosition(null)
+    if (!drag.moved || !next) {
+      return
+    }
+    // Corner snap: release near a canvas corner re-enters preset mode.
+    const snap = 0.06
+    const nearLeft = next.x <= snap
+    const nearRight = next.x + drag.width >= 1 - snap
+    const nearTop = next.y <= snap
+    const nearBottom = next.y + drag.height >= 1 - snap
+    if (onSnapCorner && (nearLeft || nearRight) && (nearTop || nearBottom)) {
+      onSnapCorner(
+        `${nearTop ? 'top' : 'bottom'}-${nearLeft ? 'left' : 'right'}` as
+          | 'top-left'
+          | 'top-right'
+          | 'bottom-left'
+          | 'bottom-right'
+      )
+      return
+    }
+    onCommitPosition?.(drag.sourceId, next)
+  }
 
   return (
     <div className="relative overflow-hidden rounded-row border border-border bg-muted/20">
       <svg
+        ref={svgRef}
         aria-label="Scene composition diagram"
         className="block w-full"
         role="img"
@@ -50,8 +151,16 @@ export function SceneStage({
         {sources.map((source) => (
           <StageSourceRect
             key={source.id}
+            draggable={dragEnabled && source.kind === 'camera' && source.transform.width < 1}
+            dragPosition={dragPosition?.sourceId === source.id ? dragPosition : null}
             selected={source.id === selectedSourceId}
             source={source}
+            onPointerDown={(event) => {
+              onSelectSource(source.id)
+              beginDrag(source, event)
+            }}
+            onPointerMove={moveDrag}
+            onPointerUp={endDrag}
             onSelect={() => onSelectSource(source.id)}
           />
         ))}
@@ -107,26 +216,39 @@ export function SceneStage({
 function StageSourceRect({
   source,
   selected,
-  onSelect
+  draggable = false,
+  dragPosition,
+  onSelect,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp
 }: {
   source: SceneSource
   selected: boolean
+  draggable?: boolean
+  dragPosition: { x: number; y: number } | null
   onSelect: () => void
+  onPointerDown?: (event: React.PointerEvent<SVGGElement>) => void
+  onPointerMove?: (event: React.PointerEvent<SVGGElement>) => void
+  onPointerUp?: (event: React.PointerEvent<SVGGElement>) => void
 }): ReactElement {
-  const x = source.transform.x * STAGE_W
-  const y = source.transform.y * STAGE_H
+  const x = (dragPosition?.x ?? source.transform.x) * STAGE_W
+  const y = (dragPosition?.y ?? source.transform.y) * STAGE_H
   const width = Math.max(2, source.transform.width * STAGE_W)
   const height = Math.max(2, source.transform.height * STAGE_H)
   const camera = source.kind === 'camera'
 
   return (
     <g
-      className="cursor-pointer"
+      className={draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}
       data-videorc-stage-source={source.id}
       onClick={(event) => {
         event.stopPropagation()
         onSelect()
       }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
     >
       <rect
         className={cn(

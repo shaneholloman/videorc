@@ -455,6 +455,10 @@ export type StudioContextValue = {
     directionY: number,
     large?: boolean
   ) => Promise<void>
+  setSceneSourceTransform: (
+    sourceId: string,
+    patch: { x?: number; y?: number; width?: number; height?: number }
+  ) => Promise<void>
   commitCameraTransform: (sourceId: string, x: number, y: number) => Promise<void>
   setSceneSourceVisible: (sourceId: string, visible: boolean) => Promise<void>
   moveSceneSource: (sourceId: string, direction: -1 | 1) => Promise<void>
@@ -2559,6 +2563,29 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           directionX,
           directionY,
           large
+        })
+        applyCommittedScene(status)
+        if (status.scene.sources.find((source) => source.id === sourceId)?.kind === 'camera') {
+          syncCameraTransformToLayout(status.scene)
+        }
+      } catch (error) {
+        reportError(error)
+      }
+    },
+    [applyCommittedScene, client, reportError, syncCameraTransformToLayout]
+  )
+
+  // SC3: absolute transform write for stage drags (nudge is directional).
+  const setSceneSourceTransform = useCallback(
+    async (sourceId: string, patch: { x?: number; y?: number; width?: number; height?: number }) => {
+      if (!client) {
+        return
+      }
+
+      try {
+        const status = await client.request<SceneCommitStatus>('scene.source.transform.update', {
+          sourceId,
+          transform: patch
         })
         applyCommittedScene(status)
         if (status.scene.sources.find((source) => source.id === sourceId)?.kind === 'camera') {
@@ -5339,6 +5366,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       reloadSceneFromCaptureConfig,
       resetSceneSource,
       nudgeSceneSource,
+      setSceneSourceTransform,
       commitCameraTransform,
       applyCameraPreset,
       layoutSwitchPending,
@@ -5501,6 +5529,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       reloadSceneFromCaptureConfig,
       resetSceneSource,
       nudgeSceneSource,
+      setSceneSourceTransform,
       commitCameraTransform,
       applyCameraPreset,
       layoutSwitchPending,
