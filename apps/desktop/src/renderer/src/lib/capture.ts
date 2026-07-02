@@ -21,9 +21,11 @@ export type SettingsState = {
   ffmpegPath: string
 }
 
+export type CaptionBurnTarget = 'off' | 'stream' | 'recording' | 'both'
+
 export type CaptionsCaptureSettings = {
-  /** Burn the live caption bar into the STREAM leg (recordings stay clean). */
-  burnInEnabled: boolean
+  /** Which output legs the LIVE caption bar burns into (R1). */
+  burnTarget: CaptionBurnTarget
   position: 'top' | 'bottom'
   textSize: 's' | 'm' | 'l'
 }
@@ -419,16 +421,24 @@ export const defaultCaptureConfig: CaptureConfig = {
 }
 
 export function defaultCaptionsCaptureSettings(): CaptionsCaptureSettings {
-  return { burnInEnabled: false, position: 'bottom', textSize: 'm' }
+  return { burnTarget: 'off', position: 'bottom', textSize: 'm' }
 }
 
+const CAPTION_BURN_TARGETS: CaptionBurnTarget[] = ['off', 'stream', 'recording', 'both']
+
 export function normalizeCaptionsCaptureSettings(
-  loaded: Partial<CaptionsCaptureSettings> | undefined
+  loaded:
+    | (Partial<CaptionsCaptureSettings> & { burnInEnabled?: boolean })
+    | undefined
 ): CaptionsCaptureSettings {
   const defaults = defaultCaptionsCaptureSettings()
+  // Pre-R1 configs carried a boolean; true meant the stream leg.
+  const migrated: CaptionBurnTarget | undefined =
+    loaded?.burnTarget === undefined && loaded?.burnInEnabled === true ? 'stream' : undefined
   return {
-    burnInEnabled:
-      typeof loaded?.burnInEnabled === 'boolean' ? loaded.burnInEnabled : defaults.burnInEnabled,
+    burnTarget: CAPTION_BURN_TARGETS.includes(loaded?.burnTarget as CaptionBurnTarget)
+      ? (loaded?.burnTarget as CaptionBurnTarget)
+      : (migrated ?? defaults.burnTarget),
     position: loaded?.position === 'top' ? 'top' : defaults.position,
     textSize:
       loaded?.textSize === 's' || loaded?.textSize === 'l' ? loaded.textSize : defaults.textSize

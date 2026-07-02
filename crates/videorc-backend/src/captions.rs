@@ -188,6 +188,74 @@ pub enum CaptionTextSize {
     L,
 }
 
+/// Which output legs carry the LIVE caption bar (R1). The lag caveat applies
+/// wherever it burns; the recording additionally gets the aligned copy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptionBurnTarget {
+    #[default]
+    Off,
+    Stream,
+    Recording,
+    Both,
+}
+
+impl CaptionBurnTarget {
+    pub fn burns_stream(self) -> bool {
+        matches!(self, CaptionBurnTarget::Stream | CaptionBurnTarget::Both)
+    }
+    pub fn burns_recording(self) -> bool {
+        matches!(self, CaptionBurnTarget::Recording | CaptionBurnTarget::Both)
+    }
+}
+
+/// Per-leg overlay plan for a session shape (pure; unit-tested matrix).
+/// `force_same_profile_split`: record+stream sessions whose legs must DIFFER
+/// (one burned, one clean) need a separate stream render even at the same
+/// profile; when both legs agree they share frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptionOverlayLegPlan {
+    pub primary: bool,
+    pub aux: bool,
+    pub force_same_profile_split: bool,
+}
+
+pub fn caption_overlay_leg_plan(
+    record_enabled: bool,
+    stream_enabled: bool,
+    target: CaptionBurnTarget,
+) -> CaptionOverlayLegPlan {
+    let none = CaptionOverlayLegPlan {
+        primary: false,
+        aux: false,
+        force_same_profile_split: false,
+    };
+    if target == CaptionBurnTarget::Off {
+        return none;
+    }
+    match (record_enabled, stream_enabled) {
+        (false, false) => none,
+        // Record only: the primary leg IS the recording.
+        (true, false) => CaptionOverlayLegPlan {
+            primary: target.burns_recording(),
+            aux: false,
+            force_same_profile_split: false,
+        },
+        // Stream only: the primary leg IS the stream.
+        (false, true) => CaptionOverlayLegPlan {
+            primary: target.burns_stream(),
+            aux: false,
+            force_same_profile_split: false,
+        },
+        // Record + stream: primary = recording, aux = stream (when split).
+        (true, true) => CaptionOverlayLegPlan {
+            primary: target.burns_recording(),
+            aux: target.burns_stream(),
+            force_same_profile_split: target.burns_recording() != target.burns_stream(),
+        },
+    }
+}
+
 /// ASS is authored against a fixed reference resolution; libass scales it to
 /// the actual video, so sizes stay consistent at any output.
 const ASS_PLAY_RES_X: u32 = 1920;
@@ -993,6 +1061,41 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .expect("test png encodes");
         base64::engine::general_purpose::STANDARD.encode(png)
+    }
+
+    #[test]
+    fn caption_leg_plan_matrix() {
+        use CaptionBurnTarget::*;
+        let plan = caption_overlay_leg_plan;
+        // Off burns nothing anywhere.
+        for (record, stream) in [(true, false), (false, true), (true, true)] {
+            assert_eq!(
+                plan(record, stream, Off),
+                CaptionOverlayLegPlan {
+                    primary: false,
+                    aux: false,
+                    force_same_profile_split: false
+                }
+            );
+        }
+        // Record only: primary is the recording; stream targets are inert.
+        assert!(plan(true, false, Recording).primary);
+        assert!(plan(true, false, Both).primary);
+        assert!(!plan(true, false, Stream).primary);
+        // Stream only: primary IS the stream; recording targets are inert.
+        assert!(plan(false, true, Stream).primary);
+        assert!(plan(false, true, Both).primary);
+        assert!(!plan(false, true, Recording).primary);
+        // Record+stream: split forced ONLY when the legs must differ.
+        let stream_only = plan(true, true, Stream);
+        assert_eq!((stream_only.primary, stream_only.aux), (false, true));
+        assert!(stream_only.force_same_profile_split);
+        let recording_only = plan(true, true, Recording);
+        assert_eq!((recording_only.primary, recording_only.aux), (true, false));
+        assert!(recording_only.force_same_profile_split);
+        let both = plan(true, true, Both);
+        assert_eq!((both.primary, both.aux), (true, true));
+        assert!(!both.force_same_profile_split);
     }
 
     #[test]

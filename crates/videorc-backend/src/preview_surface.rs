@@ -108,6 +108,7 @@ pub async fn create_preview_surface(
                 publish_yuv_frames: true,
                 stream_output: None,
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;
@@ -625,6 +626,7 @@ mod tests {
                 publish_yuv_frames: true,
                 stream_output: None,
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;
@@ -661,6 +663,7 @@ mod tests {
                 publish_yuv_frames: true,
                 stream_output: None,
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;
@@ -693,6 +696,7 @@ mod tests {
                 publish_yuv_frames: true,
                 stream_output: None,
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;

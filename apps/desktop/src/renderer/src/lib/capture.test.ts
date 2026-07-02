@@ -983,3 +983,37 @@ describe('buildCaptureSources / buildCameraSources / buildMicrophoneSources', ()
     expect(cleared.microphoneName).toBeUndefined()
   })
 })
+
+describe('normalizeCaptionsCaptureSettings', () => {
+  it('defaults, validates, and migrates the pre-R1 boolean', async () => {
+    const { normalizeCaptionsCaptureSettings } = await import('./capture')
+    expect(normalizeCaptionsCaptureSettings(undefined)).toEqual({
+      burnTarget: 'off',
+      position: 'bottom',
+      textSize: 'm'
+    })
+    // Pre-R1 config: burnInEnabled true meant the stream leg.
+    expect(normalizeCaptionsCaptureSettings({ burnInEnabled: true })).toEqual({
+      burnTarget: 'stream',
+      position: 'bottom',
+      textSize: 'm'
+    })
+    expect(normalizeCaptionsCaptureSettings({ burnInEnabled: false })).toEqual({
+      burnTarget: 'off',
+      position: 'bottom',
+      textSize: 'm'
+    })
+    // Explicit target wins over the legacy flag; junk falls back to off.
+    expect(
+      normalizeCaptionsCaptureSettings({
+        burnTarget: 'recording',
+        burnInEnabled: true,
+        position: 'top',
+        textSize: 'l'
+      })
+    ).toEqual({ burnTarget: 'recording', position: 'top', textSize: 'l' })
+    expect(
+      normalizeCaptionsCaptureSettings({ burnTarget: 'sideways' as never })
+    ).toEqual({ burnTarget: 'off', position: 'bottom', textSize: 'm' })
+  })
+})

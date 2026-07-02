@@ -68,8 +68,8 @@ use crate::protocol::{
     VideoSettings,
 };
 use crate::repair::{
-    GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, RepairJob,
-    gate_recording_cancellable,
+    GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, QualityVerdict,
+    RepairJob, analyze_recording_cancellable, gate_recording_cancellable, issue_reasons,
 };
 use crate::scene::{scene_from_capture_config, validate_scene_background};
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
@@ -111,6 +111,8 @@ const SCREEN_OVERLAY_FPS: u32 = 4;
 const SCREEN_OVERLAY_FIFO_OPEN_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
 const SCREEN_OVERLAY_FIFO_WRITE_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
 const POST_RECORDING_GATE_IDLE_DELAY: Duration = Duration::from_secs(30);
+const POST_RECORDING_FAST_ASSESSMENT_TIMEOUT: Duration = Duration::from_secs(60);
+const POST_RECORDING_REPAIR_TIMEOUT: Duration = Duration::from_secs(180);
 const ENCODER_BRIDGE_VIDEO_OUTPUT_ENV: &str = "VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT";
 
 #[derive(Debug)]
@@ -521,21 +523,25 @@ pub async fn start_session(
         )
         .await;
     }
-    // Burn-in needs a stream leg it can own: the auxiliary render (record +
-    // stream) or the primary render (stream-only). Outside those shapes the
-    // captions stay UI-only — say so instead of silently skipping pixels.
-    if captions_burn_in_requested(&params)
-        && params.output.stream_enabled
-        && params.output.record_enabled
-        && encoder_bridge_stream_output.is_none()
+    // Burn-in needs the synthetic compositor (encoder-bridge path) and, for a
+    // split-leg plan, an auxiliary render. Outside those shapes the captions
+    // stay UI-only — say so instead of silently skipping pixels.
     {
-        let _ = emit_health_event(
-            &state,
-            Some(&session_id),
-            HealthLevel::Warn,
-            "captions-burn-in-unavailable",
-            "Caption burn-in is unavailable for this session's encoder path; captions stay on-screen only.",
-        );
+        let leg_plan = caption_leg_plan(&params);
+        let burn_requested = leg_plan.primary || leg_plan.aux;
+        let split_needed_but_missing = leg_plan.force_same_profile_split
+            && params.output.record_enabled
+            && params.output.stream_enabled
+            && encoder_bridge_stream_output.is_none();
+        if burn_requested && (!use_encoder_bridge || split_needed_but_missing) {
+            let _ = emit_health_event(
+                &state,
+                Some(&session_id),
+                HealthLevel::Warn,
+                "captions-burn-in-unavailable",
+                "Caption burn-in is unavailable for this session's encoder path; captions stay on-screen only.",
+            );
+        }
     }
     let encoder_bridge_resolved_stream_profile =
         if use_encoder_bridge && params.output.stream_enabled {
@@ -616,12 +622,10 @@ pub async fn start_session(
                     EncoderBridgeVideoOutput::RawYuv420p
                 ),
                 stream_output: encoder_bridge_stream_output,
-                // Stream-only sessions have no recording consuming the primary
-                // leg — the primary render IS the stream, so the caption bar
-                // may composite into it (A0 verdict).
-                caption_overlay_on_primary: captions_burn_in_requested(&params)
-                    && params.output.stream_enabled
-                    && !params.output.record_enabled,
+                // Per-leg overlay plan (R1): primary = recording (or the
+                // stream when stream-only), aux = the split stream leg.
+                caption_overlay_on_primary: caption_leg_plan(&params).primary,
+                caption_overlay_on_aux: caption_leg_plan(&params).aux,
             },
         )
         .await;
@@ -2414,12 +2418,9 @@ async fn monitor_session(
                 // Aligned captions (burn-in plan B2/B3): drain this session's
                 // live caption chunks into an .srt sidecar, then queue the
                 // idle-time captioned copy from the same chunks.
-                let caption_chunks = crate::captions::write_caption_artifacts(
-                    &state,
-                    &gate_session_id,
-                    &final_path,
-                )
-                .await;
+                let caption_chunks =
+                    crate::captions::write_caption_artifacts(&state, &gate_session_id, &final_path)
+                        .await;
                 if !caption_chunks.is_empty() {
                     crate::captions::enqueue_caption_burn(
                         state.clone(),
@@ -2560,11 +2561,94 @@ fn enqueue_post_recording_gate(
             format!("Running idle post-recording quality check on {path_str}."),
         );
 
-        match run_quality_gate(ffmpeg_path, path_str, expectations, cancel_token).await {
-            Ok(status) => {
+        let fast_assessment = timeout(
+            POST_RECORDING_FAST_ASSESSMENT_TIMEOUT,
+            run_quality_assessment(
+                ffmpeg_path.clone(),
+                path_str.clone(),
+                expectations,
+                cancel_token.clone(),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "quality assessment timed out after {}s",
+                POST_RECORDING_FAST_ASSESSMENT_TIMEOUT.as_secs()
+            )
+        })
+        .and_then(|result| result);
+
+        let should_attempt_repair = match fast_assessment {
+            Ok(status @ GateStatus::Ready { .. }) | Ok(status @ GateStatus::Failed { .. }) => {
                 job.complete_with_gate(&status, Utc::now().to_rfc3339());
                 let _ = state.database.upsert_repair_job(&job);
                 emit_gate_health(&state, Some(&session_id), &status);
+                return;
+            }
+            Ok(status @ GateStatus::NotHundredPercent { .. }) => {
+                record_running_quality_snapshot(&mut job, &status, Utc::now().to_rfc3339());
+                let _ = state.database.upsert_repair_job(&job);
+                emit_gate_health(&state, Some(&session_id), &status);
+                true
+            }
+            Ok(status @ GateStatus::Repaired { .. }) => {
+                job.complete_with_gate(&status, Utc::now().to_rfc3339());
+                let _ = state.database.upsert_repair_job(&job);
+                emit_gate_health(&state, Some(&session_id), &status);
+                return;
+            }
+            Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
+                job.defer(
+                    "quality check deferred because capture started".to_string(),
+                    Utc::now().to_rfc3339(),
+                );
+                let _ = state.database.upsert_repair_job(&job);
+                return;
+            }
+            Err(error) => {
+                state.emit_log(
+                    "warn",
+                    format!("Fast post-recording quality assessment could not run: {error}"),
+                );
+                job.fail(
+                    format!("quality assessment task failed: {error}"),
+                    Utc::now().to_rfc3339(),
+                );
+                let _ = state.database.upsert_repair_job(&job);
+                let failed = GateStatus::Failed {
+                    path: path_str.clone(),
+                    reason: error,
+                };
+                emit_gate_health(&state, Some(&session_id), &failed);
+                return;
+            }
+        };
+
+        if !should_attempt_repair {
+            return;
+        }
+
+        match timeout(
+            POST_RECORDING_REPAIR_TIMEOUT,
+            run_quality_gate(ffmpeg_path, path_str, expectations, cancel_token),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "quality repair timed out after {}s",
+                POST_RECORDING_REPAIR_TIMEOUT.as_secs()
+            )
+        })
+        .and_then(|result| result)
+        {
+            Ok(status) => {
+                let changed = job.outcome.as_ref() != serde_json::to_value(&status).ok().as_ref();
+                job.complete_with_gate(&status, Utc::now().to_rfc3339());
+                let _ = state.database.upsert_repair_job(&job);
+                if changed {
+                    emit_gate_health(&state, Some(&session_id), &status);
+                }
             }
             Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
                 job.defer(
@@ -2581,10 +2665,63 @@ fn enqueue_post_recording_gate(
                     format!("quality check task failed: {error}"),
                     Utc::now().to_rfc3339(),
                 );
+                let failed = GateStatus::Failed {
+                    path: job.file_path.clone(),
+                    reason: error,
+                };
+                emit_gate_health(&state, Some(&session_id), &failed);
             }
         }
         let _ = state.database.upsert_repair_job(&job);
     });
+}
+
+/// Runs the strict read-only quality assessment on a blocking thread so the app can
+/// surface a fast verdict before any slower repair/interpolation work starts.
+async fn run_quality_assessment(
+    ffmpeg_path: String,
+    file_path: String,
+    expectations: QualityExpectations,
+    cancel_token: MaintenanceCancelToken,
+) -> std::result::Result<GateStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        let ffprobe_path = ffprobe_path_for(&ffmpeg_path);
+        let path = file_path.clone();
+        let is_cancelled = || cancel_token.is_cancelled();
+        let status = match analyze_recording_cancellable(
+            &ffmpeg_path,
+            &ffprobe_path,
+            &file_path,
+            &QualityThresholds::default(),
+            &expectations,
+            &is_cancelled,
+        ) {
+            Ok((_, report)) if report.verdict == QualityVerdict::Clean => {
+                GateStatus::Ready { path }
+            }
+            Ok((_, report)) => GateStatus::NotHundredPercent {
+                path,
+                reasons: issue_reasons(&report.issues),
+            },
+            Err(reason) if reason.contains(MAINTENANCE_CANCELLED) => {
+                return Err(MAINTENANCE_CANCELLED.to_string());
+            }
+            Err(reason) => GateStatus::Failed { path, reason },
+        };
+        if is_cancelled() {
+            Err(MAINTENANCE_CANCELLED.to_string())
+        } else {
+            Ok(status)
+        }
+    })
+    .await
+    .map_err(|error| format!("quality assessment task failed: {error}"))?
+}
+
+fn record_running_quality_snapshot(job: &mut RepairJob, status: &GateStatus, now: String) {
+    job.outcome = serde_json::to_value(status).ok();
+    job.reason = None;
+    job.updated_at = now;
 }
 
 /// Runs the (blocking) quality gate for a file on a blocking thread so it never stalls
@@ -2727,17 +2864,103 @@ pub async fn resume_pending_repair_jobs(state: AppState) {
             job.mark_running(Utc::now().to_rfc3339());
             let _ = state.database.upsert_repair_job(&job);
 
-            let gate = run_quality_gate(
-                ffmpeg_path,
-                job.file_path.clone(),
-                job.expectations(),
-                cancel_token,
-            );
-            match gate.await {
-                Ok(status) => {
+            let fast_assessment = timeout(
+                POST_RECORDING_FAST_ASSESSMENT_TIMEOUT,
+                run_quality_assessment(
+                    ffmpeg_path.clone(),
+                    job.file_path.clone(),
+                    job.expectations(),
+                    cancel_token.clone(),
+                ),
+            )
+            .await
+            .map_err(|_| {
+                format!(
+                    "quality assessment timed out after {}s",
+                    POST_RECORDING_FAST_ASSESSMENT_TIMEOUT.as_secs()
+                )
+            })
+            .and_then(|result| result);
+
+            let should_attempt_repair = match fast_assessment {
+                Ok(status @ GateStatus::Ready { .. }) | Ok(status @ GateStatus::Failed { .. }) => {
                     job.complete_with_gate(&status, Utc::now().to_rfc3339());
                     let _ = state.database.upsert_repair_job(&job);
                     emit_gate_health(&state, None, &status);
+                    return;
+                }
+                Ok(status @ GateStatus::NotHundredPercent { .. }) => {
+                    record_running_quality_snapshot(&mut job, &status, Utc::now().to_rfc3339());
+                    let _ = state.database.upsert_repair_job(&job);
+                    emit_gate_health(&state, None, &status);
+                    true
+                }
+                Ok(status @ GateStatus::Repaired { .. }) => {
+                    job.complete_with_gate(&status, Utc::now().to_rfc3339());
+                    let _ = state.database.upsert_repair_job(&job);
+                    emit_gate_health(&state, None, &status);
+                    return;
+                }
+                Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
+                    job.defer(
+                        "repair job deferred because capture started".to_string(),
+                        Utc::now().to_rfc3339(),
+                    );
+                    let _ = state.database.upsert_repair_job(&job);
+                    return;
+                }
+                Err(error) => {
+                    state.emit_log(
+                        "warn",
+                        format!(
+                            "Could not resume quality assessment for {}: {error}",
+                            job.file_path
+                        ),
+                    );
+                    job.fail(
+                        format!("resume assessment failed: {error}"),
+                        Utc::now().to_rfc3339(),
+                    );
+                    let failed = GateStatus::Failed {
+                        path: job.file_path.clone(),
+                        reason: error,
+                    };
+                    emit_gate_health(&state, None, &failed);
+                    let _ = state.database.upsert_repair_job(&job);
+                    return;
+                }
+            };
+
+            if !should_attempt_repair {
+                return;
+            }
+
+            let gate = timeout(
+                POST_RECORDING_REPAIR_TIMEOUT,
+                run_quality_gate(
+                    ffmpeg_path,
+                    job.file_path.clone(),
+                    job.expectations(),
+                    cancel_token,
+                ),
+            )
+            .await
+            .map_err(|_| {
+                format!(
+                    "quality repair timed out after {}s",
+                    POST_RECORDING_REPAIR_TIMEOUT.as_secs()
+                )
+            })
+            .and_then(|result| result);
+            match gate {
+                Ok(status) => {
+                    let changed =
+                        job.outcome.as_ref() != serde_json::to_value(&status).ok().as_ref();
+                    job.complete_with_gate(&status, Utc::now().to_rfc3339());
+                    let _ = state.database.upsert_repair_job(&job);
+                    if changed {
+                        emit_gate_health(&state, None, &status);
+                    }
                 }
                 Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
                     job.defer(
@@ -2754,6 +2977,11 @@ pub async fn resume_pending_repair_jobs(state: AppState) {
                         format!("resume task failed: {error}"),
                         Utc::now().to_rfc3339(),
                     );
+                    let failed = GateStatus::Failed {
+                        path: job.file_path.clone(),
+                        reason: error,
+                    };
+                    emit_gate_health(&state, None, &failed);
                 }
             }
             let _ = state.database.upsert_repair_job(&job);
@@ -5511,11 +5739,20 @@ fn resolve_split_output_profiles(params: &StartSessionParams) -> Result<SplitOut
     Ok(SplitOutputProfiles { recording, stream })
 }
 
-fn captions_burn_in_requested(params: &StartSessionParams) -> bool {
+fn caption_burn_target(params: &StartSessionParams) -> crate::captions::CaptionBurnTarget {
     params
         .captions
         .as_ref()
-        .is_some_and(|captions| captions.burn_in_enabled)
+        .map(|captions| captions.effective_burn_target())
+        .unwrap_or_default()
+}
+
+fn caption_leg_plan(params: &StartSessionParams) -> crate::captions::CaptionOverlayLegPlan {
+    crate::captions::caption_overlay_leg_plan(
+        params.output.record_enabled,
+        params.output.stream_enabled,
+        caption_burn_target(params),
+    )
 }
 
 fn recording_compositor_stream_output(
@@ -5535,11 +5772,11 @@ fn recording_compositor_stream_output(
     let recording = &params.output.video;
     let companion_outputs = companion_stream_outputs_for_recording(params, recording)?;
     if companion_outputs.is_empty() {
-        // Caption burn-in targets the stream leg only; when the stream shares
-        // the recording profile it would share the recording's frames too, so
-        // burn-in FORCES a same-profile auxiliary leg (A0 verdict) to keep the
-        // recording clean. Costs one extra render per frame while enabled.
-        if captions_burn_in_requested(params) {
+        // When the stream shares the recording profile it shares frames too —
+        // a burn target that treats the legs DIFFERENTLY (one burned, one
+        // clean) forces a same-profile auxiliary leg (A0 verdict / R1 plan).
+        // Costs one extra render per frame while enabled.
+        if caption_leg_plan(params).force_same_profile_split {
             return Ok(Some(CompositorAuxiliaryOutput {
                 width: recording.width,
                 height: recording.height,

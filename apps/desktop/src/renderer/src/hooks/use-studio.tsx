@@ -3664,7 +3664,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     if (!client) {
       return
     }
-    const burnIn = captureConfig.captions.burnInEnabled
+    const burnIn = captureConfig.captions.burnTarget !== 'off'
     const latest = captionLines.at(-1)
     const captionsRunning =
       captionsStatus.state === 'live' || captionsStatus.state === 'degraded'

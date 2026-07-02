@@ -366,20 +366,33 @@ function LiveCaptionsSection(): ReactElement {
             <span>{captionsStatus.message}</span>
           </div>
         ) : null}
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-sm text-muted-foreground">Show captions on stream</span>
-          <Switch
-            aria-label="Burn captions into the stream"
-            checked={captions.burnInEnabled}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="text-sm text-muted-foreground">Burn captions into</span>
+          <ToggleGroup
+            aria-label="Caption burn target"
+            size="sm"
+            type="single"
+            value={captions.burnTarget}
+            variant="outline"
             disabled={locked}
-            onCheckedChange={(next) => patchCaptions({ burnInEnabled: next })}
-          />
+            onValueChange={(value) => {
+              if (value === 'off' || value === 'stream' || value === 'recording' || value === 'both') {
+                patchCaptions({ burnTarget: value })
+              }
+            }}
+          >
+            <ToggleGroupItem value="off">Off</ToggleGroupItem>
+            <ToggleGroupItem value="stream">Stream</ToggleGroupItem>
+            <ToggleGroupItem value="recording">Recording</ToggleGroupItem>
+            <ToggleGroupItem value="both">Both</ToggleGroupItem>
+          </ToggleGroup>
         </div>
-        {captions.burnInEnabled ? (
+        {captions.burnTarget !== 'off' ? (
           <>
             <p className="text-xs text-muted-foreground">
-              Viewers see a caption bar burned into the stream, a few seconds behind speech. Your
-              recording stays clean and gets a perfectly-synced captioned copy after the session.
+              {captions.burnTarget === 'stream'
+                ? 'Viewers see a caption bar burned into the stream, a few seconds behind speech. Your recording stays clean and gets a perfectly-synced captioned copy after the session.'
+                : 'The live caption bar runs a few seconds behind speech, and that lag is burned in permanently. The recording also gets a perfectly-synced captioned copy after the session.'}
             </p>
             <div className="flex flex-wrap items-center gap-4">
               <ToggleGroup

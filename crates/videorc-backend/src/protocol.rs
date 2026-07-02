@@ -751,12 +751,25 @@ pub struct StartSessionParams {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptionsSessionParams {
+    /// Which legs the LIVE bar burns into (R1). Replaces `burnInEnabled`.
+    #[serde(default)]
+    pub burn_target: crate::captions::CaptionBurnTarget,
+    /// Legacy pre-R1 flag; `true` maps to Stream when burn_target is absent.
     #[serde(default)]
     pub burn_in_enabled: bool,
     #[serde(default)]
     pub position: crate::captions::CaptionOverlayPosition,
     #[serde(default)]
     pub text_size: crate::captions::CaptionTextSize,
+}
+
+impl CaptionsSessionParams {
+    pub fn effective_burn_target(&self) -> crate::captions::CaptionBurnTarget {
+        if self.burn_target == crate::captions::CaptionBurnTarget::Off && self.burn_in_enabled {
+            return crate::captions::CaptionBurnTarget::Stream;
+        }
+        self.burn_target
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1093,6 +1106,12 @@ pub struct DiagnosticStats {
     /// P95 time the bridge writer spent writing encoded H.264 bytes into FFmpeg.
     #[serde(default)]
     pub encoder_bridge_video_toolbox_fifo_write_p95_ms: Option<f64>,
+    /// P95 time spent waiting to enqueue encoded VideoToolbox frames for the FIFO writer.
+    #[serde(default)]
+    pub encoder_bridge_video_toolbox_fifo_enqueue_p95_ms: Option<f64>,
+    /// Max time spent waiting to enqueue encoded VideoToolbox frames for the FIFO writer.
+    #[serde(default)]
+    pub encoder_bridge_video_toolbox_fifo_enqueue_max_ms: Option<f64>,
     /// P95 wall time for one bridge writer loop tick, including intentional CFR
     /// deadline sleep.
     #[serde(default)]
@@ -1115,6 +1134,36 @@ pub struct DiagnosticStats {
     /// after their scheduled CFR deadline.
     #[serde(default)]
     pub encoder_bridge_late_deadline_ticks: u64,
+    /// Recording-leg bridge input FPS for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_recording_input_fps: Option<f64>,
+    /// Stream-leg bridge input FPS for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_stream_input_fps: Option<f64>,
+    /// Recording-leg bridge writer p95 for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_recording_writer_loop_p95_ms: Option<f64>,
+    /// Stream-leg bridge writer p95 for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_stream_writer_loop_p95_ms: Option<f64>,
+    /// Recording-leg active writer work p95 for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_recording_writer_active_p95_ms: Option<f64>,
+    /// Stream-leg active writer work p95 for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_stream_writer_active_p95_ms: Option<f64>,
+    /// Recording-leg FIFO enqueue wait p95 for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_recording_video_toolbox_fifo_enqueue_p95_ms: Option<f64>,
+    /// Stream-leg FIFO enqueue wait p95 for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_stream_video_toolbox_fifo_enqueue_p95_ms: Option<f64>,
+    /// Recording-leg FIFO enqueue max wait for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_recording_video_toolbox_fifo_enqueue_max_ms: Option<f64>,
+    /// Stream-leg FIFO enqueue max wait for split-output sessions.
+    #[serde(default)]
+    pub encoder_bridge_stream_video_toolbox_fifo_enqueue_max_ms: Option<f64>,
     pub encoder_bridge_error: Option<String>,
     /// Which encoder the active session actually requested — proves hardware vs software
     /// encode (previously unrecorded).

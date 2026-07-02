@@ -194,10 +194,10 @@ pub struct CompositorStartParams {
     pub height: u32,
     pub publish_yuv_frames: bool,
     pub stream_output: Option<CompositorAuxiliaryOutput>,
-    /// Stream-only sessions have no auxiliary leg — the primary render IS the
-    /// stream, so the caption overlay applies to it. Never set while a
-    /// recording consumes the primary leg (recordings stay clean).
+    /// Per-leg caption overlay plan (R1): `primary` is the recording (or the
+    /// stream when stream-only); `aux` is the split stream leg.
     pub caption_overlay_on_primary: bool,
+    pub caption_overlay_on_aux: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +216,7 @@ struct CompositorRenderLoopParams {
     publish_yuv_frames: bool,
     stream_output: Option<CompositorAuxiliaryOutput>,
     caption_overlay_on_primary: bool,
+    caption_overlay_on_aux: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -647,6 +648,7 @@ pub async fn start_synthetic_compositor(
             publish_yuv_frames: params.publish_yuv_frames,
             stream_output: params.stream_output,
             caption_overlay_on_primary: params.caption_overlay_on_primary,
+            caption_overlay_on_aux: params.caption_overlay_on_aux,
         },
         stop_rx,
     );
@@ -1130,6 +1132,7 @@ async fn run_synthetic_compositor_loop(
         publish_yuv_frames,
         stream_output,
         caption_overlay_on_primary,
+        caption_overlay_on_aux,
     } = params;
     let frame_interval = Duration::from_secs_f64(1.0 / f64::from(target_fps.max(1)));
     let mut ticker = tokio::time::interval(frame_interval);
@@ -1218,6 +1221,7 @@ async fn run_synthetic_compositor_loop(
                         stream_output,
                         stream_gpu_compositor.as_mut(),
                         caption_overlay_on_primary,
+                        caption_overlay_on_aux,
                     )
                         .await;
                 let fallback_frame_age_ms = published.fallback_frame_age_ms;
@@ -2323,6 +2327,7 @@ async fn publish_compositor_frame(
     stream_output: Option<CompositorAuxiliaryOutput>,
     stream_gpu: Option<&mut GpuCompositor>,
     caption_overlay_on_primary: bool,
+    caption_overlay_on_aux: bool,
 ) -> CompositorPublishResult {
     let source_fetch_started_at = Instant::now();
     let scene_snapshot_started_at = Instant::now();
@@ -2450,8 +2455,12 @@ async fn publish_compositor_frame(
             background_image_source: background_image_source.as_ref(),
             camera_frame: camera_frame.as_ref().map(|(frame, _layout)| frame),
             screen_frame: screen_frame.as_ref(),
-            // The auxiliary leg IS the stream — captions always ride it.
-            caption_overlay: caption_overlay.as_ref(),
+            // The auxiliary (stream) leg carries the bar per the leg plan.
+            caption_overlay: if caption_overlay_on_aux {
+                caption_overlay.as_ref()
+            } else {
+                None
+            },
         };
         publish_auxiliary_compositor_frame(
             sequence,
@@ -3281,10 +3290,8 @@ fn composite_caption_overlay(
         for uv_x in uv_left..uv_right {
             let sample_x = (uv_x * 2).max(dest_left).min(dest_left + draw_width - 1);
             let sample_y = (uv_y * 2).max(dest_top).min(dest_top + draw_height - 1);
-            let (r, g, b, a) = overlay_pixel(
-                source_left + (sample_x - dest_left),
-                sample_y - dest_top,
-            );
+            let (r, g, b, a) =
+                overlay_pixel(source_left + (sample_x - dest_left), sample_y - dest_top);
             if a == 0 {
                 continue;
             }
@@ -4592,6 +4599,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         )
         .await;
         if result.compositor_backend != CompositorBackend::Metal {
@@ -4673,6 +4681,7 @@ mod tests {
             false,
             None,
             None,
+            false,
             false,
         )
         .await;
@@ -5021,6 +5030,7 @@ mod tests {
                 publish_yuv_frames: true,
                 stream_output: None,
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;
@@ -5072,6 +5082,7 @@ mod tests {
                     publish_yuv_frames: true,
                 }),
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;
@@ -5204,6 +5215,7 @@ mod tests {
                 publish_yuv_frames: false,
             }),
             Some(&mut stream_gpu),
+            false,
             false,
         )
         .await;
@@ -5584,6 +5596,7 @@ mod tests {
                 publish_yuv_frames: true,
                 stream_output: None,
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;
@@ -5605,6 +5618,7 @@ mod tests {
                 publish_yuv_frames: true,
                 stream_output: None,
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;
@@ -5636,6 +5650,7 @@ mod tests {
                 publish_yuv_frames: true,
                 stream_output: None,
                 caption_overlay_on_primary: false,
+                caption_overlay_on_aux: false,
             },
         )
         .await;
@@ -6353,6 +6368,7 @@ mod tests {
             true,
             None,
             None,
+            false,
             false,
         )
         .await;
