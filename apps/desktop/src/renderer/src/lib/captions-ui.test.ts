@@ -12,13 +12,17 @@ const update = (seq: number, overrides: Partial<CaptionsUpdate> = {}): CaptionsU
 })
 
 describe('appendCaptionLine', () => {
-  it('appends in order and drops duplicate or out-of-order seqs', () => {
+  it('appends in order, replaces same-seq updates, drops older seqs', () => {
     let lines: CaptionsUpdate[] = []
     lines = appendCaptionLine(lines, update(1))
-    lines = appendCaptionLine(lines, update(2))
-    lines = appendCaptionLine(lines, update(2))
+    lines = appendCaptionLine(lines, update(2, { kind: 'partial', text: 'hel' }))
+    // Streaming: the same utterance refines partial → partial → final.
+    lines = appendCaptionLine(lines, update(2, { kind: 'partial', text: 'hello there' }))
+    lines = appendCaptionLine(lines, update(2, { kind: 'final', text: 'Hello there.' }))
     lines = appendCaptionLine(lines, update(1))
     expect(lines.map((line) => line.seq)).toEqual([1, 2])
+    expect(lines.at(-1)?.text).toBe('Hello there.')
+    expect(lines.at(-1)?.kind).toBe('final')
   })
 
   it('resets the buffer when a new caption session starts', () => {

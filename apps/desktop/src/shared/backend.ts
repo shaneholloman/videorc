@@ -2358,6 +2358,8 @@ export interface CaptionsStatus {
 export interface CaptionsUpdate {
   sessionClientId: string
   seq: number
+  /** 'partial' = streaming hypothesis that REPLACES the same seq; 'final' = settled. */
+  kind?: 'partial' | 'final'
   text: string
   chunkSeconds: number
   remainingSeconds?: number

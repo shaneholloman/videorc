@@ -4,9 +4,10 @@ import type { CaptionsUpdate } from '@/lib/backend'
 export const MAX_CAPTION_LINES = 50
 
 /**
- * Append a caption update: drops duplicate/out-of-order chunks from the same
- * session (the backend retries can re-emit a seq) and resets the buffer when a
- * new caption session starts. Newest line last; capped to MAX_CAPTION_LINES.
+ * Append a caption update: streaming PARTIALS (and the final that settles
+ * them) REPLACE the line with the same seq; older seqs are dropped
+ * (chunked-retry duplicates); a new caption session resets the buffer.
+ * Newest line last; capped to MAX_CAPTION_LINES.
  */
 export function appendCaptionLine(
   lines: CaptionsUpdate[],
@@ -20,7 +21,11 @@ export function appendCaptionLine(
   if (last && last.sessionClientId !== update.sessionClientId) {
     return [update]
   }
-  if (last && update.seq <= last.seq) {
+  if (last && update.seq === last.seq) {
+    // The utterance is still evolving (partial → partial → final).
+    return [...lines.slice(0, -1), update]
+  }
+  if (last && update.seq < last.seq) {
     return lines
   }
   return [...lines, update].slice(-max)

@@ -3697,7 +3697,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   // whenever burn-in/captions/session stop so the next session never starts
   // with a stale bar.
   const captionOverlayBusy = useRef(false)
-  const captionOverlayPushedSeq = useRef<number | null>(null)
+  const captionOverlayPushedKey = useRef<string | null>(null)
   useEffect(() => {
     if (!client) {
       return
@@ -3707,13 +3707,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     const captionsRunning =
       captionsStatus.state === 'live' || captionsStatus.state === 'degraded'
     if (!burnIn || !captionsRunning || !isSessionActive) {
-      if (captionOverlayPushedSeq.current !== null) {
-        captionOverlayPushedSeq.current = null
+      if (captionOverlayPushedKey.current !== null) {
+        captionOverlayPushedKey.current = null
         void client.request('captions.overlay.clear').catch(() => {})
       }
       return
     }
-    if (!latest || captionOverlayBusy.current || captionOverlayPushedSeq.current === latest.seq) {
+    // Streaming partials share a seq while the text evolves — key on both so
+    // the live bar refreshes with every refinement.
+    const latestKey = latest ? `${latest.seq}:${latest.text}` : null
+    if (!latest || captionOverlayBusy.current || captionOverlayPushedKey.current === latestKey) {
       return
     }
     captionOverlayBusy.current = true
@@ -3736,7 +3739,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             position: captureConfig.captions.position
           })
           .then(() => {
-            captionOverlayPushedSeq.current = latest.seq
+            captionOverlayPushedKey.current = latestKey
           })
       })
       .catch(() => {
