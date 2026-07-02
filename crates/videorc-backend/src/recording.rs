@@ -249,6 +249,14 @@ pub fn initial_live_preview_state() -> LivePreviewState {
 }
 
 pub fn default_recordings_dir() -> PathBuf {
+    // Harness isolation (F-016): smokes must never write into the user's real
+    // media library — Electron main forces this env for isolated backend
+    // spawns, mirroring the sqlite/secrets overrides.
+    if let Some(dir) = std::env::var_os("VIDEORC_RECORDINGS_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
     // macOS keeps captures under ~/Movies; Windows uses ~/Videos (the
     // platform's Known Folder for the same content).
     #[cfg(target_os = "windows")]

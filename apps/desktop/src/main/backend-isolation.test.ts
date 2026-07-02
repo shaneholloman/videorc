@@ -8,17 +8,19 @@ describe('backendIsolationEnv', () => {
     expect(backendIsolationEnv({ VIDEORC_APP_DATA_DIR: '  ' })).toEqual({})
   })
 
-  it('pins backend sqlite + secrets inside the isolated app-data dir', () => {
+  it('pins backend sqlite + secrets + recordings inside the isolated app-data dir', () => {
     expect(backendIsolationEnv({ VIDEORC_APP_DATA_DIR: '/tmp/smoke/app-data' })).toEqual({
       VIDEORC_DATABASE_PATH: '/tmp/smoke/app-data/videorc.sqlite3',
-      VIDEORC_SECRETS_PATH: '/tmp/smoke/app-data/videorc-secrets.json'
+      VIDEORC_SECRETS_PATH: '/tmp/smoke/app-data/videorc-secrets.json',
+      VIDEORC_RECORDINGS_DIR: '/tmp/smoke/app-data/recordings'
     })
   })
 
   it('falls back to the isolated user-data dir when only that is set', () => {
     expect(backendIsolationEnv({ VIDEORC_USER_DATA_DIR: '/tmp/probe/user-data' })).toEqual({
       VIDEORC_DATABASE_PATH: '/tmp/probe/user-data/videorc.sqlite3',
-      VIDEORC_SECRETS_PATH: '/tmp/probe/user-data/videorc-secrets.json'
+      VIDEORC_SECRETS_PATH: '/tmp/probe/user-data/videorc-secrets.json',
+      VIDEORC_RECORDINGS_DIR: '/tmp/probe/user-data/recordings'
     })
   })
 
@@ -29,13 +31,15 @@ describe('backendIsolationEnv', () => {
         VIDEORC_DATABASE_PATH: '/tmp/custom/db.sqlite'
       })
     ).toEqual({
-      VIDEORC_SECRETS_PATH: '/tmp/smoke/app-data/videorc-secrets.json'
+      VIDEORC_SECRETS_PATH: '/tmp/smoke/app-data/videorc-secrets.json',
+      VIDEORC_RECORDINGS_DIR: '/tmp/smoke/app-data/recordings'
     })
     expect(
       backendIsolationEnv({
         VIDEORC_APP_DATA_DIR: '/tmp/smoke/app-data',
         VIDEORC_DATABASE_PATH: '/tmp/custom/db.sqlite',
-        VIDEORC_SECRETS_PATH: '/tmp/custom/secrets.json'
+        VIDEORC_SECRETS_PATH: '/tmp/custom/secrets.json',
+        VIDEORC_RECORDINGS_DIR: '/tmp/custom/recordings'
       })
     ).toEqual({})
   })

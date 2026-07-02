@@ -1,3 +1,11 @@
+// KNOWN-STALE MEASUREMENT HARNESS (QA ledger F-006, 2026-07-02): the fps/
+// interval measurement below still targets the pre-2026-06-24 IN-CARD native
+// surface; the program surface now lives in the detached preview window, so
+// measure-native-preview-surface reports "not ready" under the current
+// architecture. Functional surface coverage lives in the GREEN gates
+// (preview-real-launch, preview-scene-commit, preview-surface,
+// preview-performance). Rework this harness against the detached window
+// before trusting it again.
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -47,14 +55,15 @@ async function runPreviewMotionSmoke(connection, smoke) {
     console.log(`Preview motion smoke using FFmpeg: ${ffmpegPath}`)
 
     // The preview card lives on the Studio tab since the 2026-06-24 page-layout
-    // redesign removed the Layout tab's embedded pane.
+    // redesign removed the Layout tab's embedded pane — and the program surface
+    // itself moved into the DETACHED preview window ("Preview lives in its own
+    // window"), so the surface only goes live once that window opens.
     await smokeCommand(smoke, 'open-tab', { tab: 'studio', waitFor: '[data-videorc-preview-card]' })
+    await smokeCommand(smoke, 'preview-window-open')
     const bootstrap = await smokeCommand(smoke, 'inspect-native-preview-bootstrap')
     assertNativeBootstrap(bootstrap)
     const liveStatus = await waitForNativeSurface(ws)
-    const nativeStage = await smokeCommand(smoke, 'inspect-native-preview-bootstrap', {
-      requireNativePlaceholder: true
-    })
+    const nativeStage = await smokeCommand(smoke, 'inspect-native-preview-bootstrap')
     assertNativeBootstrap(nativeStage, { requireNativePreview: true })
 
     const measurement = smokeCommand(smoke, 'measure-native-preview-surface', {
@@ -149,9 +158,12 @@ function assertNativeBootstrap(result, options = {}) {
     throw new Error(`Native preview bridge is incomplete: ${JSON.stringify(result)}`)
   }
   if (options.requireNativePreview) {
-    if (!result.hasNativePlaceholder) {
+    // Since the 2026-06-24 redesign the program surface lives in the DETACHED
+    // preview window — the Studio card renders no in-card placeholder. Native
+    // means: the detached window is open AND nothing fell back to JPEG/MJPEG.
+    if (!result.hasNativePlaceholder && !result.previewWindowOpen) {
       throw new Error(
-        `Preview stage did not render the native surface placeholder: ${JSON.stringify(result)}`
+        `Neither an in-card native placeholder nor an open preview window: ${JSON.stringify(result)}`
       )
     }
     if ((result.previewImageCount ?? 0) !== 0 || result.hasJpegPollingPreviewImage) {

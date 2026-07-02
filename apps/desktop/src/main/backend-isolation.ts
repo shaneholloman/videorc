@@ -15,6 +15,7 @@ export function backendIsolationEnv(
       | 'VIDEORC_APP_DATA_DIR'
       | 'VIDEORC_USER_DATA_DIR'
       | 'VIDEORC_DATABASE_PATH'
+      | 'VIDEORC_RECORDINGS_DIR'
       | 'VIDEORC_SECRETS_PATH',
       string
     >
@@ -31,6 +32,12 @@ export function backendIsolationEnv(
   }
   if (!env.VIDEORC_SECRETS_PATH?.trim()) {
     overrides.VIDEORC_SECRETS_PATH = join(isolatedRoot, 'videorc-secrets.json')
+  }
+  // F-016: recordings joined the isolation contract late — without this an
+  // isolated smoke still dumped its capture files into the user's real
+  // ~/Movies/Videorc/Recordings.
+  if (!env.VIDEORC_RECORDINGS_DIR?.trim()) {
+    overrides.VIDEORC_RECORDINGS_DIR = join(isolatedRoot, 'recordings')
   }
   return overrides
 }

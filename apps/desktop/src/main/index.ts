@@ -6682,9 +6682,15 @@ app.whenReady().then(async () => {
     (_event, status: PreviewSurfaceCompositorUpdateParams) =>
       updateNativePreviewSurfaceCompositor(status)
   )
-  ipcMain.handle('preview-surface:set-frame-polling-suppressed', (_event, suppressed: boolean) =>
-    setNativePreviewSurfaceFramePollingSuppressed(suppressed)
-  )
+  ipcMain.handle('preview-surface:set-frame-polling-suppressed', (_event, suppressed: boolean) => {
+    // With the preview window closed, polling stays suppressed no matter what
+    // the renderer's (possibly stale, post-close) state events request — an
+    // un-suppress race here left polling running against a destroyed surface.
+    if (!suppressed && (!previewWindow || previewWindow.isDestroyed())) {
+      return nativePreviewSurfaceFramePollingSuppressed
+    }
+    return setNativePreviewSurfaceFramePollingSuppressed(suppressed)
+  })
   ipcMain.handle('preview-surface:destroy', (_event, generation) =>
     runNativePreviewSurfaceMutation(() =>
       destroyNativePreviewSurface(previewSurfaceGenerationFromIpc(generation))
