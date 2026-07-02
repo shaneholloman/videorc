@@ -1,9 +1,10 @@
-//! Live captions: taps microphone PCM off the native audio pipeline, slices it
-//! into ~3s 16kHz mono WAV chunks, transcribes each through videorc-web
-//! (`/api/ai/captions/chunks` → AI Gateway grok-stt) and broadcasts transcript
-//! events to renderer clients. Chunked by design (P0 spike 2026-07-02: gateway
-//! realtime tokens need a Gateway API key that is not provisioned); the session
-//! loop is the transport seam where a streaming socket can replace chunking.
+//! Live captions: taps microphone PCM off the native audio pipeline and
+//! transcribes it through videorc-web, streaming-first (S2): the gateway
+//! realtime WebSocket (voice-model input-audio transcription events, ~1s
+//! behind speech, partial + final updates) with automatic fallback to ~3s
+//! chunked batch transcription (`/api/ai/captions/chunks` → grok-stt)
+//! whenever streaming is unavailable. Transcripts broadcast to renderer
+//! clients and accumulate as chunk records for the SRT + burned copy.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
