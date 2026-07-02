@@ -108,6 +108,146 @@ pub fn encode_wav_16k_mono(samples: &[i16]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Chunk records: every transcribed chunk is remembered (text + word timing +
+// audio offset) so the post-recording pass can render perfectly-synced
+// captions. The tap only receives frames while a session's audio pipeline
+// runs and those frames are already epoch-trimmed, so offsets anchor to the
+// recording start. A new session restarts the audio unit (frame timestamps
+// regress), which resets the anchor and the pending buffer.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionSegment {
+    pub text: String,
+    pub start_second: f64,
+    pub end_second: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionChunkRecord {
+    pub seq: u64,
+    /// Seconds from the recording epoch to this chunk's first sample.
+    pub offset_seconds: f64,
+    pub duration_seconds: f64,
+    pub text: String,
+    /// Word timing RELATIVE TO THE CHUNK (add offset_seconds for absolute).
+    pub segments: Vec<CaptionSegment>,
+}
+
+/// A frame timestamp lower than the last one means the capture pipeline
+/// restarted (new session): reset the chunk anchor.
+pub fn caption_anchor_should_reset(last_timestamp: Option<u64>, current: u64) -> bool {
+    last_timestamp.is_some_and(|last| current < last)
+}
+
+/// Render chunk records as SubRip: one cue per chunk, timed by the chunk's
+/// word segments when present (falling back to the chunk window), clamped so
+/// consecutive cues never overlap.
+pub fn render_srt(chunks: &[CaptionChunkRecord]) -> String {
+    let mut cues = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let text = chunk.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let (start, end) = chunk_cue_window(chunk);
+        cues.push((start, end, text.to_string()));
+    }
+    cues.sort_by(|left, right| left.0.total_cmp(&right.0));
+    // Clamp cue ends to the next cue's start so players never stack captions.
+    for index in 0..cues.len().saturating_sub(1) {
+        let next_start = cues[index + 1].0;
+        if cues[index].1 > next_start {
+            cues[index].1 = next_start;
+        }
+    }
+
+    let mut srt = String::new();
+    for (index, (start, end, text)) in cues.iter().enumerate() {
+        srt.push_str(&format!(
+            "{}\n{} --> {}\n{}\n\n",
+            index + 1,
+            format_srt_timestamp(*start),
+            format_srt_timestamp((*end).max(*start + 0.001)),
+            text
+        ));
+    }
+    srt
+}
+
+fn chunk_cue_window(chunk: &CaptionChunkRecord) -> (f64, f64) {
+    let first = chunk.segments.first().map(|segment| segment.start_second);
+    let last = chunk.segments.last().map(|segment| segment.end_second);
+    match (first, last) {
+        (Some(first), Some(last)) if last > first => (
+            chunk.offset_seconds + first.max(0.0),
+            chunk.offset_seconds + last.min(chunk.duration_seconds.max(last)),
+        ),
+        _ => (
+            chunk.offset_seconds,
+            chunk.offset_seconds + chunk.duration_seconds,
+        ),
+    }
+}
+
+fn format_srt_timestamp(seconds: f64) -> String {
+    let clamped = seconds.max(0.0);
+    let total_millis = (clamped * 1000.0).round() as u64;
+    let hours = total_millis / 3_600_000;
+    let minutes = (total_millis % 3_600_000) / 60_000;
+    let secs = (total_millis % 60_000) / 1000;
+    let millis = total_millis % 1000;
+    format!("{hours:02}:{minutes:02}:{secs:02},{millis:03}")
+}
+
+pub async fn drain_caption_chunks(state: &AppState) -> Vec<CaptionChunkRecord> {
+    std::mem::take(&mut state.captions.lock().await.chunks)
+}
+
+/// Session-stop hook (recording finalize path): drain the chunks recorded
+/// during this session and write the `.srt` sidecar next to the recording.
+/// Returns the drained chunks so the burned-copy job can reuse them. Never
+/// fails the session — problems downgrade to health warnings.
+pub async fn write_caption_artifacts(
+    state: &AppState,
+    session_id: &str,
+    recording_path: &std::path::Path,
+) -> Vec<CaptionChunkRecord> {
+    let chunks = drain_caption_chunks(state).await;
+    if chunks.is_empty() {
+        return chunks;
+    }
+    let srt = render_srt(&chunks);
+    if srt.is_empty() {
+        return chunks;
+    }
+    let srt_path = recording_path.with_extension("srt");
+    match tokio::fs::write(&srt_path, &srt).await {
+        Ok(()) => {
+            let _ = crate::recording::emit_health_event(
+                state,
+                Some(session_id),
+                crate::protocol::HealthLevel::Info,
+                "captions-srt-written",
+                &format!("Captions saved to {}.", srt_path.display()),
+            );
+        }
+        Err(error) => {
+            let _ = crate::recording::emit_health_event(
+                state,
+                Some(session_id),
+                crate::protocol::HealthLevel::Warn,
+                "captions-srt-failed",
+                &format!("Could not write captions sidecar: {error}"),
+            );
+        }
+    }
+    chunks
+}
+
+// ---------------------------------------------------------------------------
 // Burn-in overlay: a pre-rendered caption bar (RGBA) the compositor composites
 // into the STREAM leg. Session-transient — set/cleared by the renderer as
 // captions flow; never persisted, never part of scene config. Fail-safe per
@@ -265,6 +405,9 @@ pub struct CaptionsCoordinator {
     task: Option<tokio::task::JoinHandle<()>>,
     stop: Option<Arc<AtomicBool>>,
     status: Option<CaptionsStatus>,
+    /// Transcribed chunks awaiting the post-recording pass (drained at
+    /// session stop; cleared when a new capture pipeline starts).
+    chunks: Vec<CaptionChunkRecord>,
 }
 
 pub type CaptionsSlot = Arc<Mutex<CaptionsCoordinator>>;
@@ -370,6 +513,10 @@ async fn run_caption_session(mut session: CaptionSession) {
     let mut pcm: Vec<i16> = Vec::with_capacity(chunk_samples * 2);
     let mut seq = 0_u64;
     let mut consecutive_failures = 0_u32;
+    // Recording-epoch anchoring for the post pass: mono samples consumed since
+    // the current capture pipeline started (frames are already epoch-trimmed).
+    let mut consumed_samples: u64 = 0;
+    let mut last_frame_timestamp: Option<u64> = None;
 
     loop {
         if session.stop.load(Ordering::Relaxed) {
@@ -378,6 +525,14 @@ async fn run_caption_session(mut session: CaptionSession) {
         let Some(frame) = session.receiver.recv().await else {
             break; // tap removed
         };
+        if caption_anchor_should_reset(last_frame_timestamp, frame.timestamp_micros) {
+            // New capture pipeline (new recording): drop cross-session audio
+            // and restart the offset anchor. Chunks already recorded belong to
+            // the previous recording and stay until its stop path drains them.
+            pcm.clear();
+            consumed_samples = 0;
+        }
+        last_frame_timestamp = Some(frame.timestamp_micros);
         pcm.extend(downmix_resample_to_16k_mono(
             &frame.samples,
             frame.channels,
@@ -390,6 +545,8 @@ async fn run_caption_session(mut session: CaptionSession) {
         let chunk: Vec<i16> = pcm.drain(..chunk_samples).collect();
         let wav = encode_wav_16k_mono(&chunk);
         seq += 1;
+        let offset_seconds = consumed_samples as f64 / f64::from(CAPTION_SAMPLE_RATE);
+        consumed_samples += chunk_samples as u64;
 
         match session
             .client
@@ -404,6 +561,13 @@ async fn run_caption_session(mut session: CaptionSession) {
             Ok(response) => {
                 consecutive_failures = 0;
                 if !response.text.trim().is_empty() {
+                    session.state.captions.lock().await.chunks.push(CaptionChunkRecord {
+                        seq,
+                        offset_seconds,
+                        duration_seconds: CAPTION_CHUNK_SECONDS,
+                        text: response.text.trim().to_string(),
+                        segments: response.segments.clone(),
+                    });
                     session.state.emit_event(
                         "captions.update",
                         CaptionsUpdate {
@@ -516,6 +680,85 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .expect("test png encodes");
         base64::engine::general_purpose::STANDARD.encode(png)
+    }
+
+    #[test]
+    fn anchor_resets_only_on_timestamp_regression() {
+        assert!(!caption_anchor_should_reset(None, 0));
+        assert!(!caption_anchor_should_reset(Some(10), 10));
+        assert!(!caption_anchor_should_reset(Some(10), 11));
+        assert!(caption_anchor_should_reset(Some(10), 3));
+    }
+
+    fn chunk(
+        seq: u64,
+        offset: f64,
+        text: &str,
+        segments: &[(&str, f64, f64)],
+    ) -> CaptionChunkRecord {
+        CaptionChunkRecord {
+            seq,
+            offset_seconds: offset,
+            duration_seconds: 3.0,
+            text: text.to_string(),
+            segments: segments
+                .iter()
+                .map(|(word, start, end)| CaptionSegment {
+                    text: (*word).to_string(),
+                    start_second: *start,
+                    end_second: *end,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn srt_uses_segment_timing_and_absolute_offsets() {
+        let srt = render_srt(&[
+            chunk(1, 0.0, "Hello viewers", &[("Hello", 0.10, 0.50), ("viewers", 0.60, 1.20)]),
+            chunk(2, 3.0, "welcome back", &[("welcome", 0.05, 0.40), ("back", 0.50, 0.90)]),
+        ]);
+        assert_eq!(
+            srt,
+            "1\n00:00:00,100 --> 00:00:01,200\nHello viewers\n\n\
+             2\n00:00:03,050 --> 00:00:03,900\nwelcome back\n\n"
+        );
+    }
+
+    #[test]
+    fn srt_falls_back_to_the_chunk_window_and_clamps_overlaps() {
+        let srt = render_srt(&[
+            // No segments: full chunk window 6.0-9.0…
+            chunk(1, 6.0, "no timing here", &[]),
+            // …but the next cue starts at 8.5, so the first must clamp.
+            chunk(2, 8.0, "overlapping", &[("overlapping", 0.5, 1.5)]),
+        ]);
+        assert_eq!(
+            srt,
+            "1\n00:00:06,000 --> 00:00:08,500\nno timing here\n\n\
+             2\n00:00:08,500 --> 00:00:09,500\noverlapping\n\n"
+        );
+    }
+
+    #[test]
+    fn srt_skips_empty_chunks_entirely() {
+        assert_eq!(render_srt(&[chunk(1, 0.0, "   ", &[])]), "");
+        assert_eq!(render_srt(&[]), "");
+    }
+
+    #[test]
+    fn caption_segment_parses_web_camel_case() {
+        let segment: CaptionSegment =
+            serde_json::from_str(r#"{"text":"Hello","startSecond":0.02,"endSecond":0.42}"#)
+                .expect("segment parses");
+        assert_eq!(
+            segment,
+            CaptionSegment {
+                text: "Hello".to_string(),
+                start_second: 0.02,
+                end_second: 0.42
+            }
+        );
     }
 
     #[test]

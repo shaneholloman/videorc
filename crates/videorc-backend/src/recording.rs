@@ -2400,6 +2400,14 @@ async fn monitor_session(
             // the hot path. The recording is already marked complete; the gate only ever
             // replaces the visible file with a validated better version, keeping a backup.
             if let Some(final_path) = mp4_path.clone().or(output_path.clone()) {
+                // Aligned captions (burn-in plan B2): drain this session's live
+                // caption chunks into an .srt sidecar next to the recording.
+                let _ = crate::captions::write_caption_artifacts(
+                    &state,
+                    &gate_session_id,
+                    &final_path,
+                )
+                .await;
                 enqueue_post_recording_gate(
                     state.clone(),
                     gate_session_id,
