@@ -41,6 +41,15 @@ status carrying the real error; the "repeated upload failures" livestream bug
 root-caused to the local web server being down); R1 — burn target
 Off/Stream/Recording/Both with the per-leg plan matrix unit-tested.
 
+## Post-R4 regression found & fixed (commit `4d2890a9`)
+
+`burnTarget=recording` initially KILLED recordings (ffmpeg exit 187, ~1.5s
+in): the overlay guard forced the CPU renderer, starving the VideoToolbox
+encoder bridge which consumes Metal surfaces. Fixed by drawing the bar in the
+Metal compositor as the topmost image source. Verified against the real
+backend with a WS driver script: burnTarget=off and =recording both complete,
+and the recorded pixels contain the bar (band luma 255 vs 168 control).
+
 ## Pending by-eye (needs a live premium session with a mic)
 
 1. Stream leg shows the glass bar (~4s behind speech); native preview matches
