@@ -45,7 +45,7 @@ export function SourceSelect({
         <SelectTrigger id={id} className="w-full">
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent align="start" position="popper">
           <SelectGroup>
             {allowNone ? <SelectItem value={NONE_VALUE}>None</SelectItem> : null}
             {devices.map((device) => (
