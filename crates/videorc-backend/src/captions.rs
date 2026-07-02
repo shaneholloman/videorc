@@ -266,6 +266,22 @@ pub fn captioned_copy_path(recording: &std::path::Path) -> std::path::PathBuf {
     recording.with_file_name(format!("{stem} (captioned).{extension}"))
 }
 
+/// Probe whether this ffmpeg build carries the libass `ass` filter.
+async fn ffmpeg_supports_ass_filter(ffmpeg_path: &str) -> bool {
+    match tokio::process::Command::new(ffmpeg_path)
+        .args(["-hide_banner", "-filters"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+    {
+        Ok(output) => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.split_whitespace().nth(1) == Some("ass")),
+        Err(_) => false,
+    }
+}
+
 /// Escape a path for use inside an ffmpeg filter argument (ass=...).
 fn escape_ffmpeg_filter_path(path: &std::path::Path) -> String {
     path.display()
@@ -371,6 +387,21 @@ pub fn enqueue_caption_burn(
                 crate::protocol::HealthLevel::Warn,
                 "captions-burn-failed",
                 &format!("Could not write the captions track: {error}"),
+            );
+            return;
+        }
+
+        // The bundled ffmpeg is a minimal LGPL build WITHOUT libass (see
+        // build-ffmpeg-macos.sh) — probe for the ass filter and degrade
+        // loudly rather than failing mid-encode. Dev/homebrew ffmpeg has it.
+        if !ffmpeg_supports_ass_filter(&ffmpeg_path).await {
+            let _ = tokio::fs::remove_file(&ass_path).await;
+            let _ = crate::recording::emit_health_event(
+                &state,
+                Some(&session_id),
+                crate::protocol::HealthLevel::Warn,
+                "captions-burn-unsupported",
+                "This ffmpeg build has no subtitle renderer (libass); the .srt sidecar is available and the captioned copy was skipped.",
             );
             return;
         }
