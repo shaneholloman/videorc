@@ -1,10 +1,10 @@
-import { ArrowSquareOut, WarningCircle, X } from '@phosphor-icons/react'
+import { ArrowSquareOut, WarningCircle } from '@phosphor-icons/react'
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 
 import { BlockingBanner } from '@/components/blocking-banner'
 import { GoLiveConfirmationDialog } from '@/components/go-live-dialog'
 import { LiveChatRail } from '@/components/live-chat-rail'
-import { PageHeader, PageStack } from '@/components/page'
+import { PageStack } from '@/components/page'
 import { PanelSection } from '@/components/panel-section'
 import { PreviewStage } from '@/components/preview-stage'
 import { StatusBadge } from '@/components/status-badge'
@@ -181,11 +181,6 @@ export function StudioTab(): ReactElement {
         />
 
         <PageStack>
-          <PageHeader
-            title="Studio"
-            description="Professional recording and streaming made simple."
-          />
-
           {/* Hard block (can't start): a banner with a jump to the owning page. */}
           {visibleStartBlockedReason && banner ? (
             <BlockingBanner
@@ -196,18 +191,6 @@ export function StudioTab(): ReactElement {
               tone="warning"
             />
           ) : null}
-
-          {/* Soft, dismissible compatibility warning (the mockup's 4K banner).
-              Falls through to the freeze-incident warning (4K record + stream)
-              when nothing blocks outright and streaming is actually set up. */}
-          <StudioWarningBanner
-            reason={
-              !active
-                ? (liveStreamBlockedReason ??
-                  (captureConfig.streaming.enabled ? liveStreamCompatibility.warning : null))
-                : null
-            }
-          />
 
           {/* Preview (left, the hero) + Session facts & controls (right). */}
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
@@ -283,29 +266,6 @@ export function StudioTab(): ReactElement {
           onPopOut={studio.toggleCommentsWindow}
         />
       ) : null}
-    </div>
-  )
-}
-
-// Dismissible compatibility warning (the mockup's "4K livestreaming…" strip).
-// Keyed by the reason text so a different/new warning re-appears after dismiss.
-function StudioWarningBanner({ reason }: { reason: string | null }): ReactElement | null {
-  const [dismissed, setDismissed] = useState<string | null>(null)
-  if (!reason || dismissed === reason) {
-    return null
-  }
-  return (
-    <div className="flex items-start gap-2.5 rounded-row border border-warning/40 bg-warning/10 px-3.5 py-2.5 text-sm text-warning-foreground dark:text-warning">
-      <WarningCircle className="mt-px size-4 shrink-0" weight="fill" />
-      <span className="min-w-0 flex-1">{reason}</span>
-      <button
-        aria-label="Dismiss"
-        className="-mr-1 -mt-0.5 shrink-0 rounded-chip p-1 text-warning-foreground/70 transition-colors hover:bg-warning/20 hover:text-warning-foreground dark:text-warning/70 dark:hover:text-warning"
-        type="button"
-        onClick={() => setDismissed(reason)}
-      >
-        <X className="size-4" />
-      </button>
     </div>
   )
 }
