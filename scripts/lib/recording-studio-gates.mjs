@@ -93,6 +93,14 @@ export function buildRecordingStudioGateSteps({
         args: ['probe:preview-lifecycle']
       },
       {
+        // Placement authority: floating open/move/resize/close/reopen plus the
+        // docked ("stick") scenario — slot glue, main-window follow, stale-epoch
+        // rejection, overlay/scroll occlusion, undock restore.
+        label: 'preview window placement + docked stick probe',
+        command: 'pnpm',
+        args: ['probe:preview-window']
+      },
+      {
         label: 'detached native preview surface reattach smoke',
         command: 'pnpm',
         args: ['smoke:preview-surface'],
