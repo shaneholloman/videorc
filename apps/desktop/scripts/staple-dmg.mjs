@@ -7,11 +7,12 @@
 // See "2026-06-30 - Videorc Desktop Distribution Channel Plan".
 
 import { execFileSync } from 'node:child_process'
-import { readdir } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const RELEASE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'release')
+const HERE = dirname(fileURLToPath(import.meta.url))
+const RELEASE_DIR = join(HERE, '..', 'release')
 const SIGN_IDENTITY = 'Developer ID Application: Uros Miric (C2PA37RB58)'
 const TEAM_ID = process.env.APPLE_TEAM_ID || 'C2PA37RB58'
 
@@ -27,15 +28,22 @@ async function main() {
     process.exit(1)
   }
 
+  // Only the CURRENT version's dmg: release/ accumulates artifacts from prior
+  // releases, and sweeping them wasted a notarization round-trip per stale dmg
+  // — then hard-failed the whole release when Apple's ticket lookup rejected an
+  // already-shipped one (0.9.3 cut, 2026-07-02).
+  const { version } = JSON.parse(await readFile(join(HERE, '..', 'package.json'), 'utf8'))
   let dmgs
   try {
-    dmgs = (await readdir(RELEASE_DIR)).filter((name) => name.endsWith('.dmg'))
+    dmgs = (await readdir(RELEASE_DIR)).filter(
+      (name) => name.endsWith('.dmg') && name.includes(`-${version}-`)
+    )
   } catch {
     console.error('staple-dmg: no release/ directory — run dist:release first.')
     process.exit(1)
   }
   if (dmgs.length === 0) {
-    console.error('staple-dmg: no .dmg found in release/.')
+    console.error(`staple-dmg: no .dmg for version ${version} found in release/.`)
     process.exit(1)
   }
 
