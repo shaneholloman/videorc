@@ -28,7 +28,8 @@
  *   Radius     rounded-panel (18px: glass panels, dialogs, palette) ·
  *              rounded-row (10px: rows, cards) · rounded-chip (6px: key chips,
  *              small controls). Tiers only — no ad-hoc rounded-xl per screen.
- *   Hairlines  border (8%: dark white, light black). Never >1px, never solid grey.
+ *   Hairlines  border (dark white-10% — the polished black-glass edge; light
+ *              black-8%). Never >1px, never solid grey.
  *   Selection  bg-accent (hover/selected block: white/8% dark · black/6% light,
  *              no outline) · bg-accent-pressed (white/12% · black/10%).
  *   Focus      :focus-visible ring is wired in @layer base below.
@@ -38,36 +39,38 @@
 :root {
   --radius: 0.625rem;
 
-  /* Light glass: rgba(245,245,247,0.60). White-over-bright reads solid at
-     higher alphas — light mode needs a thinner coat than dark to show at all. */
-  --background: oklch(0.97 0.002 286 / 60%);
-  --foreground: oklch(0.24 0.004 286);
-  --card: oklch(0.97 0.002 286 / 92%);
-  --card-foreground: oklch(0.24 0.004 286);
-  --popover: oklch(0.97 0.002 286 / 92%);
-  --popover-foreground: oklch(0.24 0.004 286);
+  /* White glass — the porcelain twin of the black-glass column below.
+     White-over-bright reads solid at higher alphas — light mode needs a
+     thinner coat than dark to show at all. */
+  --background: oklch(0.985 0.001 286 / 62%);
+  --foreground: oklch(0.17 0.004 286);
+  --card: oklch(0.99 0 0 / 92%);
+  --card-foreground: oklch(0.17 0.004 286);
+  --popover: oklch(0.99 0 0 / 92%);
+  --popover-foreground: oklch(0.17 0.004 286);
 
-  /* Monochrome action: near-black on light. */
-  --primary: oklch(0.24 0.004 286);
+  /* Monochrome action: ink on porcelain. */
+  --primary: oklch(0.17 0.004 286);
   --primary-foreground: oklch(0.985 0 0);
 
   --secondary: oklch(0 0 0 / 5%);
-  --secondary-foreground: oklch(0.24 0.004 286);
+  --secondary-foreground: oklch(0.17 0.004 286);
   --muted: oklch(0 0 0 / 5%);
   --muted-foreground: oklch(0.55 0.005 286);
   /* Hover/selection block: black-6%. */
   --accent: oklch(0 0 0 / 6%);
-  --accent-foreground: oklch(0.24 0.004 286);
+  --accent-foreground: oklch(0.17 0.004 286);
   /* Pressed block: black-10%. */
   --accent-pressed: oklch(0 0 0 / 10%);
   /* Tertiary text tier (section headers, footer hints, disabled). */
   --subtle: oklch(0.68 0.004 286);
 
-  --destructive: oklch(0.577 0.245 27.325);
+  /* The brand red — the logo's LED-glow eyes (same hue family both themes). */
+  --destructive: oklch(0.55 0.24 27);
   --destructive-foreground: oklch(0.985 0 0);
 
   /* Semantic — meaning only, never chrome. */
-  --live: oklch(0.585 0.22 27);
+  --live: oklch(0.55 0.24 27);
   --live-foreground: oklch(0.985 0 0);
   --success: oklch(0.6 0.14 150);
   --success-foreground: oklch(0.985 0 0);
@@ -83,11 +86,11 @@
 
   /* Sidebar sits on the same glass; selection is the monochrome block. */
   --sidebar: oklch(0 0 0 / 3%);
-  --sidebar-foreground: oklch(0.24 0.004 286);
-  --sidebar-primary: oklch(0.24 0.004 286);
+  --sidebar-foreground: oklch(0.17 0.004 286);
+  --sidebar-primary: oklch(0.17 0.004 286);
   --sidebar-primary-foreground: oklch(0.985 0 0);
   --sidebar-accent: oklch(0 0 0 / 6%);
-  --sidebar-accent-foreground: oklch(0.24 0.004 286);
+  --sidebar-accent-foreground: oklch(0.17 0.004 286);
   --sidebar-border: oklch(0 0 0 / 8%);
   --sidebar-ring: oklch(0 0 0 / 25%);
 
@@ -96,19 +99,22 @@
 }
 
 .dark {
-  /* Dark glass — the reference column. Owner-tuned by eye: 65% read as
-     barely-there, 58% let background text interfere with the UI; 62% is the
-     sweet spot for unblurred bleed. */
-  --background: oklch(0.21 0.006 286 / 62%);
+  /* Black glass — the reference column, tuned to the logo's glossy black orb:
+     a true-black base (L 0.13 — not #000, which kills the glass depth), chrome
+     text, polished-edge hairlines one step brighter than the classic 8%.
+     Alpha history: 65% read as barely-there, 58% let background text interfere;
+     62% was the charcoal sweet spot — the black base needs 68% or the frost
+     disappears into it. */
+  --background: oklch(0.13 0.003 286 / 68%);
   --foreground: oklch(0.97 0.001 286);
-  --card: oklch(0.235 0.006 286 / 92%);
+  --card: oklch(0.16 0.004 286 / 92%);
   --card-foreground: oklch(0.97 0.001 286);
-  --popover: oklch(0.235 0.006 286 / 92%);
+  --popover: oklch(0.16 0.004 286 / 92%);
   --popover-foreground: oklch(0.97 0.001 286);
 
-  /* Monochrome action: near-white on dark. */
+  /* Monochrome action: chrome on black. */
   --primary: oklch(0.97 0.001 286);
-  --primary-foreground: oklch(0.21 0.006 286);
+  --primary-foreground: oklch(0.13 0.003 286);
 
   --secondary: oklch(1 0 0 / 6%);
   --secondary-foreground: oklch(0.97 0.001 286);
@@ -121,10 +127,12 @@
   --accent-pressed: oklch(1 0 0 / 12%);
   --subtle: oklch(0.55 0.008 286);
 
-  --destructive: oklch(0.704 0.191 22.216);
+  /* The brand red — the logo's LED-glow eyes. Red stays semantic (record,
+     live, destructive); it is never chrome. */
+  --destructive: oklch(0.6 0.23 27);
   --destructive-foreground: oklch(0.985 0 0);
 
-  --live: oklch(0.66 0.22 27);
+  --live: oklch(0.62 0.24 27);
   --live-foreground: oklch(0.985 0 0);
   --success: oklch(0.7 0.15 150);
   --success-foreground: oklch(0.205 0.04 150);
@@ -133,21 +141,21 @@
   --info: oklch(0.68 0.14 250);
   --info-foreground: oklch(0.205 0.04 250);
 
-  /* Hairlines: white-8% on dark. */
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 8%);
-  --ring: oklch(1 0 0 / 25%);
+  /* Hairlines: white-10% — the polished edge of the black glass. */
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 10%);
+  --ring: oklch(1 0 0 / 28%);
 
   --sidebar: oklch(1 0 0 / 3%);
   --sidebar-foreground: oklch(0.97 0.001 286);
   --sidebar-primary: oklch(0.97 0.001 286);
-  --sidebar-primary-foreground: oklch(0.21 0.006 286);
+  --sidebar-primary-foreground: oklch(0.13 0.003 286);
   --sidebar-accent: oklch(1 0 0 / 8%);
   --sidebar-accent-foreground: oklch(0.97 0.001 286);
-  --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(1 0 0 / 25%);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(1 0 0 / 28%);
 
-  --shadow-glass-panel: 0 16px 70px oklch(0 0 0 / 55%), 0 0 0 1px oklch(1 0 0 / 8%);
+  --shadow-glass-panel: 0 16px 70px oklch(0 0 0 / 60%), 0 0 0 1px oklch(1 0 0 / 10%);
 }
 
 @theme inline {
