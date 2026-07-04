@@ -1499,13 +1499,9 @@ async fn run_chunked_caption_session(session: &mut CaptionSession) -> bool {
                 }
                 backoff = None;
                 if !response.text.trim().is_empty() {
-                    session
-                        .state
-                        .captions
-                        .lock()
-                        .await
-                        .chunks
-                        .push(CaptionChunkRecord {
+                    let current_epoch = {
+                        let mut coordinator = session.state.captions.lock().await;
+                        coordinator.chunks.push(CaptionChunkRecord {
                             seq,
                             offset_seconds,
                             duration_seconds: CAPTION_CHUNK_SECONDS,
@@ -1513,17 +1509,30 @@ async fn run_chunked_caption_session(session: &mut CaptionSession) -> bool {
                             segments: response.segments.clone(),
                             capture_epoch,
                         });
-                    session.state.emit_event(
-                        "captions.update",
-                        CaptionsUpdate {
-                            session_client_id: session.session_client_id.clone(),
-                            seq,
-                            kind: CaptionUpdateKind::Final,
-                            text: response.text.trim().to_string(),
-                            chunk_seconds: response.chunk_seconds,
-                            remaining_seconds: Some(response.remaining_seconds),
-                        },
-                    );
+                        coordinator.capture_epoch
+                    };
+                    // An upload that outlived its recording (slow round trip
+                    // across a session boundary) still lands in `chunks` —
+                    // the drain filter attributes it correctly — but it must
+                    // not be ANNOUNCED: the live strip and burn bar belong to
+                    // the current video (carry-over fix, 2026-07-04).
+                    if capture_epoch == current_epoch {
+                        session.state.emit_event(
+                            "captions.update",
+                            CaptionsUpdate {
+                                session_client_id: session.session_client_id.clone(),
+                                seq,
+                                kind: CaptionUpdateKind::Final,
+                                text: response.text.trim().to_string(),
+                                chunk_seconds: response.chunk_seconds,
+                                remaining_seconds: Some(response.remaining_seconds),
+                            },
+                        );
+                    } else {
+                        tracing::info!(
+                            "Suppressed a caption update from a previous recording (epoch {capture_epoch} < {current_epoch})."
+                        );
+                    }
                 }
             }
             Err(CaptionChunkFailure::Terminal { code, message }) => {

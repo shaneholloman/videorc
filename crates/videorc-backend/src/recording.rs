@@ -539,6 +539,11 @@ pub async fn start_session(
         )
         .await;
     }
+    // A new session must never inherit a composited caption bar. The overlay
+    // slot is app-global and the renderer's stop-time clear is best-effort
+    // (fire-and-forget, and a closed renderer never sends it) — clearing here
+    // is the authoritative boundary (caption carry-over fix, 2026-07-04).
+    let _ = crate::captions::clear_caption_overlay(&state.caption_overlay);
     // Burn-in needs the synthetic compositor (encoder-bridge path) and, for a
     // split-leg plan, an auxiliary render. Outside those shapes the captions
     // stay UI-only — say so instead of silently skipping pixels.
