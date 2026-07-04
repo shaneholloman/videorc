@@ -32,17 +32,89 @@ const CLOUD_AI_DISABLED_REASON: &str = "Cloud AI is a Videorc Premium feature. S
 const DEVELOPER_OVERRIDE_REASON: &str = "Enabled by VIDEORC_PREMIUM_FEATURES=1.";
 const DEV_BUILD_OVERRIDE_REASON: &str = "Enabled by Videorc debug/dev backend build.";
 
-pub fn current_entitlements() -> EntitlementsSnapshot {
-    let value = std::env::var(PREMIUM_FEATURES_ENV_VAR).ok();
-    current_entitlements_from_env_value(value.as_deref(), cfg!(debug_assertions))
+// --- Account-hydrated entitlement (multistream premium gate) ------------------
+// The signed-in account's server-verified entitlement (from
+// /api/ai/capabilities, fetched with the bearer token) is the ONLY way a
+// packaged build reaches Premium limits. Fail-closed by construction: absent,
+// signed-out, or stale hydration resolves to basic. The staleness ceiling
+// bounds how long a cancelled subscription can keep premium after its last
+// successful verification.
+const ACCOUNT_HYDRATION_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug, Clone, Copy)]
+struct AccountEntitlementHydration {
+    is_premium: bool,
+    hydrated_at: std::time::Instant,
 }
 
-fn current_entitlements_from_env_value(
+static ACCOUNT_HYDRATION: std::sync::Mutex<Option<AccountEntitlementHydration>> =
+    std::sync::Mutex::new(None);
+
+fn set_hydration(
+    slot: &std::sync::Mutex<Option<AccountEntitlementHydration>>,
+    next: Option<AccountEntitlementHydration>,
+) -> bool {
+    let mut guard = slot.lock().expect("entitlement hydration lock");
+    // "Changed" means the EFFECTIVE outcome moved: hydrated-premium on one
+    // side and anything non-premium (hydrated basic OR cleared) on the other.
+    let was_premium = guard.is_some_and(|current| current.is_premium);
+    let is_premium = next.is_some_and(|hydration| hydration.is_premium);
+    *guard = next;
+    was_premium != is_premium
+}
+
+/// Record the signed-in account's verified entitlement. Returns true when the
+/// effective snapshot may have changed (callers emit `entitlements.updated`).
+pub fn hydrate_account_entitlements(is_premium: bool) -> bool {
+    set_hydration(
+        &ACCOUNT_HYDRATION,
+        Some(AccountEntitlementHydration {
+            is_premium,
+            hydrated_at: std::time::Instant::now(),
+        }),
+    )
+}
+
+/// Sign-out / unauthorized: the account no longer vouches for anything.
+pub fn clear_account_entitlements() -> bool {
+    set_hydration(&ACCOUNT_HYDRATION, None)
+}
+
+fn account_hydrated_premium() -> bool {
+    ACCOUNT_HYDRATION
+        .lock()
+        .expect("entitlement hydration lock")
+        .is_some_and(|hydration| {
+            hydration.is_premium && hydration.hydrated_at.elapsed() <= ACCOUNT_HYDRATION_MAX_AGE
+        })
+}
+
+pub fn current_entitlements() -> EntitlementsSnapshot {
+    let value = std::env::var(PREMIUM_FEATURES_ENV_VAR).ok();
+    current_entitlements_resolved(
+        value.as_deref(),
+        cfg!(debug_assertions),
+        account_hydrated_premium(),
+    )
+}
+
+fn current_entitlements_resolved(
     value: Option<&str>,
     dev_build: bool,
+    account_premium: bool,
 ) -> EntitlementsSnapshot {
     if premium_override_enabled(value) {
         return developer_entitlements(DEVELOPER_OVERRIDE_REASON);
+    }
+
+    // Explicit =0/false/off forces basic even in dev builds — the only way to
+    // exercise the premium gates (multistream lock etc.) on a dev machine.
+    if basic_override_enabled(value) {
+        return basic_entitlements();
+    }
+
+    if account_premium {
+        return premium_entitlements(EntitlementSource::Creem);
     }
 
     if dev_build {
@@ -50,6 +122,14 @@ fn current_entitlements_from_env_value(
     }
 
     basic_entitlements()
+}
+
+#[cfg(test)]
+fn current_entitlements_from_env_value(
+    value: Option<&str>,
+    dev_build: bool,
+) -> EntitlementsSnapshot {
+    current_entitlements_resolved(value, dev_build, false)
 }
 
 #[cfg(test)]
@@ -225,6 +305,15 @@ pub fn require_feature(snapshot: &EntitlementsSnapshot, feature_id: FeatureId) -
     Ok(())
 }
 
+fn basic_override_enabled(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off" | "basic")
+    )
+}
+
 fn premium_override_enabled(value: Option<&str>) -> bool {
     matches!(
         value.map(str::trim)
@@ -316,6 +405,60 @@ mod tests {
                 .as_deref(),
             Some(DEV_BUILD_OVERRIDE_REASON)
         );
+    }
+
+    #[test]
+    fn account_hydration_resolution_is_fail_closed() {
+        // No hydration: release stays basic, dev stays premium.
+        assert_eq!(
+            current_entitlements_resolved(None, false, false).tier,
+            EntitlementTier::Basic
+        );
+        // Hydrated premium account unlocks premium limits in release builds.
+        let hydrated = current_entitlements_resolved(None, false, true);
+        assert_eq!(hydrated.tier, EntitlementTier::Premium);
+        assert_eq!(hydrated.source, EntitlementSource::Creem);
+        assert!(hydrated.limits.streaming.max_destinations > 1);
+        // Env basic override beats everything except the premium override —
+        // the only way to test the gates on a dev machine.
+        assert_eq!(
+            current_entitlements_resolved(Some("0"), true, true).tier,
+            EntitlementTier::Basic
+        );
+        assert_eq!(
+            current_entitlements_resolved(Some("off"), true, true).tier,
+            EntitlementTier::Basic
+        );
+    }
+
+    #[test]
+    fn account_hydration_state_machine_tracks_changes() {
+        // A LOCAL slot: tests must never mutate the process-global hydration —
+        // other tests read current_entitlements() in parallel threads.
+        let slot: std::sync::Mutex<Option<AccountEntitlementHydration>> =
+            std::sync::Mutex::new(None);
+        let hydration = |premium: bool| AccountEntitlementHydration {
+            is_premium: premium,
+            hydrated_at: std::time::Instant::now(),
+        };
+        assert!(
+            set_hydration(&slot, Some(hydration(true))),
+            "basic->premium changes"
+        );
+        assert!(
+            !set_hydration(&slot, Some(hydration(true))),
+            "premium->premium is a no-op"
+        );
+        assert!(
+            set_hydration(&slot, Some(hydration(false))),
+            "premium->basic changes"
+        );
+        assert!(
+            !set_hydration(&slot, None),
+            "clearing non-premium is a no-op"
+        );
+        set_hydration(&slot, Some(hydration(true)));
+        assert!(set_hydration(&slot, None), "sign-out drops premium");
     }
 
     #[test]

@@ -182,6 +182,13 @@ async fn main() -> Result<()> {
     std::io::stdout().flush()?;
 
     state.emit_log("info", "Videorc backend ready.");
+    // Restore the signed-in account's verified entitlement at boot so a
+    // premium user's multistream limits survive an app restart without
+    // touching the AI tab first (fail-closed: no stored session -> basic).
+    {
+        let entitlement_state = state.clone();
+        tokio::spawn(async move { refresh_account_entitlements(&entitlement_state).await });
+    }
     match (oauth_listener, oauth_callback_port) {
         (Some(oauth_listener), Some(oauth_port)) => {
             let oauth_app = Router::new()
@@ -1669,6 +1676,11 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
         }
         "account.sign_out" => {
             account::clear_persisted_account();
+            // The account no longer vouches for premium — drop hydrated
+            // entitlements with it (multistream gate closes immediately).
+            if entitlements::clear_account_entitlements() {
+                state.emit_event("entitlements.updated", entitlements::current_entitlements());
+            }
             let signed_out = account::signed_out_account();
             *state.account_session.lock().await = Some(signed_out.clone());
             ServerResponse::ok(command.id, signed_out)
@@ -1681,11 +1693,15 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 .unwrap_or_default();
             let resolved = account::complete_sign_in(token, cfg!(debug_assertions)).await;
             *state.account_session.lock().await = Some(resolved.clone());
+            let entitlement_state = state.clone();
+            tokio::spawn(async move { refresh_account_entitlements(&entitlement_state).await });
             ServerResponse::ok(command.id, resolved)
         }
         "account.refresh" => {
             let resolved = account::refresh_account().await;
             *state.account_session.lock().await = Some(resolved.clone());
+            let entitlement_state = state.clone();
+            tokio::spawn(async move { refresh_account_entitlements(&entitlement_state).await });
             ServerResponse::ok(command.id, resolved)
         }
         "entitlements.get" => ServerResponse::ok(command.id, entitlements::current_entitlements()),
@@ -2919,6 +2935,34 @@ async fn get_ai_capabilities() -> Result<protocol::AiCapabilities> {
     let token = stored_ai_session_token()?;
     let client = videorc_api::VideorcApiClient::new()?;
     client.get_ai_capabilities(&token).await
+}
+
+/// Re-verify the signed-in account's entitlement and hydrate the enforcement
+/// snapshot (multistream premium gate). Signed-out clears to basic instantly;
+/// a network failure keeps the last verified hydration (bounded by the 24h
+/// staleness ceiling in entitlements.rs) so a flaky connection cannot flap a
+/// paying user back to basic mid-day. Emits `entitlements.updated` on change.
+async fn refresh_account_entitlements(state: &AppState) {
+    let changed = match account::stored_session_token() {
+        None => entitlements::clear_account_entitlements(),
+        Some(token) => match videorc_api::VideorcApiClient::new() {
+            Ok(client) => match client.get_ai_capabilities(&token).await {
+                Ok(capabilities) => {
+                    entitlements::hydrate_account_entitlements(capabilities.entitlement.is_premium)
+                }
+                Err(error) => {
+                    tracing::info!(
+                        "Account entitlement refresh failed (keeping last verified): {error}"
+                    );
+                    false
+                }
+            },
+            Err(_) => false,
+        },
+    };
+    if changed {
+        state.emit_event("entitlements.updated", entitlements::current_entitlements());
+    }
 }
 
 async fn get_ai_quota() -> Result<protocol::AiQuotaStatus> {

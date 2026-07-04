@@ -8,6 +8,7 @@ import {
   FloppyDisk,
   Gauge,
   LinkSimple,
+  LockSimple,
   MagnifyingGlass,
   SignOut,
   TextAa,
@@ -688,13 +689,32 @@ function DestinationCard({
         onClick={() => setExpanded((value) => !value)}
       >
         <span onClick={(event) => event.stopPropagation()}>
-          <Switch
-            aria-label={`Enable ${target.label}`}
-            aria-describedby={enableLockGate ? enableLockId : undefined}
-            checked={target.enabled}
-            disabled={enableSwitchDisabled}
-            onCheckedChange={patchEnabled}
-          />
+          {enableLockGate ? (
+            // A dead disabled switch reads as broken; the lock chip says what
+            // this actually is — a Premium feature — and IS the upgrade
+            // affordance (multistream gate UI flow).
+            <button
+              aria-describedby={enableLockId}
+              aria-label={`${target.label} requires Videorc Premium`}
+              className="cursor-pointer"
+              type="button"
+              onClick={() =>
+                enableLockUpgradeUrl ? openExternalUrl(enableLockUpgradeUrl) : undefined
+              }
+            >
+              <Badge variant="outline">
+                <LockSimple className="size-3" weight="fill" />
+                Premium
+              </Badge>
+            </button>
+          ) : (
+            <Switch
+              aria-label={`Enable ${target.label}`}
+              checked={target.enabled}
+              disabled={enableSwitchDisabled}
+              onCheckedChange={patchEnabled}
+            />
+          )}
         </span>
         <CaretDown
           className={cn(
