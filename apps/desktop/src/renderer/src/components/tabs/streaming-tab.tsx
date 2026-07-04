@@ -437,11 +437,12 @@ function LiveCaptionsSection(): ReactElement {
         {active || lines.length > 0 ? (
           <div aria-live="polite" className="flex min-h-16 flex-col justify-end gap-1.5">
             {lines.length === 0 ? (
-              <span className="text-sm text-muted-foreground">
-                {isSessionActive
-                  ? 'Listening…'
-                  : 'Start recording or go live — captions transcribe your microphone during a session.'}
-              </span>
+              // No instructional copy while captions are on — the transcript
+              // area stays quiet until there is something to transcribe
+              // (post-0.9.4 fix batch F2).
+              isSessionActive ? (
+                <span className="text-sm text-muted-foreground">Listening…</span>
+              ) : null
             ) : (
               lines.map((line) => (
                 <p className="text-sm leading-6 text-foreground" key={line.seq}>

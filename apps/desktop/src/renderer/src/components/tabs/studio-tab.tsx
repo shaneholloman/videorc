@@ -1,7 +1,6 @@
 import { ArrowSquareOut, PushPinSimple, WarningCircle } from '@phosphor-icons/react'
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 
-import { BlockingBanner } from '@/components/blocking-banner'
 import { GoLiveConfirmationDialog } from '@/components/go-live-dialog'
 import { LiveChatRail } from '@/components/live-chat-rail'
 import { PageStack } from '@/components/page'
@@ -183,16 +182,9 @@ export function StudioTab(): ReactElement {
         />
 
         <PageStack>
-          {/* Hard block (can't start): a banner with a jump to the owning page. */}
-          {visibleStartBlockedReason && banner ? (
-            <BlockingBanner
-              description={visibleStartBlockedReason}
-              jumpLabel={banner.jumpLabel}
-              jumpTo={banner.jumpTo}
-              title={banner.title}
-              tone="warning"
-            />
-          ) : null}
+          {/* Hard blocks surface INSIDE the Session panel next to the disabled
+              buttons (quiet inline line + jump link) — the yellow top banner
+              made the Studio read as broken (post-0.9.4 fix batch F8). */}
 
           {/* Preview (left, the hero) + Session facts & controls (right). */}
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
@@ -258,6 +250,12 @@ export function StudioTab(): ReactElement {
 
             <SessionPanel
               active={active}
+              blockedJump={
+                banner?.jumpTo && banner.jumpLabel
+                  ? { label: banner.jumpLabel, to: banner.jumpTo }
+                  : null
+              }
+              blockedReason={visibleStartBlockedReason}
               canStop={canStop}
               liveStreamBlockedReason={liveStreamBlockedReason}
               recordBlockedReason={recordBlockedReason}

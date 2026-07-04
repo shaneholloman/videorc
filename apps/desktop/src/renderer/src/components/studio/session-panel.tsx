@@ -4,6 +4,7 @@ import {
   CaretRight,
   Clock,
   FrameCorners,
+  Info,
   Record,
   StopCircle,
   type Icon
@@ -38,6 +39,8 @@ export function SessionPanel({
   startRequestPending,
   recordBlockedReason,
   liveStreamBlockedReason,
+  blockedReason = null,
+  blockedJump = null,
   canStop,
   stopLabel,
   onRecord,
@@ -49,6 +52,14 @@ export function SessionPanel({
   startRequestPending: boolean
   recordBlockedReason: string | null
   liveStreamBlockedReason: string | null
+  /** Why the session cannot start right now (hard block); rendered as a quiet
+   * inline line next to the disabled controls — the former yellow top banner
+   * (post-0.9.4 fix batch F8). */
+  blockedReason?: string | null
+  blockedJump?: {
+    label: string
+    to: Parameters<ReturnType<typeof useWorkspaceNav>['setActive']>[0]
+  } | null
   canStop: boolean
   stopLabel: string
   onRecord: () => void
@@ -56,7 +67,7 @@ export function SessionPanel({
   onStop: () => void
 }): ReactElement {
   const { captureConfig, wsStatus } = useStudio()
-  const { openStudioPanel } = useWorkspaceNav()
+  const { openStudioPanel, setActive } = useWorkspaceNav()
   const video = captureConfig.video
 
   return (
@@ -131,6 +142,21 @@ export function SessionPanel({
             </>
           )}
         </div>
+        {!active && blockedReason ? (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Info className="size-3.5 shrink-0" />
+            <span className="min-w-0">{blockedReason}</span>
+            {blockedJump ? (
+              <button
+                className="shrink-0 font-medium text-foreground underline-offset-2 hover:underline"
+                type="button"
+                onClick={() => setActive(blockedJump.to)}
+              >
+                {blockedJump.label}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </PanelSection>
   )

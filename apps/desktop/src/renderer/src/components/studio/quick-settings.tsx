@@ -305,11 +305,6 @@ export function QuickSettings(): ReactElement {
             onCheckedChange={(next) => void toggleCaptions(next)}
           />
         </div>
-        {captionsLive && !isSessionActive ? (
-          <span className="text-xs text-muted-foreground">
-            Start recording or go live — captions transcribe your mic during a session.
-          </span>
-        ) : null}
       </QuickCard>
     </div>
   )
