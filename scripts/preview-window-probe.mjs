@@ -201,35 +201,59 @@ async function main() {
   await smokeCommand('preview-window-set-dock-overlay', { open: false })
   await waitForDockedSurfaceAtSlot('dock-overlay-close: surface returns when the overlay closes')
 
-  // Scrolled-away slots hide with a stated reason instead of clipping. The
-  // injected report reuses the renderer's real rect so only the fraction lies.
-  const realSlot = await dockSlotRect()
-  docked = await smokeCommand('preview-window-state')
-  await smokeCommand('preview-window-report-dock-slot', {
-    epoch: docked.dockEpoch,
-    ...realSlot,
-    visibleFraction: 0.4,
-    mounted: true
+  // Scrolled-away slots hide with a stated reason instead of clipping. Drive
+  // the REAL reporter — actually scroll the slot's container out of view —
+  // rather than injecting a fraction, which the live reporter would overwrite
+  // with the true (fully visible) value within a frame.
+  const scrolled = await smokeCommand('eval-js', {
+    code: `
+      const slot = document.querySelector('[data-videorc-dock-slot]')
+      if (!slot) return { scrolled: false }
+      let node = slot.parentElement
+      while (node) {
+        const style = getComputedStyle(node)
+        if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) break
+        node = node.parentElement
+      }
+      const scroller = node ?? document.scrollingElement ?? document.documentElement
+      scroller.scrollTop = scroller.scrollHeight
+      await sleep(120)
+      return { scrolled: true, top: scroller.scrollTop }
+    `
   })
-  const scrolledHidden = await waitFor(
-    async () => smokeCommand('preview-window-state'),
-    (s) => s.visible === false && s.dockHiddenReason === 'scrolled-away',
-    8000
-  )
-  assertProbe(
-    scrolledHidden.ok,
-    'dock-scroll: surface hides when the slot scrolls mostly away',
-    JSON.stringify(scrolledHidden.last)
-  )
-  await smokeCommand('preview-window-report-dock-slot', {
-    epoch: docked.dockEpoch,
-    ...realSlot,
-    visibleFraction: 1,
-    mounted: true
-  })
-  await waitForDockedSurfaceAtSlot(
-    'dock-scroll-back: surface returns when the slot is visible again'
-  )
+  if (scrolled.result?.scrolled && scrolled.result.top > 0) {
+    const scrolledHidden = await waitFor(
+      async () => smokeCommand('preview-window-state'),
+      (s) => s.visible === false && s.dockHiddenReason === 'scrolled-away',
+      8000
+    )
+    assertProbe(
+      scrolledHidden.ok,
+      'dock-scroll: surface hides when the slot scrolls mostly away',
+      JSON.stringify(scrolledHidden.last)
+    )
+    await smokeCommand('eval-js', {
+      code: `
+        const slot = document.querySelector('[data-videorc-dock-slot]')
+        let node = slot?.parentElement ?? null
+        while (node) {
+          const style = getComputedStyle(node)
+          if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) break
+          node = node.parentElement
+        }
+        ;(node ?? document.scrollingElement ?? document.documentElement).scrollTop = 0
+        await sleep(120)
+        return { restored: true }
+      `
+    })
+    await waitForDockedSurfaceAtSlot(
+      'dock-scroll-back: surface returns when the slot is visible again'
+    )
+  } else {
+    // The Studio page fit without scrolling on this run (short content / tall
+    // window) — the scrolled-away decision is covered by dock-slot unit tests.
+    assertProbe(true, 'dock-scroll: skipped — Studio page did not overflow', '')
+  }
 
   // Undock: floating chrome and the remembered floating frame come back.
   const floated = await smokeCommand('preview-window-set-mode', { mode: 'floating' })
