@@ -16,7 +16,16 @@ import {
   type NativeImage
 } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { constants as fsConstants, promises as fsPromises } from 'node:fs'
 import {
   createServer,
@@ -59,6 +68,12 @@ import {
   type PreviewWindowMode
 } from './preview-dock'
 import { backendIsolationEnv } from './backend-isolation'
+import {
+  AVATAR_CACHE_MAX_FILES,
+  AVATAR_MAX_BYTES,
+  avatarCacheFileName,
+  avatarHostAllowed
+} from './avatar-cache'
 import { DARK_WINDOW_PALETTE, windowPalette } from './window-palette'
 import {
   assessFirstFrame,
@@ -6895,16 +6910,91 @@ function resolveManagedBackgroundFile(fileName: string): string | null {
   return null
 }
 
+// --- Chat avatar cache (Comments window upgrade S1) ----------------------------
+// Renderers never hot-link platform CDNs: main fetches each avatar once from
+// an allowlisted host (avatar-cache.ts policy), stores it here, and serves it
+// back through the same scoped protocol under the `avatar` host.
+function avatarCacheDirectory(): string {
+  return join(app.getPath('userData'), 'avatar-cache')
+}
+
+const avatarFetchesInFlight = new Map<string, Promise<string | null>>()
+
+async function cacheChatAvatar(rawUrl: unknown): Promise<string | null> {
+  if (typeof rawUrl !== 'string' || !avatarHostAllowed(rawUrl)) {
+    return null
+  }
+  const fileName = avatarCacheFileName(rawUrl)
+  const localUrl = `${MANAGED_ASSET_SCHEME}://avatar/${fileName}`
+  const filePath = join(avatarCacheDirectory(), fileName)
+  if (existsSync(filePath)) {
+    return localUrl
+  }
+  const inFlight = avatarFetchesInFlight.get(fileName)
+  if (inFlight) {
+    return inFlight
+  }
+  const fetchPromise = (async () => {
+    try {
+      const response = await net.fetch(rawUrl)
+      if (!response.ok) {
+        return null
+      }
+      const bytes = Buffer.from(await response.arrayBuffer())
+      if (bytes.length === 0 || bytes.length > AVATAR_MAX_BYTES) {
+        return null
+      }
+      mkdirSync(avatarCacheDirectory(), { recursive: true })
+      writeFileSync(filePath, bytes)
+      pruneAvatarCache()
+      return localUrl
+    } catch {
+      return null
+    } finally {
+      avatarFetchesInFlight.delete(fileName)
+    }
+  })()
+  avatarFetchesInFlight.set(fileName, fetchPromise)
+  return fetchPromise
+}
+
+// Oldest-by-mtime files past the cap are pruned; best-effort.
+function pruneAvatarCache(): void {
+  try {
+    const directory = avatarCacheDirectory()
+    const entries = readdirSync(directory)
+      .map((name) => {
+        const filePath = join(directory, name)
+        return { filePath, mtimeMs: statSync(filePath).mtimeMs }
+      })
+      .sort((left, right) => right.mtimeMs - left.mtimeMs)
+    for (const stale of entries.slice(AVATAR_CACHE_MAX_FILES)) {
+      rmSync(stale.filePath, { force: true })
+    }
+  } catch {
+    // Cache pruning is a convenience; never let it break chat.
+  }
+}
+
+function resolveManagedAvatarFile(fileName: string): string | null {
+  if (!fileName || fileName.includes('/') || fileName.includes('\\') || fileName.includes('..')) {
+    return null
+  }
+  const candidate = join(avatarCacheDirectory(), fileName)
+  return existsSync(candidate) ? candidate : null
+}
+
 function registerManagedAssetProtocol(): void {
   protocol.handle(MANAGED_ASSET_SCHEME, (request) => {
     try {
       const url = new URL(request.url)
-      if (url.host !== 'background') {
-        return new Response('Not found', { status: 404 })
-      }
-      const resolved = resolveManagedBackgroundFile(
-        decodeURIComponent(url.pathname.replace(/^\//, ''))
-      )
+      const fileName = decodeURIComponent(url.pathname.replace(/^\//, ''))
+      const resolved =
+        url.host === 'background'
+          ? resolveManagedBackgroundFile(fileName)
+          : url.host === 'avatar'
+            ? resolveManagedAvatarFile(fileName)
+            : null
       if (!resolved) {
         return new Response('Not found', { status: 404 })
       }
@@ -7074,6 +7164,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('backgrounds:asset-exists', (_event, assetPath: unknown) =>
     backgroundAssetFileExists(assetPath)
   )
+  ipcMain.handle('avatars:cache', (_event, url: unknown) => cacheChatAvatar(url))
   ipcMain.handle('oauth:open-url', (_event, authUrl: string) => openOAuthUrl(authUrl))
   ipcMain.handle('oauth:callback-redirect-uri', (_event, platform?: string) =>
     oauthCallbackRedirectUri(platform)

@@ -8,6 +8,7 @@ import type {
   LiveChatSnapshot,
   StreamPlatform
 } from '@/lib/backend'
+import { ChatPlatformIcon } from '@/components/chat-platform-icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -82,9 +83,10 @@ function MessageRow({ message }: { message: LiveChatMessage }): ReactElement {
       <span className="text-[10px] text-muted-foreground tabular-nums">
         {formatTime(message.receivedAt)}{' '}
       </span>
-      <span className="text-[10px] font-medium uppercase text-muted-foreground/80">
-        {PLATFORM_LABELS[message.platform]}{' '}
-      </span>
+      <ChatPlatformIcon
+        className="mr-1 inline-block size-3 align-[-2px]"
+        platform={message.platform}
+      />
       <span className="font-semibold">{message.authorName}</span>
       {message.amountText ? (
         <Badge variant="secondary" className="mx-1 px-1 py-0 text-[10px]">

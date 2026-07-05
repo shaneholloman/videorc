@@ -1,22 +1,12 @@
 import { PushPin } from '@phosphor-icons/react'
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 
+import { CHAT_PLATFORM_LABELS, ChatPlatformIcon } from '@/components/chat-platform-icon'
 import { Button } from '@/components/ui/button'
-import type {
-  LiveChatMessage,
-  LiveChatProviderState,
-  LiveChatSnapshot,
-  StreamPlatform
-} from '@/lib/backend'
+import type { LiveChatMessage, LiveChatProviderState, LiveChatSnapshot } from '@/lib/backend'
+import { AvatarCircle } from '@/lib/chat-avatar'
 import { sortMessagesChronological } from '@/lib/live-chat-view'
 import { cn } from '@/lib/utils'
-
-const PLATFORM_LABELS: Record<StreamPlatform, string> = {
-  youtube: 'YouTube',
-  twitch: 'Twitch',
-  x: 'X',
-  custom: 'Custom'
-}
 
 const BOTTOM_THRESHOLD_PX = 64
 
@@ -168,7 +158,7 @@ function ProviderPill({ provider }: { provider: LiveChatProviderState }): ReactE
   return (
     <span className="inline-flex items-center gap-1.5 rounded-chip border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
       <span className={cn('size-1.5 shrink-0 rounded-full bg-current', tone)} />
-      {PLATFORM_LABELS[provider.platform]}
+      {CHAT_PLATFORM_LABELS[provider.platform]}
     </span>
   )
 }
@@ -182,24 +172,32 @@ function MessageRow({ message }: { message: LiveChatMessage }): ReactElement {
   return (
     <li
       className={cn(
-        'rounded-row px-2 py-1.5 text-[15px] leading-snug',
+        'flex items-start gap-2 rounded-row px-2 py-1.5 text-[15px] leading-snug',
         isPaid && 'bg-warning/10 ring-1 ring-warning/30',
         isSystem && 'text-muted-foreground italic',
         message.isDeleted && 'text-muted-foreground line-through'
       )}
     >
-      <span className="mr-1.5 align-baseline text-[11px] font-medium tracking-wide text-muted-foreground/70 uppercase">
-        {PLATFORM_LABELS[message.platform]}
-      </span>
-      <span className="font-semibold">{message.authorName}</span>
-      {message.amountText ? (
-        <span className="mx-1 rounded-chip bg-warning/15 px-1.5 py-0.5 text-[11px] font-medium text-warning">
-          {message.amountText}
+      <AvatarCircle
+        avatarUrl={message.authorAvatarUrl}
+        className="mt-0.5"
+        name={message.authorName}
+      />
+      <span className="min-w-0 flex-1">
+        <ChatPlatformIcon
+          className="mr-1.5 inline-block align-[-2px]"
+          platform={message.platform}
+        />
+        <span className="font-semibold">{message.authorName}</span>
+        {message.amountText ? (
+          <span className="mx-1 rounded-chip bg-warning/15 px-1.5 py-0.5 text-[11px] font-medium text-warning">
+            {message.amountText}
+          </span>
+        ) : null}{' '}
+        <span className="text-foreground">{message.messageText}</span>
+        <span className="ml-1.5 align-baseline text-[10px] text-muted-foreground/60 tabular-nums">
+          {formatTime(message.receivedAt)}
         </span>
-      ) : null}{' '}
-      <span className="text-foreground">{message.messageText}</span>
-      <span className="ml-1.5 align-baseline text-[10px] text-muted-foreground/60 tabular-nums">
-        {formatTime(message.receivedAt)}
       </span>
     </li>
   )

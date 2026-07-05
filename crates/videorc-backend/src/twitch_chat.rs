@@ -177,6 +177,60 @@ fn roles_from_badges(badges: &[String]) -> Vec<String> {
     roles
 }
 
+/// Profile-image URL from a Helix `GET /users` response body (pure, tested).
+fn parse_helix_user_avatar(body: &Value, user_id: &str) -> Option<String> {
+    body["data"].as_array()?.iter().find_map(|user| {
+        (user["id"].as_str() == Some(user_id))
+            .then(|| user["profile_image_url"].as_str().map(ToOwned::to_owned))
+            .flatten()
+            .filter(|url| !url.is_empty())
+    })
+}
+
+/// Session-scoped avatar backfill: EventSub chat events carry no avatar, so
+/// the FIRST message from each chatter costs one Helix `GET /users` lookup
+/// (read scope) and every later message hits this cache. Failures cache None —
+/// the feed shows a monogram instead of hammering Helix.
+#[derive(Default)]
+struct TwitchAvatarCache {
+    by_user_id: std::collections::HashMap<String, Option<String>>,
+}
+
+impl TwitchAvatarCache {
+    async fn lookup(
+        &mut self,
+        client: &reqwest::Client,
+        config: &TwitchChatConfig,
+        user_id: &str,
+    ) -> Option<String> {
+        if let Some(cached) = self.by_user_id.get(user_id) {
+            return cached.clone();
+        }
+        let base = config
+            .api_base_url
+            .clone()
+            .unwrap_or_else(|| TWITCH_API_BASE_URL.to_string());
+        let fetched = client
+            .get(format!("{base}/helix/users"))
+            .query(&[("id", user_id)])
+            .bearer_auth(&config.access_token)
+            .header("Client-Id", &config.client_id)
+            .send()
+            .await
+            .ok()
+            .filter(|response| response.status().is_success());
+        let avatar = match fetched {
+            Some(response) => match response.json::<Value>().await {
+                Ok(body) => parse_helix_user_avatar(&body, user_id),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        self.by_user_id.insert(user_id.to_string(), avatar.clone());
+        avatar
+    }
+}
+
 fn base_message(
     provider_message_id: String,
     session_id: &str,
@@ -459,6 +513,7 @@ async fn run_eventsub_session(
     client: &reqwest::Client,
     ws_url: &str,
     seen: &mut HashSet<String>,
+    avatars: &mut TwitchAvatarCache,
 ) -> SessionOutcome {
     let Ok((ws_stream, _response)) = connect_async(ws_url).await else {
         return SessionOutcome::Reconnect(None);
@@ -497,7 +552,7 @@ async fn run_eventsub_session(
                     event,
                 } => {
                     let now = chrono::Utc::now().to_rfc3339();
-                    if let Some(message) = normalize_notification(
+                    if let Some(mut message) = normalize_notification(
                         &subscription_type,
                         &event,
                         &message_id,
@@ -507,6 +562,14 @@ async fn run_eventsub_session(
                         &now,
                     ) && seen.insert(message.provider_message_id.clone())
                     {
+                        // EventSub carries no avatar; backfill once per chatter
+                        // (Comments window upgrade S1).
+                        if message.author_avatar_url.is_none()
+                            && let Some(author_id) = message.author_id.clone()
+                        {
+                            message.author_avatar_url =
+                                avatars.lookup(client, config, &author_id).await;
+                        }
                         deliver_message(state, message).await;
                     }
                 }
@@ -558,8 +621,18 @@ pub async fn run_twitch_chat_connector(
     )
     .await;
 
+    let mut avatars = TwitchAvatarCache::default();
     loop {
-        match run_eventsub_session(&state, &session_id, &config, &client, &ws_url, &mut seen).await
+        match run_eventsub_session(
+            &state,
+            &session_id,
+            &config,
+            &client,
+            &ws_url,
+            &mut seen,
+            &mut avatars,
+        )
+        .await
         {
             SessionOutcome::Reconnect(next_url) => {
                 ws_url = next_url.unwrap_or_else(|| default_ws_url.clone());
@@ -650,6 +723,24 @@ mod tests {
                 .to_string(),
         );
         assert_eq!(keepalive, EventSubFrame::Keepalive);
+    }
+
+    #[test]
+    fn parses_helix_user_avatar_by_id() {
+        let body = serde_json::json!({
+            "data": [
+                { "id": "111", "profile_image_url": "https://static-cdn.jtvnw.net/a.png" },
+                { "id": "222", "profile_image_url": "" }
+            ]
+        });
+        assert_eq!(
+            parse_helix_user_avatar(&body, "111").as_deref(),
+            Some("https://static-cdn.jtvnw.net/a.png")
+        );
+        // Empty URL and unknown ids resolve to None (monogram fallback).
+        assert_eq!(parse_helix_user_avatar(&body, "222"), None);
+        assert_eq!(parse_helix_user_avatar(&body, "999"), None);
+        assert_eq!(parse_helix_user_avatar(&serde_json::json!({}), "111"), None);
     }
 
     #[test]

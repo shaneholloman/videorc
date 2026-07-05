@@ -23,6 +23,7 @@ const api: VideorcApi = {
   pickScreenImage: () => ipcRenderer.invoke('screens:pick-image'),
   importBackgroundImage: () => ipcRenderer.invoke('backgrounds:import-image'),
   backgroundAssetExists: (assetPath) => ipcRenderer.invoke('backgrounds:asset-exists', assetPath),
+  cacheChatAvatar: (url) => ipcRenderer.invoke('avatars:cache', url),
   getBundledBackgroundAssets: () => ipcRenderer.invoke('backgrounds:bundled-assets'),
   openOAuthUrl: (authUrl) => ipcRenderer.invoke('oauth:open-url', authUrl),
   getOAuthCallbackRedirectUri: (platform) =>
