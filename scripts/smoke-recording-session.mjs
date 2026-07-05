@@ -77,6 +77,7 @@ export async function runBackendRecordingSmoke({
         analyze
       })
     )
+    await assertSessionPoster({ ws, connection, timeoutMs, ffmpegPath, label })
     return results
   } finally {
     ws?.close()
@@ -203,6 +204,36 @@ async function recordAssetBackgroundScenario({
     `${label} smoke [${scenario.label}] asset background frame PASS: red border around 80% screen stage`
   )
   return result
+}
+
+/** Library rewrite L6: a finalized recording must yield a servable poster —
+ * ensure it over WS (idle-aware extraction), then fetch the actual JPEG from
+ * the token-authenticated HTTP server. */
+async function assertSessionPoster({ ws, connection, timeoutMs, ffmpegPath, label }) {
+  const sessions = await request(ws, timeoutMs, 'sessions.list', { limit: 1 })
+  const latest = sessions?.[0]
+  if (!latest) {
+    throw new Error('Poster assert: no session found after the recording scenarios.')
+  }
+  const poster = await request(ws, timeoutMs, 'sessions.poster', {
+    sessionId: latest.id,
+    ffmpegPath
+  })
+  if (!poster?.available) {
+    throw new Error(`Poster assert: sessions.poster reported unavailable for ${latest.id}.`)
+  }
+  const url =
+    `http://${connection.host}:${connection.port}/sessions/` +
+    `${encodeURIComponent(latest.id)}/poster?token=${encodeURIComponent(connection.token)}`
+  const response = await fetch(url)
+  if (!response.ok) {
+    throw new Error(`Poster assert: HTTP ${response.status} fetching the poster for ${latest.id}.`)
+  }
+  const bytes = Buffer.from(await response.arrayBuffer())
+  if (bytes.length < 100 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    throw new Error(`Poster assert: response is not a JPEG (${bytes.length} bytes).`)
+  }
+  console.log(`${label} smoke poster PASS: ${bytes.length}-byte JPEG served for ${latest.id}`)
 }
 
 export function connectBackend(connection, timeoutMs) {
