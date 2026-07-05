@@ -46,18 +46,18 @@ export function TakeoverScreensSection(): ReactElement {
           {screenImportPending ? 'Importing' : 'Upload'}
         </Button>
       }
-      description="Upload full-frame images for stream takeovers. Management is locked while a session is live."
+      description="Full-frame images that cover the output — flip them on from the Studio session panel. Management is locked while a session is live."
       icon={ImageSquare}
-      title="Screens"
+      title="Takeover screens"
     >
       {screens.length === 0 ? (
         <Empty className="py-12">
           <EmptyMedia variant="icon">
             <ImageSquare weight="duotone" />
           </EmptyMedia>
-          <EmptyTitle>No Screens yet</EmptyTitle>
+          <EmptyTitle>No takeovers yet</EmptyTitle>
           <EmptyDescription>
-            Upload a PNG, JPEG, or WebP image to create the first Screen.
+            Upload a PNG, JPEG, or WebP image to create the first takeover.
           </EmptyDescription>
         </Empty>
       ) : (
@@ -154,16 +154,16 @@ function ScreenTile({
       >
         <div className="flex min-w-0 gap-2">
           <Input
-            aria-label="Screen name"
+            aria-label="Takeover name"
             disabled={disabled}
             value={nameDraft}
             onChange={(event) => setNameDraft(event.target.value)}
           />
           <Button
-            aria-label="Save Screen name"
+            aria-label="Save takeover name"
             disabled={disabled || !nameChanged || !nameDraft.trim()}
             size="icon"
-            title="Save Screen name"
+            title="Save takeover name"
             type="submit"
             variant="outline"
           >
@@ -175,10 +175,10 @@ function ScreenTile({
             tiles are management only — the Active badge still reports state. */}
         <div className="flex min-w-0 items-center gap-1.5">
           <Button
-            aria-label="Move Screen up"
+            aria-label="Move takeover up"
             disabled={disabled || index === 0}
             size="icon-sm"
-            title="Move Screen up"
+            title="Move takeover up"
             type="button"
             variant="outline"
             onClick={() => onMove(-1)}
@@ -186,10 +186,10 @@ function ScreenTile({
             <ArrowUp />
           </Button>
           <Button
-            aria-label="Move Screen down"
+            aria-label="Move takeover down"
             disabled={disabled || index === total - 1}
             size="icon-sm"
-            title="Move Screen down"
+            title="Move takeover down"
             type="button"
             variant="outline"
             onClick={() => onMove(1)}
@@ -197,11 +197,11 @@ function ScreenTile({
             <ArrowDown />
           </Button>
           <Button
-            aria-label="Delete Screen"
+            aria-label="Delete takeover"
             className="ml-auto"
             disabled={disabled}
             size="icon-sm"
-            title="Delete Screen"
+            title="Delete takeover"
             type="button"
             variant="destructive"
             onClick={onDelete}

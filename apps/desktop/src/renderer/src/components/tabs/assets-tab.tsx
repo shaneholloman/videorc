@@ -150,7 +150,8 @@ export function AssetsTab(): ReactElement {
       <div className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold tracking-tight">Assets</h1>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Backgrounds for your scenes. Click a preset to apply it; tune the active one below.
+          Backgrounds for your scenes and takeover screens for the output. Click a preset to apply
+          it; tune the active one below.
         </p>
       </div>
 
