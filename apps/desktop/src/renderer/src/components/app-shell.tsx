@@ -31,6 +31,7 @@ import { WhatsNewDialog } from '@/components/whats-new-dialog'
 import { useStudio } from '@/hooks/use-studio'
 import { useWhatsNew } from '@/hooks/use-whats-new'
 import { ONBOARDING_VERSION, STORAGE_KEYS } from '@/lib/capture'
+import { cn } from '@/lib/utils'
 
 export function AppShell(): ReactElement {
   const {
@@ -203,10 +204,23 @@ export function AppShell(): ReactElement {
         />
 
         <main className="flex h-[calc(100vh-2.25rem)] flex-1 flex-col">
-          <div className="flex-1 overflow-y-auto">
+          {/* Library manages its own scroll (pinned header/toolbar, only the
+              table scrolls), so it fills the bounded height instead of the
+              shell scrolling the whole tab. Every other tab scrolls as one. */}
+          <div
+            className={cn(
+              'min-h-0 flex-1',
+              active === 'library' ? 'flex flex-col' : 'overflow-y-auto'
+            )}
+          >
             {/* pt-4 matches the sidebar header's py-4 so every tab's content
                 top-aligns with the start of the sidebar. */}
-            <div className="mx-auto w-full max-w-[1600px] px-10 pt-4 pb-8">
+            <div
+              className={cn(
+                'mx-auto w-full max-w-[1600px] px-10 pt-4',
+                active === 'library' ? 'flex min-h-0 flex-1 flex-col pb-4' : 'pb-8'
+              )}
+            >
               {active === 'studio' ? <StudioTab /> : null}
               {active === 'sources' ? <SourcesTab /> : null}
               {active === 'layouts' ? <LayoutTab /> : null}

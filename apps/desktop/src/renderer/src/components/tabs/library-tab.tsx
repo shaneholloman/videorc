@@ -170,7 +170,7 @@ export function LibraryTab({
   }, [settings.outputDirectory, sessions.length])
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
       <PageHeader
         description="Every recording and stream becomes a local session. Files stay on disk; AI work happens in Publish."
         title="Library"
