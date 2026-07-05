@@ -7143,6 +7143,22 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('system:reveal-permission-target', () => revealPermissionTarget())
   ipcMain.handle('system:reveal-path', (_event, targetPath: string) => revealPath(targetPath))
+  // Library Delete: recordings move to the system Trash — Trash IS the undo;
+  // nothing in the app hard-deletes a user's file (Library rewrite L3).
+  ipcMain.handle('system:trash-paths', async (_event, paths: unknown) => {
+    const list = Array.isArray(paths) ? paths.filter((p) => typeof p === 'string') : []
+    const failures: string[] = []
+    for (const target of list) {
+      try {
+        if (existsSync(target)) {
+          await shell.trashItem(target)
+        }
+      } catch {
+        failures.push(target)
+      }
+    }
+    return { failures }
+  })
   // Library Play action: open the recording in the system default player.
   ipcMain.handle('system:open-path', async (_event, targetPath: unknown) => {
     if (typeof targetPath !== 'string' || targetPath.length === 0) {

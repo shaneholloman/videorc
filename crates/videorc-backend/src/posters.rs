@@ -95,8 +95,7 @@ pub async fn ensure_session_poster(
     ok
 }
 
-/// Delete a session's poster (session deletion, L3 wires the caller).
-#[allow(dead_code)]
+/// Delete a session's poster (session deletion, L3).
 pub async fn remove_session_poster(session_id: &str) {
     let _ = tokio::fs::remove_file(poster_path(session_id)).await;
 }

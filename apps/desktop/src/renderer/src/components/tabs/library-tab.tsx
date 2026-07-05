@@ -1,6 +1,10 @@
 import {
   ArrowCounterClockwise,
   ArrowsDownUp,
+  Copy,
+  PencilSimple,
+  Trash,
+  UploadSimple,
   ChatCircle,
   CheckCircle,
   CircleNotch,
@@ -28,6 +32,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Empty, EmptyDescription, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Input } from '@/components/ui/input'
 import {
@@ -66,13 +78,67 @@ export function LibraryTab({
 }: {
   onOpenInAi: (sessionId: string) => void
 }): ReactElement {
-  const { sessions, sessionStorageTotals, settings } = useStudio()
+  const {
+    sessions,
+    sessionStorageTotals,
+    settings,
+    importRecording,
+    deleteSessions,
+    renameSession
+  } = useStudio()
   const { setActive } = useWorkspaceNav()
   const [filter, setFilter] = useState<LibraryFilter>('all')
   const [sort, setSort] = useState<LibrarySort>('newest')
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<string[]>([])
   const [freeBytes, setFreeBytes] = useState<number | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [renaming, setRenaming] = useState<SessionSummary | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const [deleting, setDeleting] = useState<SessionSummary[]>([])
+  const [deletePending, setDeletePending] = useState(false)
+
+  const runImport = async (): Promise<void> => {
+    setImporting(true)
+    try {
+      await importRecording()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Import failed.')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const confirmDelete = async (): Promise<void> => {
+    setDeletePending(true)
+    try {
+      await deleteSessions(deleting)
+      toast.success(
+        deleting.length === 1
+          ? 'Recording moved to Trash.'
+          : `${deleting.length} recordings moved to Trash.`
+      )
+      setSelected((current) => current.filter((id) => !deleting.some((s) => s.id === id)))
+      setDeleting([])
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Delete failed.')
+      setDeleting([])
+    } finally {
+      setDeletePending(false)
+    }
+  }
+
+  const submitRename = async (): Promise<void> => {
+    if (!renaming) return
+    const title = renameDraft.trim()
+    if (!title) return
+    try {
+      await renameSession(renaming.id, title)
+      setRenaming(null)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Rename failed.')
+    }
+  }
 
   const visible = useMemo(
     () => sortLibrarySessions(filterLibrarySessions(sessions, filter, query), sort),
@@ -153,7 +219,29 @@ export function LibraryTab({
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
+        <Button disabled={importing} size="sm" variant="outline" onClick={() => void runImport()}>
+          <UploadSimple data-icon="inline-start" />
+          {importing ? 'Importing…' : 'Import'}
+        </Button>
       </div>
+
+      {/* Selection bar: the checkbox column's one bulk action. */}
+      {selected.length > 0 ? (
+        <div className="flex items-center gap-3 rounded-row border bg-muted/20 px-3 py-1.5 text-sm">
+          <span className="text-muted-foreground">{selected.length} selected</span>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => setDeleting(sessions.filter((session) => selected.includes(session.id)))}
+          >
+            <Trash data-icon="inline-start" />
+            Delete
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelected([])}>
+            Clear selection
+          </Button>
+        </div>
+      ) : null}
 
       {sessions.length === 0 ? (
         <Empty className="rounded-panel border py-16">
@@ -195,7 +283,12 @@ export function LibraryTab({
                   key={session.id}
                   selected={selected.includes(session.id)}
                   session={session}
+                  onDelete={() => setDeleting([session])}
                   onOpenInAi={() => onOpenInAi(session.id)}
+                  onRename={() => {
+                    setRenaming(session)
+                    setRenameDraft(session.title)
+                  }}
                   onToggleSelected={() =>
                     setSelected((current) => toggleLibrarySelection(current, session.id))
                   }
@@ -215,6 +308,78 @@ export function LibraryTab({
           ) : null}
         </div>
       )}
+
+      {/* Rename dialog */}
+      <Dialog open={renaming !== null} onOpenChange={(open) => !open && setRenaming(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename recording</DialogTitle>
+            <DialogDescription>The file on disk keeps its name.</DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault()
+              void submitRename()
+            }}
+          >
+            <Input
+              autoFocus
+              aria-label="Recording name"
+              maxLength={120}
+              value={renameDraft}
+              onChange={(event) => setRenameDraft(event.target.value)}
+            />
+            <DialogFooter className="mt-4">
+              <Button type="button" variant="ghost" onClick={() => setRenaming(null)}>
+                Cancel
+              </Button>
+              <Button disabled={renameDraft.trim().length === 0} type="submit">
+                Rename
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirm: files go to the system Trash first — Trash is the undo. */}
+      <Dialog
+        open={deleting.length > 0}
+        onOpenChange={(open) => !open && !deletePending && setDeleting([])}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {deleting.length === 1
+                ? 'Delete this recording?'
+                : `Delete ${deleting.length} recordings?`}
+            </DialogTitle>
+            <DialogDescription>
+              {deleting.length === 1
+                ? 'The recording and its file move to the system Trash.'
+                : `${deleting.length} recordings and their files move to the system Trash.`}{' '}
+              You can restore them from the Trash.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              disabled={deletePending}
+              type="button"
+              variant="ghost"
+              onClick={() => setDeleting([])}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={deletePending}
+              type="button"
+              variant="destructive"
+              onClick={() => void confirmDelete()}
+            >
+              {deletePending ? 'Deleting…' : 'Move to Trash'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -223,12 +388,16 @@ function LibraryRow({
   session,
   selected,
   onToggleSelected,
-  onOpenInAi
+  onOpenInAi,
+  onRename,
+  onDelete
 }: {
   session: SessionSummary
   selected: boolean
   onToggleSelected: () => void
   onOpenInAi: () => void
+  onRename: () => void
+  onDelete: () => void
 }): ReactElement {
   const filePath = session.mp4Path ?? session.outputPath ?? null
   const format = sessionFormatLabel(session)
@@ -272,7 +441,13 @@ function LibraryRow({
       <div>
         {format ? <Badge variant={session.mp4Path ? 'success' : 'outline'}>{format}</Badge> : null}
       </div>
-      <RowActions filePath={filePath} session={session} onOpenInAi={onOpenInAi} />
+      <RowActions
+        filePath={filePath}
+        session={session}
+        onDelete={onDelete}
+        onOpenInAi={onOpenInAi}
+        onRename={onRename}
+      />
     </div>
   )
 }
@@ -359,11 +534,15 @@ type RepairPhase = 'idle' | 'checking' | 'assessed' | 'repairing' | 'done'
 function RowActions({
   filePath,
   session,
-  onOpenInAi
+  onOpenInAi,
+  onRename,
+  onDelete
 }: {
   filePath: string | null
   session: SessionSummary
   onOpenInAi: () => void
+  onRename: () => void
+  onDelete: () => void
 }): ReactElement {
   const {
     assessRecording,
@@ -372,8 +551,22 @@ function RowActions({
     recording,
     wsStatus,
     remuxSession,
-    openSessionCommentsWindow
+    openSessionCommentsWindow,
+    duplicateSession
   } = useStudio()
+  const [duplicating, setDuplicating] = useState(false)
+
+  const runDuplicate = async (): Promise<void> => {
+    setDuplicating(true)
+    try {
+      await duplicateSession(session.id)
+      toast.success('Recording duplicated.')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Duplicate failed.')
+    } finally {
+      setDuplicating(false)
+    }
+  }
   const [phase, setPhase] = useState<RepairPhase>('idle')
   const [assessment, setAssessment] = useState<FileAssessment | null>(null)
   const [hasBackup, setHasBackup] = useState(false)
@@ -523,6 +716,18 @@ function RowActions({
             Open Comments
           </DropdownMenuItem>
           <DropdownMenuSeparator />
+          <DropdownMenuItem disabled={busy} onClick={onRename}>
+            <PencilSimple />
+            Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!filePath || busy || duplicating}
+            onClick={() => void runDuplicate()}
+          >
+            <Copy />
+            {duplicating ? 'Duplicating…' : 'Duplicate'}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem
             disabled={!filePath || busy || captureProtected}
             onClick={() => void runCheck()}
@@ -542,6 +747,15 @@ function RowActions({
               Restore original
             </DropdownMenuItem>
           ) : null}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            disabled={busy || captureProtected}
+            variant="destructive"
+            onClick={onDelete}
+          >
+            <Trash />
+            Delete
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

@@ -172,6 +172,7 @@ const api: VideorcApi = {
   revealPermissionTarget: () => ipcRenderer.invoke('system:reveal-permission-target'),
   revealPath: (path) => ipcRenderer.invoke('system:reveal-path', path),
   openPath: (path) => ipcRenderer.invoke('system:open-path', path),
+  trashPaths: (paths) => ipcRenderer.invoke('system:trash-paths', paths),
   pickFile: () => ipcRenderer.invoke('system:pick-file'),
   pickDirectory: () => ipcRenderer.invoke('system:pick-directory'),
   checkDirectory: (path) => ipcRenderer.invoke('system:check-directory', path),

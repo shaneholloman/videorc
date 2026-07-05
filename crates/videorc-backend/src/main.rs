@@ -37,6 +37,7 @@ mod repair_service;
 mod scene;
 mod screen_capture;
 mod secrets;
+mod session_ops;
 mod source_registry;
 mod source_status;
 mod state;
@@ -2322,6 +2323,115 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 _ => posters::poster_path(&session_id).exists(),
             };
             ServerResponse::ok(command.id, serde_json::json!({ "available": available }))
+        }
+        "sessions.rename" => {
+            let session_id = command
+                .params
+                .get("sessionId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let title = command
+                .params
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if title.is_empty() || title.chars().count() > 120 {
+                ServerResponse::error(
+                    command.id,
+                    "session-rename-invalid",
+                    "Titles must be 1-120 characters.",
+                )
+            } else {
+                match state.database.rename_session(session_id, &title) {
+                    Ok(true) => {
+                        ServerResponse::ok(command.id, serde_json::json!({ "renamed": true }))
+                    }
+                    Ok(false) => ServerResponse::error(
+                        command.id,
+                        "session-rename-missing",
+                        "Session not found.",
+                    ),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "session-rename-failed",
+                        error.to_string(),
+                    ),
+                }
+            }
+        }
+        "sessions.delete" => {
+            let session_ids: Vec<String> = command
+                .params
+                .get("sessionIds")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if session_ids.is_empty() {
+                ServerResponse::error(command.id, "session-delete-invalid", "No sessions given.")
+            } else {
+                match state.database.delete_sessions(&session_ids) {
+                    Ok(deleted) => {
+                        for id in &session_ids {
+                            posters::remove_session_poster(id).await;
+                        }
+                        ServerResponse::ok(command.id, serde_json::json!({ "deleted": deleted }))
+                    }
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "session-delete-failed",
+                        error.to_string(),
+                    ),
+                }
+            }
+        }
+        "sessions.duplicate" => {
+            let session_id = command
+                .params
+                .get("sessionId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            match session_ops::duplicate_session(state, session_id).await {
+                Ok(new_id) => {
+                    ServerResponse::ok(command.id, serde_json::json!({ "sessionId": new_id }))
+                }
+                Err(error) => {
+                    ServerResponse::error(command.id, "session-duplicate-failed", error.to_string())
+                }
+            }
+        }
+        "sessions.import" => {
+            let source_path = command
+                .params
+                .get("sourcePath")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let output_directory = command
+                .params
+                .get("outputDirectory")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let ffmpeg_path = ffmpeg::resolve_ffmpeg_path(
+                command
+                    .params
+                    .get("ffmpegPath")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+            );
+            match session_ops::import_recording(state, source_path, output_directory, &ffmpeg_path)
+                .await
+            {
+                Ok(id) => ServerResponse::ok(command.id, serde_json::json!({ "sessionId": id })),
+                Err(error) => {
+                    ServerResponse::error(command.id, "session-import-failed", error.to_string())
+                }
+            }
         }
         "sessions.storage" => match state.database.session_storage_totals() {
             Ok(totals) => ServerResponse::ok(command.id, totals),

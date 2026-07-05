@@ -29,6 +29,13 @@ pub struct Database {
 }
 
 #[derive(Debug, Clone)]
+pub struct SessionCloneFacts {
+    pub title: String,
+    pub output_path: Option<String>,
+    pub mp4_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct NewSession {
     pub id: String,
     pub title: String,
@@ -489,6 +496,95 @@ impl Database {
         }
 
         Ok(sessions)
+    }
+
+    /// Rename a session (Library L3). Title is validated at the RPC edge.
+    pub fn rename_session(&self, session_id: &str, title: &str) -> Result<bool> {
+        let conn = self.lock()?;
+        let changed = conn.execute(
+            "UPDATE sessions SET title = ?2 WHERE id = ?1",
+            params![session_id, title],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Delete sessions and their session-keyed satellite rows (Library L3).
+    /// FILES are not touched here — the renderer moves them to the system
+    /// Trash first (Trash is the undo; the backend never unlinks recordings).
+    pub fn delete_sessions(&self, session_ids: &[String]) -> Result<usize> {
+        let conn = self.lock()?;
+        let mut deleted = 0;
+        for id in session_ids {
+            conn.execute(
+                "DELETE FROM health_events WHERE session_id = ?1",
+                params![id],
+            )?;
+            conn.execute(
+                "DELETE FROM session_logs WHERE session_id = ?1",
+                params![id],
+            )?;
+            conn.execute(
+                "DELETE FROM ai_artifacts WHERE session_id = ?1",
+                params![id],
+            )?;
+            conn.execute(
+                "DELETE FROM live_chat_messages WHERE session_id = ?1",
+                params![id],
+            )?;
+            deleted += conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        }
+        Ok(deleted)
+    }
+
+    /// Clone a session row for Duplicate (Library L3): same config lineage,
+    /// new id/title/paths/timestamps; quality history and artifacts stay with
+    /// the original.
+    #[allow(clippy::too_many_arguments)]
+    pub fn clone_session_row(
+        &self,
+        source_id: &str,
+        new_id: &str,
+        new_title: &str,
+        new_output_path: Option<&str>,
+        new_mp4_path: Option<&str>,
+        started_at: &str,
+        file_size_bytes: Option<i64>,
+    ) -> Result<bool> {
+        let conn = self.lock()?;
+        let inserted = conn.execute(
+            "INSERT INTO sessions (id, title, started_at, ended_at, status, mode, output_path,
+                                   mp4_path, stream_preset, container, duration_ms, sources_json,
+                                   layout_json, output_json, diagnostics_json, file_size_bytes)
+             SELECT ?2, ?3, ?6, ?6, 'completed', mode, ?4, ?5, stream_preset, container,
+                    duration_ms, sources_json, layout_json, output_json, NULL, ?7
+             FROM sessions WHERE id = ?1",
+            params![
+                source_id,
+                new_id,
+                new_title,
+                new_output_path,
+                new_mp4_path,
+                started_at,
+                file_size_bytes
+            ],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    /// Full facts Duplicate needs from the source row (Library L3).
+    pub fn session_clone_facts(&self, session_id: &str) -> Result<Option<SessionCloneFacts>> {
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare("SELECT title, output_path, mp4_path FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query(params![session_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(SessionCloneFacts {
+            title: row.get(0)?,
+            output_path: row.get(1)?,
+            mp4_path: row.get(2)?,
+        }))
     }
 
     /// The visible file + duration for one session (poster backfill, L2).

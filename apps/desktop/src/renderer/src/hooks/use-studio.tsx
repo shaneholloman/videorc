@@ -494,6 +494,10 @@ export type StudioContextValue = {
   stopSession: () => Promise<void>
   remuxSession: (sessionId: string) => Promise<void>
   ensureSessionPoster: (sessionId: string) => Promise<boolean>
+  renameSession: (sessionId: string, title: string) => Promise<void>
+  deleteSessions: (targets: SessionSummary[]) => Promise<void>
+  duplicateSession: (sessionId: string) => Promise<void>
+  importRecording: () => Promise<void>
   sessionStorageTotals: SessionStorageTotals | null
   runAiWorkflow: (sessionId: string) => Promise<void>
   exportPublishPack: (sessionId: string) => Promise<void>
@@ -1797,10 +1801,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       return
     }
 
-    const nextSessions = await activeClient.request<SessionSummary[]>('sessions.list', {
-      limit: 200
-    })
+    const [nextSessions, nextTotals] = await Promise.all([
+      activeClient.request<SessionSummary[]>('sessions.list', { limit: 200 }),
+      activeClient.request<SessionStorageTotals>('sessions.storage')
+    ])
     setSessions(nextSessions)
+    setSessionStorageTotals(nextTotals)
   }, [])
 
   const refreshScreensForClient = useCallback(async (activeClient: BackendClient | null) => {
@@ -4967,6 +4973,81 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     stopRequestPending
   ])
 
+  const renameSession = useCallback(
+    async (sessionId: string, title: string): Promise<void> => {
+      if (!client) {
+        throw new Error('Backend is not connected.')
+      }
+      await client.request('sessions.rename', { sessionId, title })
+      await refreshSessions(client)
+    },
+    [client, refreshSessions]
+  )
+
+  // Delete = files to the system Trash FIRST (Trash is the undo), then the
+  // rows. If any file refuses to move, its session row stays too — the list
+  // never lies about what is on disk.
+  const deleteSessions = useCallback(
+    async (targets: SessionSummary[]): Promise<void> => {
+      if (!client) {
+        throw new Error('Backend is not connected.')
+      }
+      const paths = targets.flatMap((session) =>
+        [session.outputPath, session.mp4Path].filter((path): path is string => Boolean(path))
+      )
+      const trash = await window.videorc?.trashPaths?.(paths)
+      const failedPaths = new Set(trash?.failures ?? [])
+      const deletable = targets.filter(
+        (session) =>
+          !(session.outputPath && failedPaths.has(session.outputPath)) &&
+          !(session.mp4Path && failedPaths.has(session.mp4Path))
+      )
+      if (deletable.length > 0) {
+        await client.request('sessions.delete', {
+          sessionIds: deletable.map((session) => session.id)
+        })
+      }
+      await refreshSessions(client)
+      if (failedPaths.size > 0) {
+        throw new Error(
+          `${failedPaths.size} file(s) could not be moved to Trash; their sessions were kept.`
+        )
+      }
+    },
+    [client, refreshSessions]
+  )
+
+  const duplicateSession = useCallback(
+    async (sessionId: string): Promise<void> => {
+      if (!client) {
+        throw new Error('Backend is not connected.')
+      }
+      await client.request('sessions.duplicate', { sessionId })
+      await refreshSessions(client)
+    },
+    [client, refreshSessions]
+  )
+
+  const importRecording = useCallback(async (): Promise<void> => {
+    if (!client) {
+      throw new Error('Backend is not connected.')
+    }
+    const sourcePath = await window.videorc?.pickFile?.()
+    if (!sourcePath) {
+      return
+    }
+    const outputDirectory = settings.outputDirectory?.trim()
+    if (!outputDirectory) {
+      throw new Error('Set an output directory in Settings before importing.')
+    }
+    await client.request('sessions.import', {
+      sourcePath,
+      outputDirectory,
+      ffmpegPath: settings.ffmpegPath.trim() || undefined
+    })
+    await refreshSessions(client)
+  }, [client, refreshSessions, settings.ffmpegPath, settings.outputDirectory])
+
   const ensureSessionPoster = useCallback(
     async (sessionId: string): Promise<boolean> => {
       if (!client) {
@@ -5597,6 +5678,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       stopSession,
       remuxSession,
       ensureSessionPoster,
+      renameSession,
+      deleteSessions,
+      duplicateSession,
+      importRecording,
       sessionStorageTotals,
       runAiWorkflow,
       exportPublishPack,
@@ -5765,6 +5850,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       stopSession,
       remuxSession,
       ensureSessionPoster,
+      renameSession,
+      deleteSessions,
+      duplicateSession,
+      importRecording,
       sessionStorageTotals,
       runAiWorkflow,
       exportPublishPack,

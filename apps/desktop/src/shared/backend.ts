@@ -2265,6 +2265,8 @@ export interface VideorcApi {
   /** Open a file in the system default app (Library Play); resolves to an
    * error string when the OS refuses, empty string on success. */
   openPath: (path: string) => Promise<string>
+  /** Move files to the system Trash; returns the paths that could not move. */
+  trashPaths: (paths: string[]) => Promise<{ failures: string[] }>
   onOAuthCallbackUrl: (callback: (callbackUrl: string) => void) => () => void
   /**
    * Page-navigation shortcuts (⌘1–⌘9, ⌘,) routed from the main process. They
