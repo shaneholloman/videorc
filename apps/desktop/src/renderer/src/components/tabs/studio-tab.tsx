@@ -259,7 +259,6 @@ export function StudioTab(): ReactElement {
               canStop={canStop}
               liveStreamBlockedReason={liveStreamBlockedReason}
               recordBlockedReason={recordBlockedReason}
-              recordingState={recording.state}
               startRequestPending={startRequestPending}
               stopLabel={stopLabel}
               onLiveStream={handleLiveStream}

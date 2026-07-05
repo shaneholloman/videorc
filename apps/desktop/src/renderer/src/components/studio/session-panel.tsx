@@ -2,7 +2,6 @@ import {
   Aperture,
   Broadcast,
   CaretRight,
-  Clock,
   FrameCorners,
   ImageSquare,
   Info,
@@ -13,7 +12,6 @@ import {
 import type { ReactElement, ReactNode } from 'react'
 
 import { PanelSection } from '@/components/panel-section'
-import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { useWorkspaceNav } from '@/components/workspace-nav'
@@ -22,8 +20,6 @@ import {
   outputSummary,
   recordingQuality,
   sessionMode,
-  sessionStatusLabel,
-  sessionStatusTone,
   streamingSummary
 } from '@/lib/studio-session-view'
 
@@ -36,7 +32,6 @@ import {
  */
 export function SessionPanel({
   active,
-  recordingState,
   startRequestPending,
   recordBlockedReason,
   liveStreamBlockedReason,
@@ -49,7 +44,6 @@ export function SessionPanel({
   onStop
 }: {
   active: boolean
-  recordingState: string
   startRequestPending: boolean
   recordBlockedReason: string | null
   liveStreamBlockedReason: string | null
@@ -67,23 +61,13 @@ export function SessionPanel({
   onLiveStream: () => void
   onStop: () => void
 }): ReactElement {
-  const { captureConfig, wsStatus } = useStudio()
+  const { captureConfig } = useStudio()
   const { openStudioPanel, setActive } = useWorkspaceNav()
   const video = captureConfig.video
 
   return (
-    <PanelSection title="Session">
+    <PanelSection>
       <div className="flex flex-col gap-0.5">
-        <SessionRow
-          icon={Clock}
-          label="Status"
-          value={
-            <StatusBadge
-              tone={sessionStatusTone(recordingState, wsStatus)}
-              value={sessionStatusLabel(recordingState, wsStatus)}
-            />
-          }
-        />
         <SessionRow
           icon={Record}
           label="Mode"
@@ -110,7 +94,6 @@ export function SessionPanel({
       </div>
 
       <div className="flex flex-col gap-2 border-t border-border pt-4">
-        <span className="text-xs font-medium text-muted-foreground">Session controls</span>
         <div className="flex gap-2">
           {active ? (
             <Button disabled={!canStop} size="sm" variant="destructive" onClick={onStop}>
