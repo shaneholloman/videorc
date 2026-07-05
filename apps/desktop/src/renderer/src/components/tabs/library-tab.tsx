@@ -1,22 +1,26 @@
 import {
   ArrowCounterClockwise,
+  ArrowsDownUp,
   ChatCircle,
   CheckCircle,
   CircleNotch,
   DotsThree,
   FileVideo,
   FolderOpen,
+  MagnifyingGlass,
+  Play,
   Sparkle,
+  VideoCamera,
   WarningCircle,
   Wrench
 } from '@phosphor-icons/react'
-import { type ReactElement, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactElement } from 'react'
 import { toast } from 'sonner'
 
 import { PageHeader } from '@/components/page'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,24 +29,132 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Empty, EmptyDescription, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useWorkspaceNav } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 import type { FileAssessment, GateStatus, SessionSummary } from '@/lib/backend'
-import { dayLabel, durationMsLabel, isActiveRecordingState } from '@/lib/format'
-import { recordingQualityState, type RecordingQualityState } from '@/lib/recording-quality'
+import { dayLabel, durationMsLabel, formatBytes, isActiveRecordingState } from '@/lib/format'
+import {
+  LIBRARY_FILTERS,
+  filterLibrarySessions,
+  libraryStorageLabel,
+  sessionFormatLabel,
+  sessionPosterUrl,
+  sortLibrarySessions,
+  toggleAllLibrarySelection,
+  toggleLibrarySelection,
+  type LibraryFilter,
+  type LibrarySort
+} from '@/lib/library-view'
+import { recordingQualityState } from '@/lib/recording-quality'
+import { cn } from '@/lib/utils'
 
+// The Library as a recordings manager (Library rewrite L4): a table of every
+// session — poster, name, scene, quality, duration, size, format, actions —
+// with filter/sort/search on top and an honest storage footer below. All list
+// logic is pure (lib/library-view); this component is the shell.
 export function LibraryTab({
   onOpenInAi
 }: {
   onOpenInAi: (sessionId: string) => void
 }): ReactElement {
-  const { sessions } = useStudio()
+  const { sessions, sessionStorageTotals, settings } = useStudio()
+  const { setActive } = useWorkspaceNav()
+  const [filter, setFilter] = useState<LibraryFilter>('all')
+  const [sort, setSort] = useState<LibrarySort>('newest')
+  const [query, setQuery] = useState('')
+  const [selected, setSelected] = useState<string[]>([])
+  const [freeBytes, setFreeBytes] = useState<number | null>(null)
+
+  const visible = useMemo(
+    () => sortLibrarySessions(filterLibrarySessions(sessions, filter, query), sort),
+    [sessions, filter, query, sort]
+  )
+  const visibleIds = useMemo(() => visible.map((session) => session.id), [visible])
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selected.includes(id))
+
+  // Free space is an Electron-side directory fact (same source as Settings).
+  useEffect(() => {
+    const directory = settings.outputDirectory?.trim()
+    if (!directory || !window.videorc?.checkDirectory) {
+      setFreeBytes(null)
+      return
+    }
+    let cancelled = false
+    void window.videorc
+      .checkDirectory(directory)
+      .then((facts) => {
+        if (!cancelled) {
+          setFreeBytes(facts.freeBytes)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [settings.outputDirectory, sessions.length])
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       <PageHeader
+        description="Every recording and stream becomes a local session. Files stay on disk; AI work happens in Publish."
         title="Library"
-        description="Every recording and stream becomes a local session. Files stay on disk; AI work happens in the AI tab."
+        action={
+          <Button size="sm" onClick={() => setActive('studio')}>
+            <VideoCamera data-icon="inline-start" weight="fill" />
+            New Recording
+          </Button>
+        }
       />
+
+      {/* Toolbar: filter · sort · search. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Select value={filter} onValueChange={(value) => setFilter(value as LibraryFilter)}>
+          <SelectTrigger className="h-8 w-40" size="sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {LIBRARY_FILTERS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          title={
+            sort === 'newest'
+              ? 'Newest first — click for oldest'
+              : 'Oldest first — click for newest'
+          }
+          variant="outline"
+          onClick={() => setSort((current) => (current === 'newest' ? 'oldest' : 'newest'))}
+        >
+          <ArrowsDownUp data-icon="inline-start" />
+          {sort === 'newest' ? 'Newest' : 'Oldest'}
+        </Button>
+        <div className="relative min-w-48 flex-1">
+          <MagnifyingGlass className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            aria-label="Search recordings"
+            className="h-8 pl-8"
+            placeholder="Search recordings…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+      </div>
+
       {sessions.length === 0 ? (
         <Empty className="rounded-panel border py-16">
           <EmptyMedia variant="icon">
@@ -54,87 +166,52 @@ export function LibraryTab({
           </EmptyDescription>
         </Empty>
       ) : (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-          {sessions.map((session) => (
-            <SessionRow
-              key={session.id}
-              onOpenInAi={() => onOpenInAi(session.id)}
-              session={session}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-panel border">
+          {/* Header row */}
+          <div className="grid grid-cols-[2rem_minmax(0,1fr)_8rem_7rem_5.5rem_5.5rem_4.5rem_8rem] items-center gap-2 border-b px-3 py-2 text-[12.5px] font-medium text-subtle">
+            <Checkbox
+              aria-label="Select all visible recordings"
+              checked={allVisibleSelected}
+              onCheckedChange={() =>
+                setSelected((current) => toggleAllLibrarySelection(current, visibleIds))
+              }
             />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function SessionRow({
-  session,
-  onOpenInAi
-}: {
-  session: SessionSummary
-  onOpenInAi: () => void
-}): ReactElement {
-  const { openSessionCommentsWindow } = useStudio()
-  const filePath = session.mp4Path ?? session.outputPath ?? null
-  // "tee" is the internal ffmpeg fan-out container for record+stream sessions
-  // (F-019) — show the user what the file actually is instead.
-  const format = session.mp4Path
-    ? 'MP4'
-    : session.container
-      ? session.container.toLowerCase() === 'tee'
-        ? 'MKV + stream'
-        : session.container.toUpperCase()
-      : null
-
-  return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-row border border-border p-3">
-      {session.title ? (
-        <span className="truncate text-sm font-semibold">{session.title}</span>
-      ) : null}
-      {/* Date / mode / status on one clamped line at full card width — it no
-          longer shares a row with the badges, so it can't be crushed into a
-          token-per-line wrap the way it was in the old justify-between layout. */}
-      <span className="truncate text-xs text-muted-foreground">
-        {dayLabel(session.startedAt)} · {session.mode} · {session.status}
-      </span>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {format ? <Badge variant={session.mp4Path ? 'success' : 'outline'}>{format}</Badge> : null}
-        {typeof session.durationMs === 'number' ? (
-          <Badge variant="secondary">{durationMsLabel(session.durationMs)}</Badge>
-        ) : null}
-        {session.aiArtifacts.length ? (
-          <Badge variant="secondary">{session.aiArtifacts.length} AI</Badge>
-        ) : null}
-        {session.commentCount ? (
-          <Badge variant="secondary">
-            {session.commentCount} {session.commentCount === 1 ? 'comment' : 'comments'}
-          </Badge>
-        ) : null}
-      </div>
-      <p
-        className="truncate rounded-row bg-muted/40 px-2.5 py-1.5 font-mono text-xs text-muted-foreground"
-        title={session.mp4Path ?? session.outputPath ?? undefined}
-      >
-        {session.mp4Path ?? session.outputPath ?? session.streamPreset ?? 'No local file'}
-      </p>
-      {filePath ? (
-        <SessionActions filePath={filePath} session={session} onOpenInAi={onOpenInAi} />
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="secondary" onClick={onOpenInAi}>
-            <Sparkle data-icon="inline-start" weight="fill" />
-            Open in AI
-          </Button>
-          {session.commentCount ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void openSessionCommentsWindow(session.id)}
-            >
-              <ChatCircle data-icon="inline-start" />
-              Open Comments
-            </Button>
+            <span>Name</span>
+            <span>Session</span>
+            <span>Status</span>
+            <span>Duration</span>
+            <span>Size</span>
+            <span />
+            <span className="text-right">Actions</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {visible.length === 0 ? (
+              <p className="px-4 py-10 text-center text-sm text-muted-foreground">
+                No recordings match this filter.
+              </p>
+            ) : (
+              visible.map((session) => (
+                <LibraryRow
+                  key={session.id}
+                  selected={selected.includes(session.id)}
+                  session={session}
+                  onOpenInAi={() => onOpenInAi(session.id)}
+                  onToggleSelected={() =>
+                    setSelected((current) => toggleLibrarySelection(current, session.id))
+                  }
+                />
+              ))
+            )}
+          </div>
+          {/* Honest storage footer: real totals + real free space, no quota bar. */}
+          {sessionStorageTotals ? (
+            <div className="border-t px-4 py-2 text-xs text-muted-foreground">
+              {libraryStorageLabel({
+                count: sessionStorageTotals.count,
+                totalBytes: sessionStorageTotals.totalBytes,
+                freeBytes
+              })}
+            </div>
           ) : null}
         </div>
       )}
@@ -142,18 +219,149 @@ function SessionRow({
   )
 }
 
+function LibraryRow({
+  session,
+  selected,
+  onToggleSelected,
+  onOpenInAi
+}: {
+  session: SessionSummary
+  selected: boolean
+  onToggleSelected: () => void
+  onOpenInAi: () => void
+}): ReactElement {
+  const filePath = session.mp4Path ?? session.outputPath ?? null
+  const format = sessionFormatLabel(session)
+  return (
+    <div
+      className={cn(
+        'grid grid-cols-[2rem_minmax(0,1fr)_8rem_7rem_5.5rem_5.5rem_4.5rem_8rem] items-center gap-2 border-b border-border/60 px-3 py-2 transition-colors last:border-b-0 hover:bg-accent/50',
+        selected && 'bg-accent/60'
+      )}
+      data-videorc-library-row={session.id}
+    >
+      <Checkbox
+        aria-label={`Select ${session.title || 'session'}`}
+        checked={selected}
+        onCheckedChange={onToggleSelected}
+      />
+      <div className="flex min-w-0 items-center gap-3">
+        <SessionPoster session={session} />
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">{session.title || 'Untitled session'}</p>
+          <p className="truncate text-xs text-muted-foreground">
+            {dayLabel(session.startedAt)}
+            {!filePath ? ' · no local file' : ''}
+          </p>
+        </div>
+      </div>
+      <div className="min-w-0">
+        {session.sceneLabel ? (
+          <Badge className="max-w-full" variant="outline">
+            <span className="truncate">{session.sceneLabel}</span>
+          </Badge>
+        ) : null}
+      </div>
+      <SessionQuality session={session} />
+      <span className="text-xs text-muted-foreground tabular-nums">
+        {typeof session.durationMs === 'number' ? durationMsLabel(session.durationMs) : '—'}
+      </span>
+      <span className="text-xs text-muted-foreground tabular-nums">
+        {formatBytes(session.fileSizeBytes)}
+      </span>
+      <div>
+        {format ? <Badge variant={session.mp4Path ? 'success' : 'outline'}>{format}</Badge> : null}
+      </div>
+      <RowActions filePath={filePath} session={session} onOpenInAi={onOpenInAi} />
+    </div>
+  )
+}
+
+/** Poster with one lazy backfill attempt: older sessions have no poster yet;
+ * a 404 triggers a single sessions.poster round-trip (idle-aware backend). */
+function SessionPoster({ session }: { session: SessionSummary }): ReactElement {
+  const { connection, ensureSessionPoster } = useStudio()
+  const [attempt, setAttempt] = useState(0)
+  const [failed, setFailed] = useState(false)
+  const url = sessionPosterUrl(connection, session)
+  const source = url && attempt > 0 ? `${url}&attempt=${attempt}` : url
+  return (
+    <span className="grid h-10 w-[4.5rem] shrink-0 place-items-center overflow-hidden rounded-row border bg-muted/30">
+      {source && !failed ? (
+        <img
+          alt=""
+          className="size-full object-cover"
+          src={source}
+          onError={() => {
+            if (attempt === 0) {
+              void ensureSessionPoster(session.id).then((available) => {
+                if (available) {
+                  setAttempt(1)
+                } else {
+                  setFailed(true)
+                }
+              })
+            } else {
+              setFailed(true)
+            }
+          }}
+        />
+      ) : (
+        <FileVideo className="size-4 text-muted-foreground/50" weight="duotone" />
+      )}
+    </span>
+  )
+}
+
+/** Status cell: quality label + issue detail on hover (the F5 badge model). */
+function SessionQuality({ session }: { session: SessionSummary }): ReactElement {
+  const quality = recordingQualityState({
+    qualityStatus: session.qualityStatus,
+    assessment: null,
+    result: null
+  })
+  if (!quality) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {session.status === 'completed' ? 'Good' : session.status}
+      </span>
+    )
+  }
+  const badge = <Badge variant={quality.badgeVariant}>{quality.label}</Badge>
+  if (quality.reasons.length === 0) {
+    return badge
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-default items-center gap-1">
+          {badge}
+          <WarningCircle className="size-3.5 text-warning" weight="fill" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-sm">
+        <p className="font-medium">{quality.alertTitle ?? 'Recording quality'}</p>
+        <ul className="mt-1 list-disc pl-4">
+          {quality.reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 type RepairPhase = 'idle' | 'checking' | 'assessed' | 'repairing' | 'done'
 
-// One actions surface per session: Open-in-AI stays the visible primary,
-// everything file-shaped (export, quality check, repair, restore) lives in
-// the row menu. Library is the single home of session artifacts (ux-ia plan
-// slice 3 — Export MP4 moved here from the old Recording artifacts grid).
-function SessionActions({
+// The row's trailing action cluster: Play + kebab. Everything file-shaped
+// (reveal, export, quality check, repair, restore) lives in the menu — the
+// Library remains the single home of session artifacts (ux-ia slice 3).
+function RowActions({
   filePath,
   session,
   onOpenInAi
 }: {
-  filePath: string
+  filePath: string | null
   session: SessionSummary
   onOpenInAi: () => void
 }): ReactElement {
@@ -168,7 +376,6 @@ function SessionActions({
   } = useStudio()
   const [phase, setPhase] = useState<RepairPhase>('idle')
   const [assessment, setAssessment] = useState<FileAssessment | null>(null)
-  const [result, setResult] = useState<GateStatus | null>(null)
   const [hasBackup, setHasBackup] = useState(false)
 
   const busy = phase === 'checking' || phase === 'repairing'
@@ -180,18 +387,23 @@ function SessionActions({
     session.status === 'completed' && session.outputPath?.endsWith('.mkv') && !session.mp4Path
   )
   const canOpenComments = session.commentCount > 0
-  const quality = recordingQualityState({
-    qualityStatus: session.qualityStatus,
-    assessment,
-    result
-  })
+
+  const playFile = async (): Promise<void> => {
+    if (!filePath || !window.videorc?.openPath) {
+      return
+    }
+    const problem = await window.videorc.openPath(filePath)
+    if (problem) {
+      toast.error(problem)
+    }
+  }
 
   const runCheck = async (): Promise<void> => {
+    if (!filePath) return
     setPhase('checking')
     try {
       const next = await assessRecording(filePath)
       setAssessment(next)
-      setResult(null)
       setHasBackup(next.hasBackup)
       setPhase('assessed')
     } catch (error) {
@@ -201,10 +413,10 @@ function SessionActions({
   }
 
   const runRepair = async (): Promise<void> => {
+    if (!filePath) return
     setPhase('repairing')
     try {
-      const next = await repairRecording(filePath)
-      setResult(next)
+      const next: GateStatus = await repairRecording(filePath)
       setPhase('done')
       if (next.status === 'repaired') {
         setHasBackup(true)
@@ -225,13 +437,13 @@ function SessionActions({
   }
 
   const runRestore = async (): Promise<void> => {
+    if (!filePath) return
     try {
       const restored = await restoreRecording(filePath)
       if (restored) {
         toast.success('Restored the original recording from backup.')
         setHasBackup(false)
         setAssessment(null)
-        setResult(null)
         setPhase('idle')
       } else {
         toast.info('No backup was found for this recording.')
@@ -241,118 +453,97 @@ function SessionActions({
     }
   }
 
-  const revealFile = (): void => {
-    const reveal = window.videorc?.revealPath
-    if (!reveal) {
-      toast.error('Reveal is not available on this platform.')
-      return
-    }
-    void reveal(filePath)
-  }
-
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="secondary" onClick={onOpenInAi}>
-          <Sparkle data-icon="inline-start" weight="fill" />
-          Open in AI
-        </Button>
-        <Button size="sm" variant="outline" onClick={revealFile}>
-          <FolderOpen data-icon="inline-start" />
-          Reveal
-        </Button>
-        <div className="ml-auto flex items-center gap-2">
-          {captureProtected ? <Badge variant="outline">Deferred while recording</Badge> : null}
-          <RepairBadge quality={quality} />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                aria-label="Session actions"
-                className="size-8"
-                disabled={disconnected}
-                size="icon"
-                variant="ghost"
-              >
-                {busy ? (
-                  <CircleNotch className="size-4 animate-spin" />
-                ) : (
-                  <DotsThree className="size-4" weight="bold" />
-                )}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                disabled={!canExportMp4 || busy}
-                onClick={() => void remuxSession(session.id)}
-              >
-                <FileVideo />
-                Export MP4
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!canOpenComments || busy || disconnected}
-                onClick={() => void openSessionCommentsWindow(session.id)}
-              >
-                <ChatCircle />
-                Open Comments
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem disabled={busy || captureProtected} onClick={() => void runCheck()}>
-                <CheckCircle />
-                {phase === 'checking' ? 'Checking…' : 'Check quality'}
-              </DropdownMenuItem>
-              {canRepair ? (
-                <DropdownMenuItem
-                  disabled={busy || captureProtected}
-                  onClick={() => void runRepair()}
-                >
-                  <Wrench />
-                  {phase === 'repairing' ? 'Repairing…' : 'Repair & fix'}
-                </DropdownMenuItem>
-              ) : null}
-              {hasBackup || persistedRepaired ? (
-                <DropdownMenuItem
-                  disabled={busy || captureProtected}
-                  onClick={() => void runRestore()}
-                >
-                  <ArrowCounterClockwise />
-                  Restore original
-                </DropdownMenuItem>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
-      {/* Quality problems read as a compact badge; the detail lives in the
-          hover tooltip instead of a full-width alert block per session
-          (post-0.9.4 fix batch F5). */}
-      {quality && quality.reasons.length > 0 ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Badge
-              className="cursor-default self-start"
-              variant={quality.alertVariant === 'destructive' ? 'destructive' : 'warning'}
-            >
-              <WarningCircle data-icon="inline-start" />
-              {quality.reasons.length === 1 ? '1 issue' : `${quality.reasons.length} issues`}
-            </Badge>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-sm">
-            <p className="font-medium">{quality.alertTitle ?? 'Recording quality'}</p>
-            <ul className="mt-1 list-disc pl-4">
-              {quality.reasons.map((reason) => (
-                <li key={reason}>{reason}</li>
-              ))}
-            </ul>
-          </TooltipContent>
-        </Tooltip>
-      ) : null}
+    <div className="flex items-center justify-end gap-0.5">
+      <Button
+        aria-label="Play recording"
+        className="size-8"
+        disabled={!filePath}
+        size="icon"
+        title="Play in the default player"
+        variant="ghost"
+        onClick={() => void playFile()}
+      >
+        <Play className="size-4" weight="fill" />
+      </Button>
+      <Button
+        aria-label="Open in Publish"
+        className="size-8"
+        size="icon"
+        title="Open in Publish (AI)"
+        variant="ghost"
+        onClick={onOpenInAi}
+      >
+        <Sparkle className="size-4" weight="fill" />
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            aria-label="Session actions"
+            className="size-8"
+            disabled={disconnected}
+            size="icon"
+            variant="ghost"
+          >
+            {busy ? (
+              <CircleNotch className="size-4 animate-spin" />
+            ) : (
+              <DotsThree className="size-4" weight="bold" />
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem disabled={!filePath} onClick={() => void playFile()}>
+            <Play />
+            Play
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onOpenInAi}>
+            <Sparkle />
+            Open in Publish
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!filePath}
+            onClick={() => filePath && void window.videorc?.revealPath?.(filePath)}
+          >
+            <FolderOpen />
+            Show in Finder
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!canExportMp4 || busy}
+            onClick={() => void remuxSession(session.id)}
+          >
+            <FileVideo />
+            Export MP4
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!canOpenComments || busy || disconnected}
+            onClick={() => void openSessionCommentsWindow(session.id)}
+          >
+            <ChatCircle />
+            Open Comments
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            disabled={!filePath || busy || captureProtected}
+            onClick={() => void runCheck()}
+          >
+            <CheckCircle />
+            {phase === 'checking' ? 'Checking…' : 'Check quality'}
+          </DropdownMenuItem>
+          {canRepair ? (
+            <DropdownMenuItem disabled={busy || captureProtected} onClick={() => void runRepair()}>
+              <Wrench />
+              {phase === 'repairing' ? 'Repairing…' : 'Repair & fix'}
+            </DropdownMenuItem>
+          ) : null}
+          {hasBackup || persistedRepaired ? (
+            <DropdownMenuItem disabled={busy || captureProtected} onClick={() => void runRestore()}>
+              <ArrowCounterClockwise />
+              Restore original
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
-}
-
-function RepairBadge({ quality }: { quality: RecordingQualityState | null }): ReactElement | null {
-  if (!quality) {
-    return null
-  }
-  return <Badge variant={quality.badgeVariant}>{quality.label}</Badge>
 }

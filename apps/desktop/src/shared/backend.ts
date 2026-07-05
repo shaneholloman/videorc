@@ -2262,6 +2262,9 @@ export interface VideorcApi {
   openSystemPermissions: (pane?: SystemPermissionPane) => Promise<void>
   revealPermissionTarget: () => Promise<void>
   revealPath: (path: string) => Promise<void>
+  /** Open a file in the system default app (Library Play); resolves to an
+   * error string when the OS refuses, empty string on success. */
+  openPath: (path: string) => Promise<string>
   onOAuthCallbackUrl: (callback: (callbackUrl: string) => void) => () => void
   /**
    * Page-navigation shortcuts (⌘1–⌘9, ⌘,) routed from the main process. They

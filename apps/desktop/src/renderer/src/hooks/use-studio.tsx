@@ -63,6 +63,7 @@ import {
 import type {
   AiCapabilities,
   ChatSendResult,
+  SessionStorageTotals,
   AiQuotaStatus,
   AiWorkflowResult,
   AudioMeterResult,
@@ -492,6 +493,8 @@ export type StudioContextValue = {
   startSession: () => Promise<void>
   stopSession: () => Promise<void>
   remuxSession: (sessionId: string) => Promise<void>
+  ensureSessionPoster: (sessionId: string) => Promise<boolean>
+  sessionStorageTotals: SessionStorageTotals | null
   runAiWorkflow: (sessionId: string) => Promise<void>
   exportPublishPack: (sessionId: string) => Promise<void>
   assessRecording: (path: string) => Promise<FileAssessment>
@@ -847,6 +850,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [streamTargets, setStreamTargets] = useState<StreamTargetRuntime[]>([])
   const [diagnosticStats, setDiagnosticStats] = useState<DiagnosticStats>(idleDiagnosticStats)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [sessionStorageTotals, setSessionStorageTotals] = useState<SessionStorageTotals | null>(
+    null
+  )
   const [screens, setScreens] = useState<StreamScreen[]>([])
   const [activeScreen, setActiveScreen] = useState<StreamScreen | null>(null)
   const [platformAccounts, setPlatformAccounts] = useState<PlatformAccount[]>([])
@@ -1791,7 +1797,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       return
     }
 
-    const nextSessions = await activeClient.request<SessionSummary[]>('sessions.list')
+    const nextSessions = await activeClient.request<SessionSummary[]>('sessions.list', {
+      limit: 200
+    })
     setSessions(nextSessions)
   }, [])
 
@@ -2603,6 +2611,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         nextAccount,
         nextDevices,
         nextSessions,
+        nextSessionStorage,
         nextDiagnostics,
         nextScreens,
         nextActiveScreen,
@@ -2619,7 +2628,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         client.request<DeviceList>('devices.list', {
           ffmpegPath: settings.ffmpegPath.trim() || undefined
         }),
-        client.request<SessionSummary[]>('sessions.list'),
+        client.request<SessionSummary[]>('sessions.list', { limit: 200 }),
+        client.request<SessionStorageTotals>('sessions.storage'),
         client.request<DiagnosticStats>('diagnostics.stats'),
         client.request<StreamScreen[]>('screens.list'),
         client.request<StreamScreen | null>('screens.active'),
@@ -2640,6 +2650,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setEntitlements(nextEntitlements)
       setDeviceList(nextDevices)
       setSessions(nextSessions)
+      setSessionStorageTotals(nextSessionStorage)
       setDiagnosticStats(nextDiagnostics)
       setScreens(nextScreens)
       setActiveScreen(nextActiveScreen)
@@ -4956,6 +4967,24 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     stopRequestPending
   ])
 
+  const ensureSessionPoster = useCallback(
+    async (sessionId: string): Promise<boolean> => {
+      if (!client) {
+        return false
+      }
+      try {
+        const result = await client.request<{ available: boolean }>('sessions.poster', {
+          sessionId,
+          ffmpegPath: settings.ffmpegPath.trim() || undefined
+        })
+        return result.available
+      } catch {
+        return false
+      }
+    },
+    [client, settings.ffmpegPath]
+  )
+
   const remuxSession = useCallback(
     async (sessionId: string) => {
       if (!client) {
@@ -5567,6 +5596,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       startSession,
       stopSession,
       remuxSession,
+      ensureSessionPoster,
+      sessionStorageTotals,
       runAiWorkflow,
       exportPublishPack,
       assessRecording,
@@ -5733,6 +5764,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       startSession,
       stopSession,
       remuxSession,
+      ensureSessionPoster,
+      sessionStorageTotals,
       runAiWorkflow,
       exportPublishPack,
       assessRecording,

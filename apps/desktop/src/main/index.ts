@@ -7143,6 +7143,13 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('system:reveal-permission-target', () => revealPermissionTarget())
   ipcMain.handle('system:reveal-path', (_event, targetPath: string) => revealPath(targetPath))
+  // Library Play action: open the recording in the system default player.
+  ipcMain.handle('system:open-path', async (_event, targetPath: unknown) => {
+    if (typeof targetPath !== 'string' || targetPath.length === 0) {
+      return 'Invalid path.'
+    }
+    return shell.openPath(targetPath)
+  })
   ipcMain.handle('screens:pick-image', () => pickScreenImage())
   ipcMain.handle('system:pick-file', () => pickFilePath())
   ipcMain.handle('system:pick-directory', () => pickDirectoryPath())
