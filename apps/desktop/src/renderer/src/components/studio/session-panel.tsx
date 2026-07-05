@@ -114,7 +114,7 @@ export function SessionPanel({
                 <Kbd className="ml-1.5">␣</Kbd>
               </Button>
               <Button
-                className={`${HERO_CONTROL} border-border bg-card/60 hover:bg-card/80 dark:hover:bg-card/80`}
+                className={`${HERO_CONTROL} border-border bg-card/60 hover:border-foreground/20 hover:bg-[color-mix(in_oklch,var(--card),var(--foreground)_8%)]`}
                 disabled={Boolean(liveStreamBlockedReason) || startRequestPending}
                 title={liveStreamBlockedReason ?? undefined}
                 variant="outline"
