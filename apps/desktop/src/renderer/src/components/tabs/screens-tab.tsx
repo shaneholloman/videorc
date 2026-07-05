@@ -136,7 +136,7 @@ function ScreenTile({
           <img
             alt=""
             className="size-full object-cover"
-            src={fileUrlFromPath(screen.imagePath)}
+            src={managedScreenAssetUrl(screen.imagePath)}
             onError={() => setImageFailed(true)}
           />
         ) : (
@@ -229,8 +229,11 @@ function ScreenTile({
   )
 }
 
-function fileUrlFromPath(path: string): string {
+// Raw file:// subresource loads are blocked by the renderer origin, so every
+// card errored and read "Missing" while the upload sat safely in app storage.
+// The managed videorc-asset://screen host serves the Screens dir by basename.
+function managedScreenAssetUrl(path: string): string {
   const normalized = path.replace(/\\/g, '/')
-  const prefix = /^[A-Za-z]:/.test(normalized) ? 'file:///' : 'file://'
-  return `${prefix}${encodeURI(normalized)}`
+  const basename = normalized.slice(normalized.lastIndexOf('/') + 1)
+  return `videorc-asset://screen/${encodeURIComponent(basename)}`
 }

@@ -6985,6 +6985,18 @@ function resolveManagedAvatarFile(fileName: string): string | null {
   return existsSync(candidate) ? candidate : null
 }
 
+// Stream-takeover screen images live in the backend-managed Screens dir; the
+// renderer addresses them by bare basename through the same scoped protocol
+// (raw file:// subresource loads are blocked and branded every upload
+// "Missing" — the background bug all over again).
+function resolveManagedScreenFile(fileName: string): string | null {
+  if (!fileName || fileName.includes('/') || fileName.includes('\\') || fileName.includes('..')) {
+    return null
+  }
+  const candidate = join(app.getPath('userData'), 'Screens', fileName)
+  return existsSync(candidate) ? candidate : null
+}
+
 function registerManagedAssetProtocol(): void {
   protocol.handle(MANAGED_ASSET_SCHEME, (request) => {
     try {
@@ -6995,7 +7007,9 @@ function registerManagedAssetProtocol(): void {
           ? resolveManagedBackgroundFile(fileName)
           : url.host === 'avatar'
             ? resolveManagedAvatarFile(fileName)
-            : null
+            : url.host === 'screen'
+              ? resolveManagedScreenFile(fileName)
+              : null
       if (!resolved) {
         return new Response('Not found', { status: 404 })
       }
