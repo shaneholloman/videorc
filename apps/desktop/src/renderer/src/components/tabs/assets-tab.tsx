@@ -47,6 +47,7 @@ import {
   type BackgroundAssetSlotStatus,
   type BackgroundFit
 } from '@/lib/background-assets'
+import { TakeoverScreensSection } from '@/components/takeover-screens-section'
 import { useStudio } from '@/hooks/use-studio'
 import { cn } from '@/lib/utils'
 
@@ -205,6 +206,8 @@ export function AssetsTab(): ReactElement {
           setRegistry((current) => setAssetStyle(current, assetId, patch))
         }
       />
+
+      <TakeoverScreensSection />
     </div>
   )
 }

@@ -13,7 +13,6 @@ import type { ReactElement } from 'react'
 import { PanelSection } from '@/components/panel-section'
 import { SceneStage } from '@/components/scene/scene-stage'
 import { PowerSlider } from '@/components/power-slider'
-import { ScreensTab } from '@/components/tabs/screens-tab'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldContent, FieldLabel } from '@/components/ui/field'
@@ -452,10 +451,6 @@ export function LayoutTab(): ReactElement {
       </div>
 
       <SceneBackgroundSection />
-
-      {/* Takeover images are scene content (they replace the screen source),
-          so the Screens grid lives on the Scene page (ux-ia plan slice 4). */}
-      <ScreensTab />
     </div>
   )
 }

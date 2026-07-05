@@ -19,7 +19,11 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useStudio } from '@/hooks/use-studio'
 import type { StreamScreen } from '@/lib/backend'
 
-export function ScreensTab(): ReactElement {
+// Takeover-image manager (upload/rename/reorder/delete). Lives on the Assets
+// page: the active takeover is global session state, not scene content — it
+// replaces the output regardless of scene, so the old Scene-page home was wrong
+// on its own terms.
+export function TakeoverScreensSection(): ReactElement {
   const {
     activeScreen,
     activateScreen,
@@ -59,7 +63,7 @@ export function ScreensTab(): ReactElement {
           </EmptyDescription>
         </Empty>
       ) : (
-        // Bounded section: this grid lives inside the Scene page now.
+        // Bounded section: the grid scrolls inside the Assets page stack.
         <ScrollArea className="max-h-[28rem] overflow-y-auto pr-3">
           <Gallery className="gap-3">
             {screens.map((screen, index) => (
