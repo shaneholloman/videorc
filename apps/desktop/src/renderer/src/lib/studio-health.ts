@@ -25,6 +25,12 @@ export interface StudioHealth {
 export interface StudioHealthPolicy {
   /** Production macOS preview must use the native CAMetalLayer path. Disable only for debug/proof runs. */
   requireNativePreview?: boolean
+  /** Whether a preview (docked or popped out) is currently open. With the
+   * preview deliberately closed there is no preview path to police — an
+   * absent transport must not read as a health failure. Recording parity is
+   * guarded by the compositor checks, not the preview surface. Defaults to
+   * true (the strict reading) for callers that don't know. */
+  previewOpen?: boolean
 }
 
 // Live preview present-latency budget (ms) from the preview/recording parity plan.
@@ -58,7 +64,8 @@ export function studioHealth(
   }
 
   const requireNativePreview = policy.requireNativePreview ?? true
-  if (requireNativePreview && shouldBlockForNonNativePreview(stats, active)) {
+  const previewOpen = policy.previewOpen ?? true
+  if (requireNativePreview && shouldBlockForNonNativePreview(stats, active, previewOpen)) {
     return {
       tone: 'error',
       value: 'Blocked',
@@ -102,7 +109,11 @@ export function studioHealth(
   return { tone: 'good', value: active ? 'Live' : 'Ready' }
 }
 
-function shouldBlockForNonNativePreview(stats: StudioHealthInput, active: boolean): boolean {
+function shouldBlockForNonNativePreview(
+  stats: StudioHealthInput,
+  active: boolean,
+  previewOpen: boolean
+): boolean {
   if (
     stats.previewTransport === 'native-surface' &&
     stats.previewSurfaceBacking === 'cametal-layer'
@@ -110,9 +121,15 @@ function shouldBlockForNonNativePreview(stats: StudioHealthInput, active: boolea
     return false
   }
   if (stats.previewTransport && stats.previewTransport !== 'unavailable') {
+    // A live non-native transport is a real regression regardless of the
+    // preview window state — something is presenting frames off-path.
     return true
   }
-  return active
+  // No transport at all: only a problem while a session is active AND a
+  // preview is open expecting frames. Recording with the preview closed
+  // showed a red "requires native CAMetalLayer … unavailable / none" banner
+  // (0.9.10 by-eye) for a state that is perfectly healthy.
+  return active && previewOpen
 }
 
 function previewPathLabel(stats: StudioHealthInput): string {

@@ -73,9 +73,39 @@ describe('studioHealth', () => {
     ).toMatchObject({ tone: 'error', value: 'Blocked' })
   })
 
-  it('blocks active production preview when no native surface is available yet', () => {
+  it('blocks an active session when an OPEN preview has no native surface yet', () => {
     expect(
-      studioHealth(stats({ previewTransport: 'unavailable', previewSurfaceBacking: 'none' }), true)
+      studioHealth(
+        stats({ previewTransport: 'unavailable', previewSurfaceBacking: 'none' }),
+        true,
+        {
+          previewOpen: true
+        }
+      )
+    ).toMatchObject({ tone: 'error', value: 'Blocked' })
+  })
+
+  // 0.9.10 by-eye: recording with the preview deliberately closed showed the
+  // red "requires native CAMetalLayer … unavailable / none" banner. With no
+  // preview open there is no preview path to police — the compositor checks
+  // above own recording parity.
+  it('stays healthy while recording with the preview closed (no transport, no problem)', () => {
+    expect(
+      studioHealth(
+        stats({ previewTransport: 'unavailable', previewSurfaceBacking: 'none' }),
+        true,
+        {
+          previewOpen: false
+        }
+      )
+    ).toMatchObject({ tone: 'good', value: 'Live' })
+  })
+
+  it('still blocks a live non-native transport even with the preview window closed', () => {
+    expect(
+      studioHealth(stats({ previewTransport: 'latest-jpeg-polling' }), true, {
+        previewOpen: false
+      })
     ).toMatchObject({ tone: 'error', value: 'Blocked' })
   })
 
