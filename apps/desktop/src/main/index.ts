@@ -1074,7 +1074,16 @@ function notesWindowGlobalId(): number | undefined {
 function applyNotesWindowAlwaysOnTop(window: BrowserWindow, alwaysOnTop: boolean): void {
   window.setAlwaysOnTop(alwaysOnTop, 'floating')
   if (isMac) {
-    window.setVisibleOnAllWorkspaces(alwaysOnTop, { visibleOnFullScreen: alwaysOnTop })
+    // skipTransformProcessType is load-bearing: without it, Electron flips the
+    // app's activation policy (UIElement ↔ Foreground) to make the window join
+    // all Spaces — and that transform HIDES every other window of the app. The
+    // owner report (2026-07-07): opening Notes (with the persisted
+    // always-on-top pref) sent the whole app behind until Notes closed. The
+    // collection behavior alone is enough for floating over fullscreen.
+    window.setVisibleOnAllWorkspaces(alwaysOnTop, {
+      visibleOnFullScreen: alwaysOnTop,
+      skipTransformProcessType: true
+    })
   }
   if (alwaysOnTop) {
     window.moveTop()
