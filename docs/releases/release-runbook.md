@@ -39,6 +39,12 @@ checker (`VIDEORC_ENABLE_AUTO_UPDATE=1`) — read the feed.
 - **R2 write creds** — the `VIDEORC_DOWNLOAD_S3_*` values (same bucket as
   videorc-web), with an **Object Read & Write** token. They live in the web app's
   `.env` (`~/projects/videorcweb/.env`).
+- **YouTube OAuth secret** — `VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET` must be in
+  the build env (it lives in `~/.videorc-release.env`). The secret left source
+  when the repo went public; `option_env!` compiles it into `videorc-backend`,
+  and `release:validate:macos` **fails closed** if the built binary lacks a
+  `GOCSPX-` secret. Without it, YouTube connect in the shipped app reports a
+  missing client secret.
 - **⚠️ Bucket-less S3 endpoint** — `VIDEORC_DOWNLOAD_S3_ENDPOINT_URL` must be the
   ACCOUNT host only: `https://<account-id>.r2.cloudflarestorage.com` — **NOT**
   `.../videorc-releases`. The path-style client appends the bucket itself; an

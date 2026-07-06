@@ -35,7 +35,8 @@ describe('buildMacosReleaseArtifactChecks', () => {
         'capture entitlements (videorc-backend)',
         'capture entitlements (native_preview_host_helper)',
         'capture entitlements (ffmpeg)',
-        'capture entitlements (ffprobe)'
+        'capture entitlements (ffprobe)',
+        'bundled YouTube OAuth secret (videorc-backend)'
       ]
     )
     assert.deepEqual(checks[0].args, [
@@ -100,6 +101,25 @@ describe('capture entitlement gate', () => {
       assert.deepEqual(check.args.slice(0, 3), ['-d', '--entitlements', ':-'])
       assert.deepEqual(check.expectOutputIncludes, REQUIRED_CAPTURE_ENTITLEMENTS)
     }
+  })
+
+  it('fails closed when the release backend lacks the baked-in YouTube OAuth secret', () => {
+    // The secret left source for the public repo (2026-07-06); release builds
+    // must compile it in via VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET. The gate
+    // greps the shipped binary for the Google Desktop-client secret prefix.
+    const check = buildMacosReleaseArtifactChecks('/release/Videorc.app').find(
+      (entry) => entry.id === 'bundled-youtube-oauth-secret'
+    )
+
+    assert.ok(check)
+    assert.equal(check.command, 'grep')
+    // -a: BSD grep will not match inside a binary without it.
+    assert.deepEqual(check.args, [
+      '-q',
+      '-a',
+      'GOCSPX-',
+      '/release/Videorc.app/Contents/Resources/videorc-backend'
+    ])
   })
 
   it('pins the required entitlements to camera + microphone', () => {

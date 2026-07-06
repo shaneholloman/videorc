@@ -78,7 +78,20 @@ export function buildMacosReleaseArtifactChecks(path) {
         command: 'codesign',
         args: ['-d', '--entitlements', ':-', target.path],
         expectOutputIncludes: REQUIRED_CAPTURE_ENTITLEMENTS
-      }))
+      })),
+      {
+        // The YouTube OAuth client secret left source (public repo, 2026-07-06)
+        // and is compiled in via VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET at release
+        // build time. A release backend without it ships broken YouTube connect,
+        // so the gate proves the OUTCOME: the binary must embed a GOCSPX- secret
+        // (every Google Desktop-client secret carries that prefix).
+        id: 'bundled-youtube-oauth-secret',
+        label: 'bundled YouTube OAuth secret (videorc-backend)',
+        command: 'grep',
+        // -a is load-bearing: BSD grep refuses to match inside a binary file
+        // without it (verified 2026-07-06 — the check fails on a GOOD build).
+        args: ['-q', '-a', 'GOCSPX-', `${path}/Contents/Resources/videorc-backend`]
+      }
     ]
   }
 

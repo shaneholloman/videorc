@@ -17,22 +17,23 @@ use crate::streaming::{
 const OAUTH_STATE_TTL_MINUTES: i64 = 10;
 // The Videorc YouTube OAuth app (OrcDev's Google Cloud project, Desktop-app client).
 // OAuth client IDs are public identifiers — they appear in every consent URL — so
-// shipping one in source is standard for desktop apps. The client secret ships in
-// source too (owner's explicit decision, 2026-06-10): Google's installed-app docs
-// state the secret "is not treated as a secret" for Desktop clients, yet the token
-// exchange still REQUIRES it even with PKCE — env-only made every fresh shell fail
-// with HTTP 401. Build-time VIDEORC_BUNDLED_* or runtime VIDEORC_YOUTUBE_CLIENT_ID/
-// VIDEORC_YOUTUBE_CLIENT_SECRET still override these defaults.
+// shipping one in source is standard for desktop apps. The client SECRET is NOT in
+// source (moved to build-time injection 2026-07-06 ahead of the public repo flip:
+// Google's installed-app docs treat Desktop-client secrets as non-confidential and
+// every shipped binary embeds it anyway, but a literal in a public repo trips
+// credential scanners and risks Google auto-disabling the client). Official release
+// builds compile it in via VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET — release
+// validation fails closed if the artifact lacks it. Dev builds and forks set the
+// runtime VIDEORC_YOUTUBE_CLIENT_SECRET (or bring their own client, per
+// TRADEMARK.md); without one, YouTube connect reports the missing secret instead
+// of failing the token exchange with a bare 401.
 const BUNDLED_YOUTUBE_CLIENT_ID: Option<&str> =
     match option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID") {
         Some(bundled) => Some(bundled),
         None => Some("244529927041-oe9n13ur7lhd1k179ivbj2jfi05b3iia.apps.googleusercontent.com"),
     };
 const BUNDLED_YOUTUBE_CLIENT_SECRET: Option<&str> =
-    match option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET") {
-        Some(bundled) => Some(bundled),
-        None => Some("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"),
-    };
+    option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET");
 const BUNDLED_TWITCH_CLIENT_ID: Option<&str> = option_env!("VIDEORC_BUNDLED_TWITCH_CLIENT_ID");
 // The Videorc X OAuth app (public Native App client, PKCE — no secret involved).
 // Client IDs are public identifiers; build-time/runtime env still override.
