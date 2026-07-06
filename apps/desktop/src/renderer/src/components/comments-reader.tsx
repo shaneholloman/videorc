@@ -91,7 +91,9 @@ export function CommentsReader({
     <div className="relative flex h-screen flex-col bg-background text-foreground">
       {/* The whole drag bar moves the window (hiddenInset titlebar); the
           controls opt back out of the drag region. */}
-      <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border px-3 [-webkit-app-region:drag]">
+      {/* pl clears the macOS traffic lights — the hiddenInset titlebar draws
+          close/minimize INSIDE this bar, over the title text otherwise. */}
+      <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border pl-[78px] pr-3 [-webkit-app-region:drag]">
         <span className="text-xs font-medium text-subtle">
           {savedTranscript ? 'Saved comments' : 'Comments'}
         </span>
