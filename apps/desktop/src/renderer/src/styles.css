@@ -99,6 +99,10 @@
 
   /* The wallpaper frost (GlassWallpaperUnderlay img filter). Light keeps the
      airy porcelain frost. */
+  /* Solid degradation base for when no wallpaper is available (Automation
+     denied): the transparent window must never show other apps through the
+     translucent coat. Matches the porcelain solid (#FAFAFB). */
+  --glass-fallback-base: oklch(0.985 0.001 286);
   --glass-underlay-filter: blur(70px) saturate(1.4) brightness(1.05);
   /* A hint of true translucency: the frost is not fully opaque, so a little of
      whatever sits BEHIND the app window shows through the glass. */
@@ -174,6 +178,9 @@
 
   --shadow-glass-panel: 0 16px 70px oklch(0 0 0 / 60%), 0 0 0 1px oklch(1 0 0 / 10%);
 
+  /* Solid degradation base for when no wallpaper is available (Automation
+     denied): matches the black-glass solid (#0D0D0F). */
+  --glass-fallback-base: oklch(0.13 0.003 286);
   /* Black glass: the frost itself goes dark — the wallpaper is dimmed into a
      smoky texture (the translucent coat alone cannot make a bright wallpaper
      read black; this can). */

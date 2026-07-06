@@ -297,7 +297,10 @@ function StageSourceRect({
           className={cn('select-none', camera ? 'fill-primary' : 'fill-muted-foreground')}
           fontSize={4.2}
           x={x + 2.5}
-          y={y + 5.5}
+          // Bottom-left of the rect: the HTML legend chips overlay the stage's
+          // top-left, so a rect touching the top edge (side-by-side's screen
+          // box) had its label buried under the chips (plan 021 F4).
+          y={y + height - 2.5}
         >
           {source.name}
         </text>

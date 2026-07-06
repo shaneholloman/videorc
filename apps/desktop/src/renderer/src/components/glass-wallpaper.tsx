@@ -12,7 +12,8 @@ type GlassGeometry = Pick<GlassWallpaperState, 'window' | 'display'>
  * it stays pixel-aligned with where the window sits on the display. The
  * theme's translucent background coat then tints it exactly like the
  * reference glass. When no wallpaper is available (Automation permission
- * denied), rendering nothing leaves the plain translucent glass.
+ * denied), a SOLID theme base takes its place — the transparent window must
+ * never show other apps' windows through the coat (plan 021 F4).
  */
 export function GlassWallpaperUnderlay(): ReactElement | null {
   const [image, setImage] = useState<string | null>(null)
@@ -39,7 +40,19 @@ export function GlassWallpaperUnderlay(): ReactElement | null {
   }, [])
 
   if (!image || !geometry) {
-    return null
+    // No wallpaper (Automation denied, or the fetch hasn't landed yet): the
+    // window itself is transparent, so rendering NOTHING let other apps'
+    // windows bleed through the translucent coat — ghost browser text inside
+    // panels on a fresh machine (external tester, 2026-07-06). The degraded
+    // glass is a solid theme base, never see-through to whatever is behind.
+    return (
+      <div
+        aria-hidden
+        className="fixed inset-0 -z-10"
+        data-glass-underlay-fallback
+        style={{ background: 'var(--glass-fallback-base)' }}
+      />
+    )
   }
 
   return (
