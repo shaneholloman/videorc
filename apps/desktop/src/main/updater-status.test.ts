@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { clampPercent, shouldAutoDownload, updateStatusFromEvent } from './updater-status'
+import {
+  BACKGROUND_RECHECK_INTERVAL_MS,
+  clampPercent,
+  shouldAutoDownload,
+  shouldBackgroundRecheck,
+  updateStatusFromEvent
+} from './updater-status'
 
 describe('updater status mapping', () => {
   it('maps each lifecycle event to its matching status', () => {
@@ -32,6 +38,26 @@ describe('updater status mapping', () => {
     expect(clampPercent(-5)).toBe(0)
     expect(clampPercent(150)).toBe(100)
     expect(clampPercent(Number.NaN)).toBe(0)
+  })
+
+  // Regression (0.9.12 era): the launch-time check was the ONLY check, so a
+  // release shipped while the app was running never surfaced the sidebar chip —
+  // the user had to relaunch or manually check in Settings. The background flow
+  // must re-check periodically while the app stays open.
+  it('re-checks periodically from settled states, never mid-flight or once staged', () => {
+    expect(shouldBackgroundRecheck({ phase: 'idle' })).toBe(true)
+    expect(shouldBackgroundRecheck({ phase: 'not-available', currentVersion: '1.0.0' })).toBe(true)
+    expect(shouldBackgroundRecheck({ phase: 'error', message: 'offline' })).toBe(true)
+    // 'available' with no download in flight means the background download
+    // failed — a re-check retries it.
+    expect(shouldBackgroundRecheck({ phase: 'available', version: '1.2.3' })).toBe(true)
+
+    expect(shouldBackgroundRecheck({ phase: 'checking' })).toBe(false)
+    expect(shouldBackgroundRecheck({ phase: 'downloading', percent: 40 })).toBe(false)
+    expect(shouldBackgroundRecheck({ phase: 'downloaded', version: '1.2.3' })).toBe(false)
+    expect(shouldBackgroundRecheck({ phase: 'unsupported' })).toBe(false)
+
+    expect(BACKGROUND_RECHECK_INTERVAL_MS).toBe(30 * 60 * 1000)
   })
 
   it('auto-downloads only when an update is available', () => {

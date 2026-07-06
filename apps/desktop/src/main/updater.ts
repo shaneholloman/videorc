@@ -5,7 +5,12 @@ import type { ProgressInfo, UpdateInfo } from 'electron-updater'
 
 import type { UpdateStatus } from '../shared/backend'
 import { safeConsole } from './safe-console'
-import { shouldAutoDownload, updateStatusFromEvent } from './updater-status'
+import {
+  BACKGROUND_RECHECK_INTERVAL_MS,
+  shouldAutoDownload,
+  shouldBackgroundRecheck,
+  updateStatusFromEvent
+} from './updater-status'
 
 const { autoUpdater } = electronUpdater
 
@@ -108,9 +113,25 @@ export function initAutoUpdater(): void {
     })
   })
 
-  void autoUpdater.checkForUpdates().catch((error) => {
-    safeConsole.warn(`[auto-update] check failed: ${errorMessage(error)}`)
-  })
+  const backgroundCheck = (): void => {
+    void autoUpdater.checkForUpdates().catch((error) => {
+      safeConsole.warn(`[auto-update] check failed: ${errorMessage(error)}`)
+    })
+  }
+
+  backgroundCheck()
+
+  // The launch check alone misses every release shipped while the app stays
+  // open — the sidebar chip never appeared until a full relaunch and the user
+  // had to check manually in Settings. Re-check on an interval from settled
+  // states so a running app surfaces new releases on its own.
+  const recheckTimer = setInterval(() => {
+    if (shouldBackgroundRecheck(currentStatus)) {
+      backgroundCheck()
+    }
+  }, BACKGROUND_RECHECK_INTERVAL_MS)
+  // Don't let the timer keep the process alive after the app quits.
+  recheckTimer.unref?.()
 }
 
 // Wire the manual update controls (Settings → About & updates). A manual check

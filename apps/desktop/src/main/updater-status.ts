@@ -47,3 +47,27 @@ export function updateStatusFromEvent(event: UpdaterEvent): UpdateStatus {
 export function shouldAutoDownload(status: UpdateStatus): boolean {
   return status.phase === 'available'
 }
+
+// The launch-time check alone misses every release shipped while the app stays
+// open (the 0.9.12-era "no update chip" report), so the background flow
+// re-checks on this interval. The feed is one small yml fetch (max-age=60).
+export const BACKGROUND_RECHECK_INTERVAL_MS = 30 * 60 * 1000
+
+// Re-check only from settled states: never while a check or download is in
+// flight, never once an update is staged (it applies on the next quit), and
+// never when updates are unsupported. 'available' with no download running
+// means the background download failed — re-checking retries it.
+export function shouldBackgroundRecheck(status: UpdateStatus): boolean {
+  switch (status.phase) {
+    case 'idle':
+    case 'not-available':
+    case 'error':
+    case 'available':
+      return true
+    case 'checking':
+    case 'downloading':
+    case 'downloaded':
+    case 'unsupported':
+      return false
+  }
+}
