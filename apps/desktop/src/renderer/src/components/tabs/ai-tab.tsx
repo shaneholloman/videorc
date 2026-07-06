@@ -3,6 +3,7 @@ import {
   CopySimple,
   Crosshair,
   DownloadSimple,
+  Info,
   Lightning,
   Scissors,
   ShieldCheck,
@@ -644,13 +645,25 @@ function ArtifactProblem({ artifact }: { artifact: AiArtifact }): ReactElement {
     (artifact.status === 'pending-consent'
       ? 'Cloud AI upload is waiting for explicit consent. Enable consent and retry the workflow when ready.'
       : 'AI workflow failed before this artifact was ready. Check cloud AI readiness and retry the workflow.')
-  const title =
-    artifact.status === 'pending-consent' ? 'Cloud AI waiting for consent' : 'AI artifact failed'
+
+  // FX3: pending-consent is the EXPECTED outcome of a local-only run (the
+  // audio extracted fine; cloud AI simply hasn't been consented to). A
+  // warning here read as "your action failed" — keep warning tone for real
+  // failures only.
+  if (artifact.status === 'pending-consent') {
+    return (
+      <Alert>
+        <Info weight="fill" />
+        <AlertTitle>Audio extracted — cloud AI waiting for consent</AlertTitle>
+        <AlertDescription>{message}</AlertDescription>
+      </Alert>
+    )
+  }
 
   return (
     <Alert variant="warning">
       <Warning weight="fill" />
-      <AlertTitle>{title}</AlertTitle>
+      <AlertTitle>AI artifact failed</AlertTitle>
       <AlertDescription>{message}</AlertDescription>
     </Alert>
   )

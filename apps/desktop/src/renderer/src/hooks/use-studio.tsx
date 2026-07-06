@@ -5210,17 +5210,23 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       try {
         setLastError(null)
         setAiRunningSessionId(sessionId)
-        await client.request<AiWorkflowResult>('ai.run_post_recording', {
+        const result = await client.request<AiWorkflowResult>('ai.run_post_recording', {
           sessionId,
           consentToUploadAudio: aiConsent,
           ffmpegPath: settings.ffmpegPath.trim() || undefined
         })
         await refreshSessions(client)
-        toast.success(
-          aiConsent
-            ? 'AI workflow finished.'
-            : 'Extracted local audio. Enable consent for cloud AI.'
-        )
+        // FX3: the local-only run needs an explicit, named result — "nothing
+        // visibly happened" was the by-eye finding. Name the produced file.
+        if (aiConsent) {
+          toast.success('AI workflow finished.')
+        } else {
+          toast.success('Local audio extracted.', {
+            description: result.audioPath
+              ? `Saved ${basename(result.audioPath)} next to the recording. Enable cloud consent to transcribe.`
+              : 'Enable cloud consent to transcribe.'
+          })
+        }
       } catch (error) {
         reportError(error)
       } finally {
@@ -6042,6 +6048,10 @@ function mergePreviewSurfaceHostStatus(
     updatedAt: hostStatus.updatedAt,
     message: hostStatus.message ?? backendStatus.message
   }
+}
+
+function basename(path: string): string {
+  return path.split('/').at(-1) ?? path
 }
 
 function delay(ms: number): Promise<void> {
