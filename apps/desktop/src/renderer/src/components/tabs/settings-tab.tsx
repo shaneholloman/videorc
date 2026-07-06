@@ -382,11 +382,7 @@ export function SettingsTab({
             </Field>
           </PanelSection>
 
-          <PanelSection
-            description="Get help or report a problem."
-            icon={Bug}
-            title="Support"
-          >
+          <PanelSection description="Get help or report a problem." icon={Bug} title="Support">
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap gap-2">
                 <Button
