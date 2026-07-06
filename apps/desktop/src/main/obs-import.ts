@@ -72,6 +72,8 @@ interface RawObsSource {
   id?: string
   name?: string
   settings?: Record<string, unknown>
+  volume?: number
+  muted?: boolean
 }
 
 function classifySource(raw: RawObsSource): ObsSource | null {
@@ -81,6 +83,10 @@ function classifySource(raw: RawObsSource): ObsSource | null {
     return null
   }
   const settings = raw.settings ?? {}
+  const mixer = {
+    ...(typeof raw.volume === 'number' ? { volume: raw.volume } : {}),
+    ...(raw.muted === true ? { muted: true } : {})
+  }
   const str = (key: string): string | undefined => {
     const value = settings[key]
     return typeof value === 'string' && value ? value : undefined
@@ -106,10 +112,19 @@ function classifySource(raw: RawObsSource): ObsSource | null {
     return { name, kind: 'window', obsKind, applicationHint: str('window_name') ?? name }
   }
   if (obsKind === 'av_capture_input') {
-    return { name, kind: 'camera', obsKind, deviceName: str('device_name') }
+    // "AVCaptureSessionPreset3840x2160" carries the native capture dimensions.
+    const preset = /Preset(\d+)x(\d+)/.exec(str('preset') ?? '')
+    return {
+      name,
+      kind: 'camera',
+      obsKind,
+      deviceName: str('device_name'),
+      ...(preset ? { presetWidth: Number(preset[1]), presetHeight: Number(preset[2]) } : {}),
+      ...mixer
+    }
   }
   if (obsKind === 'coreaudio_input_capture') {
-    return { name, kind: 'microphone', obsKind, deviceName: str('device_name') }
+    return { name, kind: 'microphone', obsKind, deviceName: str('device_name'), ...mixer }
   }
   if (obsKind === 'image_source') {
     return { name, kind: 'image', obsKind, filePath: str('file') }

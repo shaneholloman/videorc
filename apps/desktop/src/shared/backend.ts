@@ -2543,6 +2543,12 @@ export interface ObsSource {
   applicationHint?: string
   /** Image file path for image sources. */
   filePath?: string
+  /** Mixer state OBS stored on the source (mics). volume is a 0..1 multiplier. */
+  volume?: number
+  muted?: boolean
+  /** Camera capture preset dimensions when OBS recorded one. */
+  presetWidth?: number
+  presetHeight?: number
 }
 
 export interface ObsSceneItem {
