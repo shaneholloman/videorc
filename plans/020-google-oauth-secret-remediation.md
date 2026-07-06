@@ -23,8 +23,12 @@
 - **Category**: security, release, operations
 - **Planned at**: commit `9a4f6805`, 2026-07-06
 - **Execution**: IN PROGRESS - release env rotated by user and verified locally;
-  release-validation hardening is in the working tree; rotated release build,
-  upload, old-secret disable/delete, and GitGuardian closeout are still pending.
+  release-validation hardening committed; rotated release `0.9.12-beta.1` built,
+  signed, notarized, validated (exact-secret gate PASS), uploaded, and feed
+  verified 2026-07-06; OAuth smokes PASS. Remaining (Phase 4): owner verifies
+  YouTube connect/refresh on the rotated build, then disables/deletes the old
+  secret in Google Cloud Console and marks the GitGuardian alert
+  remediated as rotated/revoked.
 
 ## Alert
 

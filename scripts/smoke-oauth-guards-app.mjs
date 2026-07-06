@@ -334,6 +334,10 @@ function launchAndReadConnection() {
         VIDEORC_SECRETS_PATH:
           process.env.VIDEORC_SECRETS_PATH ?? join(stateRoot, 'videorc-secrets.json'),
         VIDEORC_YOUTUBE_CLIENT_ID: 'smoke-youtube-client-id',
+        // Dev builds carry no bundled YouTube secret since it left source
+        // (release builds compile it in); the readiness assertion expects the
+        // shipped shape, so inject a fake runtime secret.
+        VIDEORC_YOUTUBE_CLIENT_SECRET: 'smoke-youtube-client-secret',
         VIDEORC_TWITCH_CLIENT_ID: 'smoke-twitch-client-id',
         VIDEORC_X_CLIENT_ID: 'smoke-x-client-id',
         VIDEORC_TWITCH_CLIENT_SECRET: ''
