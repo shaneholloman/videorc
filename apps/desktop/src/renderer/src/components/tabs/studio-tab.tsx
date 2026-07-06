@@ -194,10 +194,15 @@ export function StudioTab(): ReactElement {
               title="Preview"
               action={
                 <div className="flex items-center gap-1.5">
-                  <StatusBadge
-                    tone={sessionStatusTone(recording.state, wsStatus)}
-                    value={sessionStatusLabel(recording.state, wsStatus)}
-                  />
+                  {/* data hook: the backend-resilience smoke reads this badge
+                      (the old probe grepped for a "Status" text prefix that
+                      died with the session-panel declutter). */}
+                  <span data-videorc-session-status>
+                    <StatusBadge
+                      tone={sessionStatusTone(recording.state, wsStatus)}
+                      value={sessionStatusLabel(recording.state, wsStatus)}
+                    />
+                  </span>
                   {previewWindow.open && previewWindow.mode === 'floating' ? (
                     <Button
                       aria-label="Stick preview into the app"

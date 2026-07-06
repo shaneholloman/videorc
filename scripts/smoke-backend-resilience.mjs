@@ -40,21 +40,30 @@ try {
   console.log('Backend resilience: Session badge reports Backend offline.')
 
   await waitForBadge(smoke, 'Ready', 'Ready badge after supervisor restart', 60_000)
-  console.log('Backend resilience smoke OK — offline surfaced, supervisor restarted, badge healed to Ready.')
+  console.log(
+    'Backend resilience smoke OK — offline surfaced, supervisor restarted, badge healed to Ready.'
+  )
 } finally {
   await stopProcess(launched.child, { timeoutMs: 15000 })
 }
+
+// The supervisor-restarted backend inherits the app's stdio pipes, which keeps
+// this script's event loop alive after the assertions pass — exit explicitly
+// (same pattern as preview-lifecycle-probe.mjs).
+process.exit(0)
 
 async function waitForBadge(smoke, expected, label, budgetMs = 30_000) {
   const deadline = Date.now() + budgetMs
   let last = null
   while (Date.now() < deadline) {
     try {
+      // The badge carries a dedicated data hook (studio-tab.tsx). The old
+      // probe grepped main divs for a "Status" text prefix — that prefix died
+      // with the 0.9.7 session-panel declutter, so the smoke saw null forever.
       const result = await sendSmokeCommand(smoke, 'eval-js', {
         code: `
-          const rows = Array.from(document.querySelectorAll('main div'));
-          const statusRow = rows.find((row) => row.textContent.startsWith('Status') && row.textContent.length < 80);
-          return statusRow ? statusRow.textContent.replace('Status', '').trim() : null;
+          const badge = document.querySelector('[data-videorc-session-status]');
+          return badge ? badge.textContent.trim() : null;
         `
       })
       last = result?.result ?? null
