@@ -22,17 +22,6 @@ export interface StudioHealth {
   detail?: string
 }
 
-export interface StudioHealthPolicy {
-  /** Production macOS preview must use the native CAMetalLayer path. Disable only for debug/proof runs. */
-  requireNativePreview?: boolean
-  /** Whether a preview (docked or popped out) is currently open. With the
-   * preview deliberately closed there is no preview path to police — an
-   * absent transport must not read as a health failure. Recording parity is
-   * guarded by the compositor checks, not the preview surface. Defaults to
-   * true (the strict reading) for callers that don't know. */
-  previewOpen?: boolean
-}
-
 // Live preview present-latency budget (ms) from the preview/recording parity plan.
 const PREVIEW_PRESENT_BUDGET_P95_MS = 75
 const PREVIEW_PRESENT_BUDGET_P99_MS = 150
@@ -43,13 +32,15 @@ const PREVIEW_PRESENT_BUDGET_P99_MS = 150
  * Degraded ("Preview may not match recording") whenever the compositor drops to CPU
  * fallback — the Metal program path failed, so preview quality and parity with the recording
  * are no longer guaranteed. Warn when preview presentation drifts past the live latency
- * budget or falls back to an HTTP image-polling transport.
+ * budget or is on a non-native fallback transport.
+ *
+ * There is deliberately NO red "requires native CAMetalLayer" state anymore
+ * (owner, 2026-07-07): it fired for transient startup states ("unavailable /
+ * none") and read as jargon. The preview window's presenting watch (plan 021
+ * F1) owns truthful preview-path health with self-healing; the Studio badge
+ * only reports states a user can act on.
  */
-export function studioHealth(
-  stats: StudioHealthInput,
-  active: boolean,
-  policy: StudioHealthPolicy = {}
-): StudioHealth {
+export function studioHealth(stats: StudioHealthInput, active: boolean): StudioHealth {
   if (
     stats.compositorBackend === 'cpu-fallback' ||
     (active && stats.compositorCpuFallbackFrames > 0)
@@ -63,22 +54,13 @@ export function studioHealth(
     }
   }
 
-  const requireNativePreview = policy.requireNativePreview ?? true
-  const previewOpen = policy.previewOpen ?? true
-  if (requireNativePreview && shouldBlockForNonNativePreview(stats, active, previewOpen)) {
-    return {
-      tone: 'error',
-      value: 'Blocked',
-      detail: `Production preview requires native CAMetalLayer; current path is ${previewPathLabel(stats)}`
-    }
-  }
-
   // A fallback transport is the dominant, stable state, so surface it before borderline latency.
   // Otherwise the badge flaps between "Fallback" and "Lagging" while the preview sits on the
   // polling path and its present latency oscillates around the budget.
   if (
     stats.previewTransport === 'latest-jpeg-polling' ||
-    stats.previewTransport === 'mjpeg-stream'
+    stats.previewTransport === 'mjpeg-stream' ||
+    stats.previewTransport === 'electron-proof-surface'
   ) {
     return {
       tone: 'warn',
@@ -107,31 +89,4 @@ export function studioHealth(
   }
 
   return { tone: 'good', value: active ? 'Live' : 'Ready' }
-}
-
-function shouldBlockForNonNativePreview(
-  stats: StudioHealthInput,
-  active: boolean,
-  previewOpen: boolean
-): boolean {
-  if (
-    stats.previewTransport === 'native-surface' &&
-    stats.previewSurfaceBacking === 'cametal-layer'
-  ) {
-    return false
-  }
-  if (stats.previewTransport && stats.previewTransport !== 'unavailable') {
-    // A live non-native transport is a real regression regardless of the
-    // preview window state — something is presenting frames off-path.
-    return true
-  }
-  // No transport at all: only a problem while a session is active AND a
-  // preview is open expecting frames. Recording with the preview closed
-  // showed a red "requires native CAMetalLayer … unavailable / none" banner
-  // (0.9.10 by-eye) for a state that is perfectly healthy.
-  return active && previewOpen
-}
-
-function previewPathLabel(stats: StudioHealthInput): string {
-  return `${stats.previewTransport ?? 'unknown transport'} / ${stats.previewSurfaceBacking ?? 'unknown backing'}`
 }

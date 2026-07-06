@@ -54,14 +54,19 @@ describe('studioHealth', () => {
     })
   })
 
-  it('blocks production preview when image polling is the active transport', () => {
+  // The red "requires native CAMetalLayer" Blocked state is GONE (owner,
+  // 2026-07-07): it fired for transient startup states and read as jargon.
+  // Non-native transports warn with a readable message; absent transports are
+  // not a health problem — the preview window's presenting watch (plan 021 F1)
+  // owns preview-path health.
+  it('warns when image polling is the active transport', () => {
     expect(studioHealth(stats({ previewTransport: 'latest-jpeg-polling' }), true)).toMatchObject({
-      tone: 'error',
-      value: 'Blocked'
+      tone: 'warn',
+      value: 'Fallback'
     })
   })
 
-  it('blocks production preview when the Electron proof surface is the active transport', () => {
+  it('warns when the Electron proof surface is the active transport', () => {
     expect(
       studioHealth(
         stats({
@@ -70,66 +75,20 @@ describe('studioHealth', () => {
         }),
         false
       )
-    ).toMatchObject({ tone: 'error', value: 'Blocked' })
+    ).toMatchObject({ tone: 'warn', value: 'Fallback' })
   })
 
-  it('blocks an active session when an OPEN preview has no native surface yet', () => {
+  it('never reds an active session whose preview has no transport yet', () => {
     expect(
-      studioHealth(
-        stats({ previewTransport: 'unavailable', previewSurfaceBacking: 'none' }),
-        true,
-        {
-          previewOpen: true
-        }
-      )
-    ).toMatchObject({ tone: 'error', value: 'Blocked' })
-  })
-
-  // 0.9.10 by-eye: recording with the preview deliberately closed showed the
-  // red "requires native CAMetalLayer … unavailable / none" banner. With no
-  // preview open there is no preview path to police — the compositor checks
-  // above own recording parity.
-  it('stays healthy while recording with the preview closed (no transport, no problem)', () => {
-    expect(
-      studioHealth(
-        stats({ previewTransport: 'unavailable', previewSurfaceBacking: 'none' }),
-        true,
-        {
-          previewOpen: false
-        }
-      )
+      studioHealth(stats({ previewTransport: 'unavailable', previewSurfaceBacking: 'none' }), true)
     ).toMatchObject({ tone: 'good', value: 'Live' })
   })
 
-  it('still blocks a live non-native transport even with the preview window closed', () => {
-    expect(
-      studioHealth(stats({ previewTransport: 'latest-jpeg-polling' }), true, {
-        previewOpen: false
-      })
-    ).toMatchObject({ tone: 'error', value: 'Blocked' })
-  })
-
-  it('allows debug fallback policy to warn when preview is on an image-polling transport', () => {
-    expect(studioHealth(stats({ previewTransport: 'latest-jpeg-polling' }), true)).toMatchObject({
-      tone: 'error',
-      value: 'Blocked'
-    })
-    expect(
-      studioHealth(stats({ previewTransport: 'latest-jpeg-polling' }), true, {
-        requireNativePreview: false
-      })
-    ).toMatchObject({
-      tone: 'warn',
-      value: 'Fallback'
-    })
-  })
-
-  it('keeps showing debug Fallback over Lagging when polling with high latency (no flapping)', () => {
+  it('keeps showing Fallback over Lagging when polling with high latency (no flapping)', () => {
     expect(
       studioHealth(
         stats({ previewTransport: 'latest-jpeg-polling', previewInputToPresentLatencyP95Ms: 200 }),
-        true,
-        { requireNativePreview: false }
+        true
       )
     ).toMatchObject({ tone: 'warn', value: 'Fallback' })
   })

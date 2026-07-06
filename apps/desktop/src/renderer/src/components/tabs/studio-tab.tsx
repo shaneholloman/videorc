@@ -62,9 +62,7 @@ export function StudioTab(): ReactElement {
   } = studio
 
   const active = isSessionTransportActive(recording.state)
-  const previewHealth = studioHealth(diagnosticStats, active, {
-    previewOpen: previewWindow.open
-  })
+  const previewHealth = studioHealth(diagnosticStats, active)
   const banner = studioBlocker(studio)
   const liveStreamCompatibility = videoProfileCompatibility({
     ...captureConfig,
