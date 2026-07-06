@@ -73,6 +73,7 @@
     "smoke:dev": "node scripts/smoke-dev-app.mjs",
     "smoke:backend-single-instance": "node scripts/smoke-backend-single-instance.mjs",
     "smoke:backend-resilience": "node scripts/smoke-backend-resilience.mjs",
+    "smoke:obs-import": "node scripts/smoke-obs-import.mjs",
     "smoke:process-lifecycle": "node scripts/smoke-process-lifecycle.mjs",
     "smoke:process-memory": "node scripts/smoke-process-memory.mjs",
     "smoke:account-auth": "node scripts/smoke-account-auth.mjs",
