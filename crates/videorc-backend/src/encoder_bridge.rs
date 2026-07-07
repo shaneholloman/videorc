@@ -2021,6 +2021,58 @@ fn is_ffmpeg_error_line(line: &str) -> bool {
     normalized.contains("error") || normalized.contains("failed") || normalized.contains("invalid")
 }
 
+// --- Recording-leg degraded watch (plan 023 L4) ----------------------------
+// The recording leg's input fps sitting below 80% of target for 5s is a
+// mid-session quality incident (the owner found a 9fps 4K file AFTER the
+// stream): say so while there is still time to act, like the mic-silent
+// warning. Pure decision core; the diagnostics consumer drives it.
+
+const RECORDING_DEGRADED_FPS_RATIO: f64 = 0.8;
+const RECORDING_DEGRADED_HOLD_MS: u128 = 5_000;
+
+#[derive(Default)]
+pub(crate) struct RecordingFpsWatch {
+    session_id: String,
+    low_since_ms: Option<u128>,
+    fired: bool,
+}
+
+/// Feed one recording-leg diagnostics sample; returns true exactly once per
+/// session when the low-fps condition has held for the full window.
+pub(crate) fn recording_fps_watch_update(
+    watch: &mut RecordingFpsWatch,
+    session_id: &str,
+    input_fps: Option<f64>,
+    target_fps: u32,
+    now_ms: u128,
+) -> bool {
+    if watch.session_id != session_id {
+        *watch = RecordingFpsWatch {
+            session_id: session_id.to_string(),
+            ..RecordingFpsWatch::default()
+        };
+    }
+    let Some(input_fps) = input_fps else {
+        return false;
+    };
+    if target_fps == 0 || watch.fired {
+        return false;
+    }
+    if input_fps >= f64::from(target_fps) * RECORDING_DEGRADED_FPS_RATIO {
+        watch.low_since_ms = None;
+        return false;
+    }
+    let since = *watch.low_since_ms.get_or_insert(now_ms);
+    if now_ms.saturating_sub(since) >= RECORDING_DEGRADED_HOLD_MS {
+        watch.fired = true;
+        return true;
+    }
+    false
+}
+
+static RECORDING_FPS_WATCH: std::sync::Mutex<Option<RecordingFpsWatch>> =
+    std::sync::Mutex::new(None);
+
 async fn emit_encoder_bridge_diagnostics(
     state: &AppState,
     session_id: &str,
@@ -2029,6 +2081,37 @@ async fn emit_encoder_bridge_diagnostics(
     diagnostics_context: EncoderBridgeDiagnosticsContext,
     error: Option<String>,
 ) {
+    // L4 (plan 023): announce a degraded recording leg mid-session.
+    if matches!(
+        diagnostics_context.role,
+        EncoderBridgeOutputRole::Recording | EncoderBridgeOutputRole::Shared
+    ) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let fire = {
+            let mut guard = RECORDING_FPS_WATCH
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let watch = guard.get_or_insert_with(RecordingFpsWatch::default);
+            recording_fps_watch_update(watch, session_id, runtime.input_fps, target_fps, now_ms)
+        };
+        if fire {
+            let message = format!(
+                "Recording quality is degraded while streaming: the recording leg is producing                  {:.0} fps against the selected {target_fps} fps. The stream continues; the                  saved file will be choppy.",
+                runtime.input_fps.unwrap_or(0.0)
+            );
+            let _ = crate::recording::emit_health_event(
+                state,
+                Some(session_id),
+                crate::protocol::HealthLevel::Warn,
+                "recording-degraded",
+                &message,
+            );
+        }
+    }
+
     let diagnostic_stats = {
         let mut diagnostics = state.diagnostics.lock().await;
         let base = if diagnostics.session_id.as_deref() == Some(session_id) {
@@ -2250,6 +2333,102 @@ fn frame_count(duration_ms: u64, fps: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    // Plan 023 L4: the recording-degraded watch fires exactly once per session
+    // after the low-fps condition holds for the full 5s window.
+    #[test]
+    fn recording_fps_watch_fires_once_after_sustained_low_fps() {
+        use super::{RecordingFpsWatch, recording_fps_watch_update};
+        let mut watch = RecordingFpsWatch::default();
+        // Healthy: 30 target, 29 input — never fires.
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s1",
+            Some(29.0),
+            30,
+            0
+        ));
+        // Low but not yet sustained.
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s1",
+            Some(9.0),
+            30,
+            1_000
+        ));
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s1",
+            Some(9.0),
+            30,
+            4_000
+        ));
+        // Recovery resets the window.
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s1",
+            Some(28.0),
+            30,
+            5_000
+        ));
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s1",
+            Some(9.0),
+            30,
+            6_000
+        ));
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s1",
+            Some(9.0),
+            30,
+            10_000
+        ));
+        // Sustained past the hold window: fire once…
+        assert!(recording_fps_watch_update(
+            &mut watch,
+            "s1",
+            Some(9.0),
+            30,
+            11_100
+        ));
+        // …and never again for the same session.
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s1",
+            Some(2.0),
+            30,
+            30_000
+        ));
+        // A NEW session re-arms.
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s2",
+            Some(9.0),
+            30,
+            40_000
+        ));
+        assert!(recording_fps_watch_update(
+            &mut watch,
+            "s2",
+            Some(9.0),
+            30,
+            45_100
+        ));
+        // Missing fps samples and zero targets never fire.
+        assert!(!recording_fps_watch_update(
+            &mut watch, "s3", None, 30, 50_000
+        ));
+        assert!(!recording_fps_watch_update(
+            &mut watch,
+            "s3",
+            Some(1.0),
+            0,
+            55_100
+        ));
+    }
+
     use super::*;
     use crate::compositor::{CompositorFrameExportHandle, CompositorPixelFormat};
     #[cfg(target_os = "macos")]
