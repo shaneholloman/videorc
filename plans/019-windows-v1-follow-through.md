@@ -18,10 +18,11 @@
 - **Depends on**: Plans 001, 002, 003, 006, and 012
 - **Category**: migration, tests, direction
 - **Planned at**: commit `0ea3c66c`, 2026-06-13
-- **Execution**: IN PROGRESS - Steps 1 and 2 landed on 2026-06-13. Windows
-  status is reconciled, and `smoke:local-gates:windows` now defines the
-  Windows-box gate. Actual Windows package/recording/signing acceptance remains
-  pending.
+- **Execution**: IN PROGRESS - Steps 1 and 2 landed on 2026-06-13. A first
+  Mac-verifiable Step 3 slice landed on 2026-07-08: Windows ffmpeg input
+  builders and recording primary-input layout tests now cover display, camera,
+  and microphone variants. Windows source discovery, on-box package/recording
+  evidence, and signing acceptance remain pending.
 
 ## Why this matters
 
@@ -63,6 +64,7 @@ The Windows port plan states capture work remains:
 
 ```md
 <!-- docs/windows-port-plan.md:233 -->
+
 ## Phase 5 - Packaging, signing, verification harness
 ```
 
@@ -74,13 +76,13 @@ Repo conventions:
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Cross-check | `pnpm check:windows` | exits 0 on macOS cross setup |
-| Windows package | `pnpm package:desktop:windows` | exits 0 on Windows box |
-| Desktop tests | `pnpm --filter @videorc/desktop test` | all pass |
-| Rust tests | `cargo test -p videorc-backend` | all pass |
-| Rust lint | `cargo clippy -p videorc-backend -- -D warnings` | exits 0 |
+| Purpose         | Command                                          | Expected on success          |
+| --------------- | ------------------------------------------------ | ---------------------------- |
+| Cross-check     | `pnpm check:windows`                             | exits 0 on macOS cross setup |
+| Windows package | `pnpm package:desktop:windows`                   | exits 0 on Windows box       |
+| Desktop tests   | `pnpm --filter @videorc/desktop test`            | all pass                     |
+| Rust tests      | `cargo test -p videorc-backend`                  | all pass                     |
+| Rust lint       | `cargo clippy -p videorc-backend -- -D warnings` | exits 0                      |
 
 ## Scope
 
@@ -147,6 +149,13 @@ Following `docs/windows-port-plan.md`, add the minimal v1 capture path:
 
 Prefer the existing platform seam files. Do not fork recording policy.
 
+**2026-07-08 progress**: The recording input seam now has Windows variants for
+display (`ddagrab` with `gdigrab` fallback), camera (`dshow`), and microphone
+(`dshow`) argument builders, with tests proving primary screen/camera input
+layout and microphone channel metadata. Source enumeration and renderer
+selected-source plumbing still need the Windows box slice before this step is
+done.
+
 **Verify**:
 
 ```sh
@@ -204,7 +213,7 @@ Do not implement paid signing in this plan unless credentials are available.
       scenario.
 - [ ] Child processes are owned and cleaned without broad process scans.
 - [ ] Signing status is documented.
-- [ ] `plans/README.md` status row updated.
+- [x] `plans/README.md` status row updated.
 
 ## STOP conditions
 

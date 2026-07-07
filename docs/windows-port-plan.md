@@ -26,10 +26,13 @@ The completed work is packaging and platform-seam preparation:
   normal native frame and themed base. Evidence: commit `c2cc42b9`. Dragging
   the preview window and toggling theme still need Windows-box verification.
 - **Capture-input and FIFO seams are tested.** `capture_input.rs` and
-  `fifo.rs` now isolate the platform arms before Windows ddagrab/dshow/named
-  pipe work lands. Evidence: commits `4f0c82e6`, `d5a478d5`, and `a8417a1c`.
-- **Windows capture is not done.** There is no dated Windows recording
-  artifact for display, camera, microphone, streaming, or packaged cleanup.
+  `fifo.rs` isolate the platform arms, and the first Windows ffmpeg input
+  builders now cover ddagrab/gdigrab display capture plus dshow camera and
+  microphone inputs. Evidence: commits `4f0c82e6`, `d5a478d5`, `a8417a1c`, and
+  the 2026-07-08 Windows capture-input slice.
+- **Windows capture is not done.** Windows source discovery, selected-source
+  plumbing from the renderer, and dated on-box recording artifacts are still
+  pending for display, camera, microphone, streaming, and packaged cleanup.
   Phase 2 remains the product proof. The Windows local gate now routes its
   packaged test-pattern smoke output to the ignored acceptance artifact
   directory so on-box runs can be copied into the dated acceptance note instead

@@ -25,7 +25,7 @@ use crate::audio::{
 use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
 use crate::capture_input::{
     MicrophoneInput, VideoInput, append_avfoundation_video_input, append_microphone_input,
-    microphone_channels,
+    append_windows_dshow_video_input, append_windows_screen_video_input, microphone_channels,
 };
 use crate::compositor::{
     CompositorAuxiliaryOutput, CompositorStartParams, CompositorStartupBarrierParams,
@@ -3499,9 +3499,15 @@ fn duplicate_capture_sources_for_statuses(
     screen_source_id: Option<&str>,
 ) -> Vec<String> {
     let mut sources = Vec::new();
-    let recording_uses_camera =
-        capture.camera_index.is_some() || matches!(capture.video, VideoInput::MacCamera { .. });
-    let recording_uses_screen = matches!(capture.video, VideoInput::MacScreen { .. });
+    let recording_uses_camera = capture.camera_index.is_some()
+        || matches!(
+            capture.video,
+            VideoInput::MacCamera { .. } | VideoInput::WindowsCamera { .. }
+        );
+    let recording_uses_screen = matches!(
+        capture.video,
+        VideoInput::MacScreen { .. } | VideoInput::WindowsScreen { .. }
+    );
 
     if recording_uses_camera && camera_state == PreviewCameraState::Live {
         let source_id = camera_id.unwrap_or("unknown");
@@ -5072,6 +5078,34 @@ fn append_input_args(
                 });
             }
         }
+        VideoInput::WindowsScreen { ref backend } => {
+            append_windows_screen_video_input(args, backend, video.fps, true);
+            next_input_index += 1;
+
+            if include_audio
+                && append_microphone_input(args, capture.microphone.as_ref(), &mut next_input_index)
+            {
+                audio_inputs.push(AudioInput {
+                    input_index: next_input_index - 1,
+                    track: microphone_audio_track(),
+                    channels: microphone_channels(capture.microphone.as_ref()),
+                });
+            }
+        }
+        VideoInput::WindowsCamera { ref device_name } => {
+            append_windows_dshow_video_input(args, device_name, video.fps);
+            next_input_index += 1;
+
+            if include_audio
+                && append_microphone_input(args, capture.microphone.as_ref(), &mut next_input_index)
+            {
+                audio_inputs.push(AudioInput {
+                    input_index: next_input_index - 1,
+                    track: microphone_audio_track(),
+                    channels: microphone_channels(capture.microphone.as_ref()),
+                });
+            }
+        }
         VideoInput::TestPattern => {
             args.extend([
                 "-re".to_string(),
@@ -5597,13 +5631,19 @@ fn scene_source_input_index(
     input_layout: &InputLayout,
 ) -> Option<usize> {
     match kind {
-        SceneSourceKind::Camera => input_layout
-            .camera_input_index
-            .or_else(|| matches!(capture.video, VideoInput::MacCamera { .. }).then_some(0)),
+        SceneSourceKind::Camera => input_layout.camera_input_index.or_else(|| {
+            matches!(
+                capture.video,
+                VideoInput::MacCamera { .. } | VideoInput::WindowsCamera { .. }
+            )
+            .then_some(0)
+        }),
         SceneSourceKind::Screen | SceneSourceKind::Window | SceneSourceKind::TestPattern => {
             matches!(
                 capture.video,
-                VideoInput::MacScreen { .. } | VideoInput::TestPattern
+                VideoInput::MacScreen { .. }
+                    | VideoInput::WindowsScreen { .. }
+                    | VideoInput::TestPattern
             )
             .then_some(0)
         }
@@ -8191,6 +8231,60 @@ mod tests {
         assert!(layout.camera_input_index.is_none());
         assert_eq!(ffmpeg_inputs(&args), vec!["0:none"]);
         assert!(!args.iter().any(|arg| arg == "-capture_cursor"));
+    }
+
+    #[test]
+    fn windows_screen_input_can_be_primary_recording_input() {
+        let params = base_params(true, false);
+        let mut args = Vec::new();
+        let layout = append_input_args(
+            &mut args,
+            &CaptureInputs {
+                video: VideoInput::WindowsScreen {
+                    backend: crate::capture_input::WindowsScreenCaptureBackend::Ddagrab {
+                        output_index: 1,
+                    },
+                },
+                camera_index: None,
+                microphone: Some(MicrophoneInput::WindowsDshow {
+                    device_name: "Microphone Array".to_string(),
+                }),
+            },
+            true,
+            &params.output.video,
+            None,
+        );
+
+        assert_eq!(layout.video_input_index, 0);
+        assert_eq!(layout.camera_input_index, None);
+        assert_eq!(layout.audio_inputs.len(), 1);
+        assert_eq!(layout.audio_inputs[0].input_index, 1);
+        assert!(args.iter().any(|arg| arg.contains("ddagrab=output_idx=1")));
+        assert!(args.contains(&"audio=Microphone Array".to_string()));
+    }
+
+    #[test]
+    fn windows_camera_input_can_be_primary_recording_input() {
+        let params = base_params(true, false);
+        let mut args = Vec::new();
+        let layout = append_input_args(
+            &mut args,
+            &CaptureInputs {
+                video: VideoInput::WindowsCamera {
+                    device_name: "USB Camera".to_string(),
+                },
+                camera_index: None,
+                microphone: None,
+            },
+            false,
+            &params.output.video,
+            None,
+        );
+
+        assert_eq!(layout.video_input_index, 0);
+        assert!(layout.camera_input_index.is_none());
+        assert!(args.contains(&"dshow".to_string()));
+        assert!(args.contains(&"video=USB Camera".to_string()));
     }
 
     #[tokio::test]
