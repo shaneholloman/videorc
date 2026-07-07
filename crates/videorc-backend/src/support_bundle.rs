@@ -12,7 +12,10 @@ use crate::protocol::{
 };
 use crate::repair::GateStatus;
 
-const SCHEMA_VERSION: u32 = 1;
+// v2 (plan 024 S2): app.version + health.version now carry the DESKTOP app
+// version (threaded from Electron `app.getVersion()`), not the backend crate
+// version — remote triage keys off this, and every prior bundle read "0.9.0".
+const SCHEMA_VERSION: u32 = 2;
 const SECRET_REDACTION: &str = "<redacted:secret>";
 const DATABASE_PATH_REDACTION: &str = "<redacted:database-path>";
 
@@ -21,6 +24,11 @@ const DATABASE_PATH_REDACTION: &str = "<redacted:database-path>";
 pub struct SupportBundleExportParams {
     pub output_directory: Option<String>,
     pub ffmpeg_path: Option<String>,
+    /// The Electron app version (`app.getVersion()`), forwarded from the
+    /// renderer. The backend only knows its own crate version, which is
+    /// decoupled from the shipped app version (plan 024 S2).
+    #[serde(default)]
+    pub app_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +42,9 @@ pub struct SupportBundleExportResult {
 #[derive(Debug, Clone)]
 pub struct SupportBundleExportInput {
     pub output_directory: Option<PathBuf>,
+    /// The Electron app version (plan 024 S2); a missing/empty value degrades
+    /// to the backend crate version rather than an empty string.
+    pub app_version: Option<String>,
     pub database_path: PathBuf,
     pub health: BackendHealth,
     pub devices: DeviceList,
@@ -156,7 +167,24 @@ pub fn export_support_bundle(input: SupportBundleExportInput) -> Result<SupportB
 
 pub fn build_support_bundle(input: SupportBundleExportInput) -> Result<SupportBundle> {
     let mut redaction_summary = SupportBundleRedactionSummary::default();
+    // Resolve the reported app version ONCE: the Electron app version when the
+    // renderer forwarded it, else the crate version — never empty (plan 024 S2).
+    let app_version = input
+        .app_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     let mut health = serde_json::to_value(input.health)?;
+    // health.version reads the same crate version at its source (main.rs); make
+    // the bundle copy agree with app.version so both identify the shipped build.
+    if let Some(object) = health.as_object_mut() {
+        object.insert(
+            "version".to_string(),
+            serde_json::Value::String(app_version.clone()),
+        );
+    }
     let mut entitlements = serde_json::to_value(input.entitlements)?;
     let mut recording = serde_json::to_value(input.recording)?;
     let mut diagnostics = serde_json::to_value(input.diagnostics)?;
@@ -175,7 +203,7 @@ pub fn build_support_bundle(input: SupportBundleExportInput) -> Result<SupportBu
         schema_version: SCHEMA_VERSION,
         generated_at: Utc::now().to_rfc3339(),
         app: SupportBundleApp {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: app_version,
             commit: support_bundle_commit(),
             platform: std::env::consts::OS.to_string(),
             run_mode: backend_run_mode(),
@@ -619,10 +647,14 @@ mod tests {
         ));
         let input = SupportBundleExportInput {
             output_directory: Some(directory.clone()),
+            // Plan 024 S2: the renderer forwards the Electron app version.
+            app_version: Some("0.9.16".to_string()),
             database_path: directory.join("videorc.sqlite3"),
             health: BackendHealth {
                 status: "ok".to_string(),
-                version: "test".to_string(),
+                // The backend's crate-version health field; the builder must
+                // overwrite this bundle copy with the forwarded app version.
+                version: "0.9.0".to_string(),
                 platform: "macos".to_string(),
                 ffmpeg: ToolStatus {
                     path: "/opt/homebrew/bin/ffmpeg".to_string(),
@@ -669,7 +701,11 @@ mod tests {
         let result = export_support_bundle(input).unwrap();
         let text = std::fs::read_to_string(&result.path).unwrap();
 
-        assert!(text.contains("\"schemaVersion\": 1"));
+        assert!(text.contains("\"schemaVersion\": 2"));
+        // Both app.version and health.version carry the FORWARDED app version,
+        // never the backend crate version (plan 024 S2).
+        assert!(text.contains("\"version\": \"0.9.16\""));
+        assert!(!text.contains("\"version\": \"0.9.0\""));
         assert!(text.contains(DATABASE_PATH_REDACTION));
         assert!(!text.contains("plain-key"));
         assert!(!text.contains("sk-test"));
@@ -688,5 +724,48 @@ mod tests {
                 .contains(&"lastAudioMeter".to_string())
         );
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    // Plan 024 S2: an absent/empty forwarded app version degrades to the crate
+    // version — never an empty string.
+    #[test]
+    fn app_version_degrades_to_crate_version_when_absent() {
+        for forwarded in [None, Some(String::new()), Some("   ".to_string())] {
+            let bundle = build_support_bundle(minimal_input(forwarded)).unwrap();
+            assert_eq!(bundle.app.version, env!("CARGO_PKG_VERSION"));
+        }
+        let bundle = build_support_bundle(minimal_input(Some("0.9.16".to_string()))).unwrap();
+        assert_eq!(bundle.app.version, "0.9.16");
+    }
+
+    fn minimal_input(app_version: Option<String>) -> SupportBundleExportInput {
+        SupportBundleExportInput {
+            output_directory: None,
+            app_version,
+            database_path: std::path::PathBuf::from("/tmp/videorc.sqlite3"),
+            health: BackendHealth {
+                status: "ok".to_string(),
+                version: "0.9.0".to_string(),
+                platform: "macos".to_string(),
+                ffmpeg: ToolStatus {
+                    path: "ffmpeg".to_string(),
+                    available: true,
+                    version: None,
+                    message: None,
+                },
+                database_path: "/tmp/videorc.sqlite3".to_string(),
+                secret_store_backend: "json-file".to_string(),
+            },
+            devices: DeviceList {
+                devices: vec![],
+                warnings: vec![],
+            },
+            last_audio_meter: None,
+            entitlements: current_entitlements(),
+            recording: idle_status(),
+            diagnostics: idle_diagnostics(),
+            logs: vec![],
+            sessions: vec![],
+        }
     }
 }

@@ -4027,7 +4027,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       const result = await client.request<SupportBundleExportResult>(
         'diagnostics.supportBundle.export',
         {
-          ffmpegPath: settings.ffmpegPath.trim() || undefined
+          ffmpegPath: settings.ffmpegPath.trim() || undefined,
+          // S2 (plan 024): the backend only knows its crate version (stuck at
+          // 0.9.0); forward the real Electron app version so the bundle
+          // identifies the shipped build. Absent → backend degrades to crate.
+          appVersion: runtimeInfo?.version
         }
       )
       const reveal = window.videorc?.revealPath
@@ -4045,7 +4049,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     } finally {
       setSupportBundleExportPending(false)
     }
-  }, [client, reportError, settings.ffmpegPath, supportBundleExportPending])
+  }, [client, reportError, runtimeInfo?.version, settings.ffmpegPath, supportBundleExportPending])
 
   const sampleAudioMeter = useCallback(async () => {
     if (!client) {
