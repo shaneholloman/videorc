@@ -39,7 +39,7 @@ row when done.
 | 021 | Fix the first external-tester feedback batch (preview vanish, nudge d-pad, silent mic) | P0 | M | Reporter support bundle (F3 attribution only) | DONE (2026-07-06; F1–F4 on main, gates PASS; pending owner: F0 Discord ask + reporter confirmation on the next shipped build) |
 | 022 | Full-app QA fix list: comments crash + gate hole, device-gate repeatability, toast/settings/light-theme/select polish | P0 | M | Owner for Q1 TCC grants + Q2 provider accounts | DONE (2026-07-06; Q0–Q8 on main, gates PASS; pending owner: Q1 TCC grants + device-gate run, Q2 provider accounts, UI by-eye) |
 | 023 | Fix record+stream A/V: slideshow recordings (wallclock PTS on the Annex-B split path) and stream audio skew | P0 | L | none (by-eye needs a real Twitch stream) | DONE (2026-07-07; L0/L1/L3/L4 on main, L2 unneeded — MpegTs default w/ fifo-muxer legs, gates PASS; pending owner: real Twitch+4K by-eye on next release) |
-| 024 | Preview start-stretch + click-flash hint, backend-lost toast stack on permission grant, version-blind support bundle | P0 | M | none (preview by-eye needs a camera) | TODO |
+| 024 | Preview start-stretch + click-flash hint, backend-lost toast stack on permission grant, version-blind support bundle | P0 | M | none (preview by-eye needs a camera) | DONE (2026-07-07; S1–S5 on main, adversarially-verified root causes, gates PASS; S6 owner-triage list; pending owner by-eye + deferred commit-SHA build step) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).

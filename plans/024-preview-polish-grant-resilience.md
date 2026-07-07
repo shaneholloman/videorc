@@ -33,7 +33,22 @@
 - **Depends on**: nothing external; S3/S4 by-eye need a real camera (Cam Link 4K reproduces best)
 - **Category**: renderer resilience, diagnostics, native preview
 - **Planned at**: commit `cf9c9c7a`, 2026-07-07
-- **Execution**: TODO
+- **Execution**: EXECUTED 2026-07-07 (S1 `052964af`, S2 `e221b275`, S4
+  `9091486d`, S3 `07f8c84b`, S5 `7c271796` on main, pushed per slice). S6 =
+  owner-triage list (no code). Chosen open-decision answers: S1 suppress
+  transient toasts while `wsStatus !== connected` + keyed id for connected
+  blips; S2 overwrite the bundle's `health.version` copy (not the shared
+  `backend_health()`), schema bumped 1→2, `commit`-SHA injection (build.rs)
+  DEFERRED to the Release owner (`commit` stays null); S3 shipped the
+  letterbox present (option A) — the deeper compose-at-output seam is a
+  follow-up if the transient bars are visible by-eye. Each root cause was
+  adversarially verified before coding (the workflow refuted the original
+  watchdog-repaint and compositor-lag theories). Gates PASS per slice
+  (desktop unit tests, cargo, probe:preview-lifecycle). PENDING owner by-eye:
+  (1) first-ever grant → calm badge, no red stack; (2) export a bundle on
+  0.9.16 → app.version + health.version both 0.9.16, schemaVersion 2;
+  (3) Cam Link preview → no start-stretch; (4) click a live preview → no
+  flashing text; (5) Cam Link camera → the 4K@25 shortfall warning.
 
 ## Reports + evidence (verified)
 
