@@ -30,34 +30,28 @@ pub enum AvFoundationDeviceKind {
 }
 
 pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
+    #[cfg(target_os = "macos")]
+    {
+        return list_macos_devices(ffmpeg_path).await;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = ffmpeg_path;
+        return list_windows_devices();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = ffmpeg_path;
+        unsupported_device_list()
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn list_macos_devices(ffmpeg_path: &str) -> DeviceList {
     let mut devices = Vec::new();
     let mut warnings = Vec::new();
-
-    if !cfg!(target_os = "macos") {
-        devices.extend([
-            Device {
-                id: "screen:unsupported-platform".to_string(),
-                name: "Primary Display".to_string(),
-                kind: DeviceKind::Screen,
-                status: DeviceStatus::Unavailable,
-                detail: Some("This spike only probes macOS devices.".to_string()),
-                width: None,
-                height: None,
-            },
-            Device {
-                id: "window:unsupported-platform".to_string(),
-                name: "Window Capture".to_string(),
-                kind: DeviceKind::Window,
-                status: DeviceStatus::Unavailable,
-                detail: Some("This spike only probes macOS devices.".to_string()),
-                width: None,
-                height: None,
-            },
-            system_audio_placeholder(),
-        ]);
-        warnings.push("Device probing is only implemented for macOS in this spike.".to_string());
-        return DeviceList { devices, warnings };
-    }
 
     let native_capture_sources = list_native_capture_sources();
     let screen_capture_permission_required = native_capture_sources.devices.iter().any(|device| {
@@ -131,6 +125,65 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
 
     devices.extend(native_microphones);
     devices.push(system_audio_placeholder());
+
+    DeviceList { devices, warnings }
+}
+
+#[cfg(target_os = "windows")]
+fn list_windows_devices() -> DeviceList {
+    windows_device_list_from_parts(
+        list_native_capture_sources(),
+        list_native_cameras(),
+        list_native_microphones(),
+    )
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_device_list_from_parts(
+    native_capture_sources: crate::screen_capture::NativeCaptureSources,
+    native_cameras: crate::camera_capture::NativeCameraDevices,
+    native_microphones: Vec<Device>,
+) -> DeviceList {
+    let mut devices = Vec::new();
+    let mut warnings = Vec::new();
+
+    warnings.extend(native_capture_sources.warnings);
+    devices.extend(native_capture_sources.devices);
+    warnings.extend(native_cameras.warnings);
+    devices.extend(native_cameras.devices);
+    devices.extend(native_microphones);
+    devices.push(system_audio_placeholder());
+
+    DeviceList { devices, warnings }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn unsupported_device_list() -> DeviceList {
+    let mut devices = Vec::new();
+    let mut warnings = Vec::new();
+
+    devices.extend([
+        Device {
+            id: "screen:unsupported-platform".to_string(),
+            name: "Primary Display".to_string(),
+            kind: DeviceKind::Screen,
+            status: DeviceStatus::Unavailable,
+            detail: Some("Device probing is only implemented for macOS/Windows.".to_string()),
+            width: None,
+            height: None,
+        },
+        Device {
+            id: "window:unsupported-platform".to_string(),
+            name: "Window Capture".to_string(),
+            kind: DeviceKind::Window,
+            status: DeviceStatus::Unavailable,
+            detail: Some("Device probing is only implemented for macOS/Windows.".to_string()),
+            width: None,
+            height: None,
+        },
+        system_audio_placeholder(),
+    ]);
+    warnings.push("Device probing is only implemented for macOS/Windows.".to_string());
 
     DeviceList { devices, warnings }
 }
@@ -224,7 +277,7 @@ fn system_audio_placeholder() -> Device {
         name: "System Audio".to_string(),
         kind: DeviceKind::SystemAudio,
         status: DeviceStatus::Unavailable,
-        detail: Some("System audio capture depends on the native macOS adapter.".to_string()),
+        detail: Some("System audio capture depends on the native audio adapter.".to_string()),
         width: None,
         height: None,
     }
@@ -804,6 +857,63 @@ mod tests {
                 .as_deref()
                 .unwrap_or_default()
                 .contains("native preview")
+        );
+    }
+
+    #[test]
+    fn windows_devices_expose_native_rows_without_avfoundation_fallbacks() {
+        let devices = windows_device_list_from_parts(
+            crate::screen_capture::NativeCaptureSources {
+                devices: vec![Device {
+                    id: "screen:dxgi:0000000000000001:0".to_string(),
+                    name: "Display 1".to_string(),
+                    kind: DeviceKind::Screen,
+                    status: DeviceStatus::Available,
+                    detail: Some("Windows DXGI output DISPLAY1.".to_string()),
+                    width: Some(1920),
+                    height: Some(1080),
+                }],
+                warnings: vec!["screen warning".to_string()],
+            },
+            crate::camera_capture::NativeCameraDevices {
+                devices: vec![Device {
+                    id: "camera:windows-dshow:5553422043616d657261".to_string(),
+                    name: "USB Camera".to_string(),
+                    kind: DeviceKind::Camera,
+                    status: DeviceStatus::Available,
+                    detail: None,
+                    width: None,
+                    height: None,
+                }],
+                warnings: vec!["camera warning".to_string()],
+            },
+            vec![Device {
+                id: "microphone:windows-dshow:4d6963726f70686f6e65204172726179".to_string(),
+                name: "Microphone Array".to_string(),
+                kind: DeviceKind::Microphone,
+                status: DeviceStatus::Available,
+                detail: None,
+                width: None,
+                height: None,
+            }],
+        );
+
+        assert_eq!(
+            devices
+                .devices
+                .iter()
+                .map(|device| device.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "screen:dxgi:0000000000000001:0",
+                "camera:windows-dshow:5553422043616d657261",
+                "microphone:windows-dshow:4d6963726f70686f6e65204172726179",
+                "system-audio:native-adapter-pending",
+            ]
+        );
+        assert_eq!(
+            devices.warnings,
+            vec!["screen warning".to_string(), "camera warning".to_string()]
         );
     }
 

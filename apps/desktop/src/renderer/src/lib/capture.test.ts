@@ -350,25 +350,45 @@ describe('ScreenCaptureKit capture device filtering', () => {
       kind: 'screen',
       status: 'available'
     }
+    const windowsDxgiDisplay: Device = {
+      id: 'screen:dxgi:0000000000000001:0',
+      name: 'Display 1',
+      kind: 'screen',
+      status: 'available'
+    }
+    const windowsGdigrabDisplay: Device = {
+      id: 'screen:gdigrab:desktop',
+      name: 'Desktop',
+      kind: 'screen',
+      status: 'available'
+    }
 
     expect(isScreenCaptureKitCaptureDevice(permissionDisplay)).toBe(true)
     expect(isScreenCaptureKitCaptureDevice(permissionWindow)).toBe(true)
     expect(isScreenCaptureKitCaptureDevice(nativeDisplay)).toBe(true)
+    expect(isScreenCaptureKitCaptureDevice(windowsDxgiDisplay)).toBe(true)
+    expect(isScreenCaptureKitCaptureDevice(windowsGdigrabDisplay)).toBe(true)
     expect(isScreenCaptureKitCaptureDevice(legacyDisplay)).toBe(false)
 
     expect(isCapturePickerDevice(permissionDisplay)).toBe(true)
     expect(isCapturePickerDevice(permissionWindow)).toBe(true)
     expect(isCapturePickerDevice(nativeDisplay)).toBe(true)
+    expect(isCapturePickerDevice(windowsDxgiDisplay)).toBe(true)
+    expect(isCapturePickerDevice(windowsGdigrabDisplay)).toBe(true)
     expect(isCapturePickerDevice(legacyDisplay)).toBe(true)
 
     expect(isNativeCaptureDevice(permissionDisplay)).toBe(false)
     expect(isNativeCaptureDevice(permissionWindow)).toBe(false)
     expect(isNativeCaptureDevice(nativeDisplay)).toBe(true)
+    expect(isNativeCaptureDevice(windowsDxgiDisplay)).toBe(true)
+    expect(isNativeCaptureDevice(windowsGdigrabDisplay)).toBe(true)
     expect(isNativeCaptureDevice(legacyDisplay)).toBe(false)
 
     expect(isSelectableCaptureDevice(permissionDisplay)).toBe(false)
     expect(isSelectableCaptureDevice(permissionWindow)).toBe(false)
     expect(isSelectableCaptureDevice(nativeDisplay)).toBe(true)
+    expect(isSelectableCaptureDevice(windowsDxgiDisplay)).toBe(true)
+    expect(isSelectableCaptureDevice(windowsGdigrabDisplay)).toBe(true)
     expect(isSelectableCaptureDevice(legacyDisplay)).toBe(true)
     expect(isSelectableCaptureDevice(blockedLegacyDisplay)).toBe(false)
   })
@@ -593,6 +613,8 @@ describe('layout preset source requirements', () => {
 
   it('treats native screen/window, avfoundation fallback, and test pattern as screen-capable for layouts', () => {
     expect(hasSelectedScreenSource({ screenId: 'screen:screencapturekit:1' })).toBe(true)
+    expect(hasSelectedScreenSource({ screenId: 'screen:dxgi:0000000000000001:0' })).toBe(true)
+    expect(hasSelectedScreenSource({ screenId: 'screen:gdigrab:desktop' })).toBe(true)
     expect(hasSelectedScreenSource({ windowId: 'window:screencapturekit:1' })).toBe(true)
     expect(hasSelectedScreenSource({ testPattern: true })).toBe(true)
     expect(hasSelectedScreenSource({ screenId: 'screen:avfoundation:7' })).toBe(true)

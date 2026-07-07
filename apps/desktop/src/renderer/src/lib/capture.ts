@@ -1277,7 +1277,11 @@ function sourceIdentityFor(device: Device | undefined): { id?: string; name?: st
 }
 
 export function isNativeScreenSourceId(sourceId: string | undefined): boolean {
-  return sourceId?.startsWith('screen:screencapturekit:') === true
+  return (
+    sourceId?.startsWith('screen:screencapturekit:') === true ||
+    sourceId?.startsWith('screen:dxgi:') === true ||
+    sourceId === 'screen:gdigrab:desktop'
+  )
 }
 
 export function isNativeWindowSourceId(sourceId: string | undefined): boolean {
