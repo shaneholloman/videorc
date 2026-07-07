@@ -6,13 +6,10 @@ This runbook is the release acceptance path for first-class OAuth/native livestr
 
 ## Provider Assumptions Checked 2026-07-07
 
-- **YouTube:** Live Streaming API requests must be authorized by the Google
-  account that owns the broadcasting channel. The channel must be verified,
-  free of live-streaming restrictions, and live streaming may take up to
-  24 hours to become available after first enablement. Videorc must keep
-  waiting for the bound stream to report active ingest before transitioning a
-  broadcast live, then transition the broadcast to complete when the session
-  ends.
+- **YouTube:** OAuth/native Live Streaming API support is paused while Videorc
+  awaits Google app approval. The product must expose YouTube as Manual RTMP
+  only, block stale YouTube OAuth settings with the approval message, and defer
+  native broadcast/channel acceptance until Google approval completes.
 - **Twitch:** The developer app must register the OAuth redirect URL(s), and
   broadcaster actions use user access tokens with scoped permissions. The
   existing Videorc scopes still map to the current docs:
@@ -79,8 +76,8 @@ pnpm smoke:provider-readiness:evidence
 Set the OAuth credentials in the environment used to launch the app or build the backend.
 
 OAuth uses the backend's dedicated loopback callback listener, bound to the first free
-port of `17995`, `27995`, `37995`. Register ALL THREE callback URLs in every provider's
-developer portal so one busy port cannot break OAuth:
+port of `17995`, `27995`, `37995`. Register ALL THREE callback URLs in every active
+OAuth provider's developer portal so one busy port cannot break OAuth:
 
 ```text
 http://127.0.0.1:17995/oauth/callback
@@ -98,9 +95,9 @@ http://localhost:27995/oauth/callback
 http://localhost:37995/oauth/callback
 ```
 
-Exact-match providers (X, Twitch) reject unregistered ports; Google accepts any
-loopback port. If all three candidates are busy the backend logs a warning and falls
-back to its dynamic main port (Google keeps working, X/Twitch will not).
+Exact-match providers (X, Twitch) reject unregistered ports. If all three
+candidates are busy the backend logs a warning and falls back to its dynamic
+main port, which is not accepted by those exact-match providers.
 
 After the fixed callback URLs are registered or otherwise verified for the
 release provider apps, set this smoke flag:
@@ -125,15 +122,9 @@ without a user gesture and browsers block gestureless custom-scheme navigation,
 leaving x.com's consent page on an infinite spinner while the app never receives the
 callback.
 
-YouTube:
-
-```sh
-VIDEORC_YOUTUBE_CLIENT_ID=...
-VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID=...
-VIDEORC_SMOKE_YOUTUBE_CHANNEL_READY=1
-```
-
-YouTube uses PKCE in Videorc, so `VIDEORC_YOUTUBE_CLIENT_SECRET` is optional. The test account must own or be able to select a verified Live-enabled channel.
+YouTube OAuth is intentionally disabled until Google approval completes. Do not
+set Google OAuth readiness flags for release acceptance. Use Manual RTMP with a
+YouTube stream key for YouTube smoke coverage.
 
 Twitch:
 
@@ -180,27 +171,24 @@ ingest, publish, end, and redacted-diagnostics behavior. If OAuth1 credentials
 are not configured, leave `VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY` unset and
 keep X OAuth/native blocked with explicit manual RTMP still available.
 
-## YouTube Acceptance
+## YouTube Manual RTMP Acceptance
 
-1. Launch the packaged release candidate with YouTube OAuth credentials.
-2. Open Streaming and connect YouTube through OAuth.
-3. Confirm the connected account identity appears and the credential source badge is `Bundled default` or the intended environment override.
-4. Select the intended YouTube channel or brand channel.
-5. Set global title and description. Use unlisted or private privacy for the test.
-6. Enable the YouTube OAuth destination.
+1. Launch the packaged release candidate without Google OAuth credentials.
+2. Open Streaming and expand YouTube.
+3. Confirm the auth mode is Manual RTMP and the OAuth pause message mentions Google approval.
+4. Paste a YouTube RTMP stream key and save it.
+5. Set global title and description in Videorc, then create/configure the YouTube live event in YouTube Studio.
+6. Enable the YouTube destination.
 7. Confirm Studio's primary button says `Start Livestream` or `Start Livestream + Record`.
 8. Click Start, review the Go Live confirmation, then confirm.
-9. Verify YouTube Studio shows the expected title, description, privacy, and fresh broadcast.
-10. Verify Videorc waits for active ingest before transitioning the broadcast live.
-11. Verify video and audio arrive on YouTube.
-12. Stop in Videorc and verify the YouTube broadcast transitions to complete.
+9. Verify video and audio arrive on the manually configured YouTube event.
+10. Stop in Videorc and end the event in YouTube Studio.
 
 Expected evidence:
 
-- YouTube OAuth account screenshot.
-- selected channel screenshot.
+- YouTube Manual RTMP auth-mode screenshot showing the Google approval pause message.
 - Go Live confirmation screenshot.
-- YouTube Studio screenshot showing matching metadata.
+- YouTube Studio screenshot for the manually configured event.
 - final platform URL or broadcast ID.
 
 ## Twitch Acceptance
@@ -266,7 +254,7 @@ If native access is not available:
 - Run context: dev/packaged
 - Provider readiness: pass/fail, redacted output attached
 - Provider readiness evidence: paste `pnpm smoke:provider-readiness:evidence` output
-- YouTube: pass/fail, channel, broadcast ID/URL, notes
+- YouTube Manual RTMP: pass/fail, channel, broadcast ID/URL, notes
 - Twitch: pass/fail, channel URL, notes
 - X: pass/fail/blocked, allow-list/OAuth1 evidence, broadcast URL, notes
 - Local smokes: pass/fail

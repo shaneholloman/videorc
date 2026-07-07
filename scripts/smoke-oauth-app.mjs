@@ -62,7 +62,7 @@ try {
     }
 
     const appProtocol = await request(ws, timeoutMs, 'platformAccounts.oauth.startProvider', {
-      platform: 'youtube',
+      platform: 'x',
       redirectUri: 'videorc://oauth/callback'
     })
     if (appProtocol.redirectUri !== 'videorc://oauth/callback') {
@@ -87,7 +87,7 @@ try {
     if (
       failedCallback.status !== 'failed' ||
       failedEvent.status !== 'failed' ||
-      failedEvent.platform !== 'youtube'
+      failedEvent.platform !== 'x'
     ) {
       throw new Error(
         `Provider OAuth app-protocol cancellation was not reported as failed: ${JSON.stringify({
@@ -144,7 +144,7 @@ function launchAndReadConnection() {
       cwd: repoRoot,
       detached: true,
       env: smokeAppEnv({
-        VIDEORC_YOUTUBE_CLIENT_ID: 'smoke-youtube-client-id',
+        VIDEORC_X_CLIENT_ID: 'smoke-x-client-id',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       }),
       stdio: ['ignore', 'pipe', 'pipe']

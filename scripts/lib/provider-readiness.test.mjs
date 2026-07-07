@@ -35,8 +35,15 @@ describe('provider readiness evidence', () => {
     assert.equal(result.ready, true)
     assert.equal(result.runContext, 'dev')
     assert.deepEqual(result.failures, [])
-    assert.equal(result.providers.find((provider) => provider.label === 'YouTube').clientId.source, 'environment')
-    assert.equal(result.providers.find((provider) => provider.label === 'Twitch').clientId.source, 'bundled')
+    assert.equal(
+      result.providers.find((provider) => provider.label === 'YouTube').clientId.source,
+      'paused'
+    )
+    assert.equal(result.providers.find((provider) => provider.label === 'YouTube').paused, true)
+    assert.equal(
+      result.providers.find((provider) => provider.label === 'Twitch').clientId.source,
+      'bundled'
+    )
   })
 
   it('reports missing prerequisites by env var name without printing values', () => {
@@ -53,7 +60,8 @@ describe('provider readiness evidence', () => {
 
     assert.equal(result.ready, false)
     assert.match(markdown, /VIDEORC_SMOKE_PROVIDER_CALLBACKS_READY=missing/)
-    assert.match(markdown, /VIDEORC_SMOKE_YOUTUBE_CHANNEL_READY=1/)
+    assert.match(markdown, /Paused Provider Paths/)
+    assert.match(markdown, /YouTube OAuth is paused/)
     assert.match(markdown, /X Native Live Access/)
     assert.match(consoleReport, /Provider live-smoke readiness is incomplete/)
     assert.doesNotMatch(markdown, /do-not-print-youtube-client/)
@@ -63,9 +71,15 @@ describe('provider readiness evidence', () => {
   })
 
   it('records packaged run context from smoke environment', () => {
-    assert.equal(detectRunContext({ VIDEORC_PACKAGED_APP_EXECUTABLE: '/Applications/Videorc.app' }), 'packaged')
+    assert.equal(
+      detectRunContext({ VIDEORC_PACKAGED_APP_EXECUTABLE: '/Applications/Videorc.app' }),
+      'packaged'
+    )
     assert.equal(detectRunContext({ VIDEORC_SMOKE_PACKAGED_APP: '1' }), 'packaged')
-    assert.equal(detectRunContext({ VIDEORC_PROVIDER_READINESS_RUN_CONTEXT: 'release-candidate' }), 'release-candidate')
+    assert.equal(
+      detectRunContext({ VIDEORC_PROVIDER_READINESS_RUN_CONTEXT: 'release-candidate' }),
+      'release-candidate'
+    )
   })
 
   it('includes callback URLs and source fields in markdown evidence', () => {

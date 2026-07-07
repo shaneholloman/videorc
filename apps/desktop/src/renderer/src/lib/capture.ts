@@ -143,6 +143,17 @@ const STREAM_PLATFORM_LABELS: Record<StreamPlatform, string> = {
   custom: 'Custom RTMP'
 }
 
+export const YOUTUBE_OAUTH_UNAVAILABLE_MESSAGE =
+  'YouTube OAuth is temporarily unavailable while Videorc awaits Google approval. Use Manual RTMP for YouTube for now.'
+
+export function oauthUnavailableReason(platform: StreamPlatform): string | null {
+  return platform === 'youtube' ? YOUTUBE_OAUTH_UNAVAILABLE_MESSAGE : null
+}
+
+export function isPlatformOAuthAvailable(platform: StreamPlatform): boolean {
+  return platform !== 'custom' && !oauthUnavailableReason(platform)
+}
+
 function isStreamPlatform(value: unknown): value is StreamPlatform {
   return typeof value === 'string' && (STREAM_PLATFORM_ORDER as readonly string[]).includes(value)
 }
@@ -853,6 +864,10 @@ function normalizeStreamTarget(
     typeof saved.streamKeySecretRef === 'string' ? saved.streamKeySecretRef : undefined
   const serverUrl =
     typeof saved.serverUrl === 'string' && saved.serverUrl.trim() ? saved.serverUrl : base.serverUrl
+  const savedAuthMode = saved.authMode === 'oauth' ? 'oauth' : 'manual-rtmp'
+  const authMode =
+    savedAuthMode === 'oauth' && isPlatformOAuthAvailable(base.platform) ? 'oauth' : 'manual-rtmp'
+  const oauthUnavailable = savedAuthMode === 'oauth' && authMode !== 'oauth'
   return {
     // id, platform, status keep the built-in identity from base.
     ...base,
@@ -860,16 +875,24 @@ function normalizeStreamTarget(
     enabled: typeof saved.enabled === 'boolean' ? saved.enabled : false,
     serverUrl,
     urlMode: saved.urlMode === 'full-url' ? 'full-url' : 'server-and-key',
-    streamKey,
-    streamKeySecretRef,
-    streamKeyPresent: streamKey.length > 0 || Boolean(streamKeySecretRef),
-    authMode: saved.authMode === 'oauth' ? 'oauth' : 'manual-rtmp',
-    accountId: typeof saved.accountId === 'string' ? saved.accountId : undefined,
-    accountLabel: typeof saved.accountLabel === 'string' ? saved.accountLabel : undefined,
+    streamKey: oauthUnavailable ? '' : streamKey,
+    streamKeySecretRef: oauthUnavailable ? undefined : streamKeySecretRef,
+    streamKeyPresent: !oauthUnavailable && (streamKey.length > 0 || Boolean(streamKeySecretRef)),
+    authMode,
+    accountId:
+      authMode === 'oauth' && typeof saved.accountId === 'string' ? saved.accountId : undefined,
+    accountLabel:
+      authMode === 'oauth' && typeof saved.accountLabel === 'string'
+        ? saved.accountLabel
+        : undefined,
     platformBroadcastId:
-      typeof saved.platformBroadcastId === 'string' ? saved.platformBroadcastId : undefined,
+      authMode === 'oauth' && typeof saved.platformBroadcastId === 'string'
+        ? saved.platformBroadcastId
+        : undefined,
     platformStreamId:
-      typeof saved.platformStreamId === 'string' ? saved.platformStreamId : undefined,
+      authMode === 'oauth' && typeof saved.platformStreamId === 'string'
+        ? saved.platformStreamId
+        : undefined,
     outputPreset:
       typeof saved.outputPreset === 'string' && saved.outputPreset in videoPresets
         ? saved.outputPreset
@@ -974,12 +997,15 @@ export function isStreamTargetReady(target: StreamTargetSettings): boolean {
 }
 
 export function isStreamTargetStartReady(target: StreamTargetSettings): boolean {
-  return target.authMode === 'oauth' || isStreamTargetReady(target)
+  if (target.authMode === 'oauth') {
+    return isPlatformOAuthAvailable(target.platform)
+  }
+  return isStreamTargetReady(target)
 }
 
 export function readyStreamTargetLabels(streaming: StreamingSettings): string[] {
   return streaming.targets
-    .filter((target) => target.enabled && isStreamTargetReady(target))
+    .filter((target) => target.enabled && isStreamTargetStartReady(target))
     .map((target) => target.label)
 }
 
@@ -994,8 +1020,8 @@ export function areEnabledStreamTargetsStartReady(streaming: StreamingSettings):
 export function bridgeStreamingToLegacy(config: CaptureConfig): CaptureConfig {
   const { streaming } = config
   const primary = streaming.enabled
-    ? (streaming.targets.find((target) => target.enabled && isStreamTargetReady(target)) ??
-      streaming.targets.find((target) => target.enabled))
+    ? (streaming.targets.find((target) => target.enabled && isStreamTargetStartReady(target)) ??
+      streaming.targets.find((target) => target.enabled && !isUnavailableOAuthTarget(target)))
     : undefined
 
   if (primary) {
@@ -1064,7 +1090,8 @@ export function applyStoredManualStreamKeyResult(
 
 export function persistableCaptureConfig(config: CaptureConfig): CaptureConfig {
   const { testPattern: _testPattern, ...sources } = config.sources
-  const targets = config.streaming.targets.map((target) => {
+  const targets = config.streaming.targets.map((item) => {
+    const target = removeUnavailableOAuthState(item)
     if (!target.streamKeySecretRef && target.authMode !== 'oauth') {
       return target
     }
@@ -1083,8 +1110,33 @@ export function persistableCaptureConfig(config: CaptureConfig): CaptureConfig {
     streaming,
     rtmpServerUrl:
       primary?.urlMode === 'full-url' && primary.streamKeySecretRef ? '' : config.rtmpServerUrl,
-    streamKey: primary?.authMode === 'oauth' || primary?.streamKeySecretRef ? '' : config.streamKey
+    streamKey:
+      primary?.authMode === 'oauth' || primary?.streamKeySecretRef
+        ? ''
+        : (primary?.streamKey ?? config.streamKey)
   }
+}
+
+function removeUnavailableOAuthState(target: StreamTargetSettings): StreamTargetSettings {
+  if (!isUnavailableOAuthTarget(target)) {
+    return target
+  }
+  return {
+    ...target,
+    authMode: 'manual-rtmp',
+    streamKey: '',
+    streamKeySecretRef: undefined,
+    streamKeyPresent: false,
+    accountId: undefined,
+    accountLabel: undefined,
+    platformBroadcastId: undefined,
+    platformStreamId: undefined,
+    status: { state: 'not-configured' }
+  }
+}
+
+function isUnavailableOAuthTarget(target: StreamTargetSettings): boolean {
+  return target.authMode === 'oauth' && !isPlatformOAuthAvailable(target.platform)
 }
 
 export function patchStreamTargetForEdit(
@@ -1092,18 +1144,27 @@ export function patchStreamTargetForEdit(
   patch: Partial<StreamTargetSettings>,
   now: string = new Date().toISOString()
 ): StreamTargetSettings {
-  const next: StreamTargetSettings = { ...target, ...patch, updatedAt: now }
+  const { authMode: requestedAuthMode, ...restPatch } = patch
+  const next: StreamTargetSettings = {
+    ...target,
+    ...restPatch,
+    ...(requestedAuthMode &&
+    (requestedAuthMode !== 'oauth' || isPlatformOAuthAvailable(target.platform))
+      ? { authMode: requestedAuthMode }
+      : {}),
+    updatedAt: now
+  }
   if (typeof patch.streamKey === 'string') {
     next.streamKeyPresent = patch.streamKey.trim().length > 0
   }
-  if (patch.authMode && patch.authMode !== target.authMode) {
+  if (requestedAuthMode && next.authMode !== target.authMode) {
     next.streamKey = ''
     next.streamKeySecretRef = undefined
     next.streamKeyPresent = false
     next.platformBroadcastId = undefined
     next.platformStreamId = undefined
     next.status = { state: 'not-configured' }
-    if (patch.authMode === 'oauth') {
+    if (next.authMode === 'oauth') {
       next.accountId = target.accountId
       next.accountLabel = target.accountLabel
     } else {
@@ -1123,7 +1184,7 @@ export function patchStreamTargetForEdit(
     next.streamKeyPresent = false
     next.status = { state: 'not-configured' }
   }
-  return next
+  return removeUnavailableOAuthState(next)
 }
 
 export function patchPreparedStreamTarget(
@@ -1148,6 +1209,7 @@ export function preparedYouTubeActivationTargets(
       target.enabled &&
       target.authMode === 'oauth' &&
       target.platform === 'youtube' &&
+      isPlatformOAuthAvailable(target.platform) &&
       Boolean(target.platformBroadcastId) &&
       Boolean(target.platformStreamId)
   )
@@ -1161,6 +1223,7 @@ export function preparedYouTubeCompletionTargets(
       target.enabled &&
       target.authMode === 'oauth' &&
       target.platform === 'youtube' &&
+      isPlatformOAuthAvailable(target.platform) &&
       target.status?.state === 'live' &&
       Boolean(target.platformBroadcastId)
   )

@@ -20,14 +20,11 @@ drives the coordinator + fake connector end to end over the real websocket proto
       isolated spawned async tasks that only touch provider status + the bounded buffer, never
       the capture/encode path, so there should be no regression.
 
-## YouTube OAuth live smoke (requires a YouTube account + scheduled broadcast)
+## YouTube live chat (deferred until Google approval)
 
-- [ ] Connect a YouTube account (scope set includes `youtube.force-ssl`).
-- [ ] Go Live to YouTube; confirm the Live Chat panel shows YouTube `connected`.
-- [ ] Post messages from a second account; confirm they appear in the panel in order.
-- [ ] Post a Super Chat / membership; confirm it renders as a paid/membership row with amount.
-- [ ] Delete a message in YouTube Studio; confirm the panel reflects it.
-- [ ] Stop the session; confirm YouTube provider goes `ended` and connectors stop.
+- [ ] Confirm YouTube chat readiness reports the Google approval pause message.
+- [ ] Do not connect a YouTube OAuth account or run YouTube chat acceptance until Google approval completes.
+- [ ] Use Manual RTMP for YouTube stream acceptance in the meantime.
 
 ## Twitch OAuth live smoke (requires a Twitch account, reconnected for `user:read:chat`)
 
@@ -48,8 +45,9 @@ drives the coordinator + fake connector end to end over the real websocket proto
 
 ## Multistream + partial release
 
-- [ ] Go Live to YouTube + Twitch + X simultaneously; confirm a single unified panel shows
-      every available platform's state, YouTube/Twitch comments interleaved chronologically,
-      and X as `pending API access` (comments blocked) without blocking Go Live.
+- [ ] Go Live to YouTube Manual RTMP + Twitch + X simultaneously; confirm a single unified panel shows
+      every available platform's state, Twitch comments chronologically,
+      YouTube as paused for Google approval, and X as `pending API access`
+      (comments blocked) without blocking Go Live.
 - [ ] Confirm the streamer can read all comments from the in-app panel **without opening any
       platform dashboard**.

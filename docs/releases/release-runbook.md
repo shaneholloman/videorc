@@ -10,10 +10,10 @@ repeatable per-release process. For one-time signing setup see
 Two artifact sets in the same private R2 bucket (`videorc-releases`), fronted by
 videorc-web:
 
-| Artifacts | R2 keys | Web route | Audience |
-| --- | --- | --- | --- |
-| **Download** (dmg + sha256 + release.json) | `releases/macos/<releaseId>/` | `/api/downloads/macos/latest` (auth-gated, presigned) | New users |
-| **Update feed** (`latest-mac.yml` + `.zip` + `.zip.blockmap`) | `updates/macos/` (stable, overwritten each release) | `/api/updates/*` (public, presigned) | Existing users auto-updating |
+| Artifacts                                                     | R2 keys                                             | Web route                                             | Audience                     |
+| ------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------- | ---------------------------- |
+| **Download** (dmg + sha256 + release.json)                    | `releases/macos/<releaseId>/`                       | `/api/downloads/macos/latest` (auth-gated, presigned) | New users                    |
+| **Update feed** (`latest-mac.yml` + `.zip` + `.zip.blockmap`) | `updates/macos/` (stable, overwritten each release) | `/api/updates/*` (public, presigned)                  | Existing users auto-updating |
 
 The desktop **Settings → About & updates** button — and the automatic launch
 check (default in packaged builds since 0.9.10; opt out via
@@ -40,12 +40,10 @@ check (default in packaged builds since 0.9.10; opt out via
 - **R2 write creds** — the `VIDEORC_DOWNLOAD_S3_*` values (same bucket as
   videorc-web), with an **Object Read & Write** token. They live in the web app's
   `.env` (`~/projects/videorcweb/.env`).
-- **YouTube OAuth secret** — `VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET` must be in
-  the build env (it lives in `~/.videorc-release.env`). The secret left source
-  when the repo went public; `option_env!` compiles it into `videorc-backend`,
-  and `release:validate:macos` **fails closed** if the built binary lacks the
-  exact build-time secret from the release environment. Without it, YouTube
-  connect in the shipped app reports a missing client secret.
+- **YouTube OAuth paused** — do not require or bundle Google OAuth credentials
+  while Videorc awaits Google approval. YouTube remains available through Manual
+  RTMP, and `release:validate:macos` does not check for a bundled YouTube OAuth
+  secret while this pause is active.
 - **⚠️ Bucket-less S3 endpoint** — `VIDEORC_DOWNLOAD_S3_ENDPOINT_URL` must be the
   ACCOUNT host only: `https://<account-id>.r2.cloudflarestorage.com` — **NOT**
   `.../videorc-releases`. The path-style client appends the bucket itself; an
@@ -140,9 +138,9 @@ release candidate:
   1. `pnpm smoke:screen-recording-real`
   2. `pnpm smoke:notes-window-invisible`
   3. `pnpm smoke:recording-studio:devices`
-  If the motion-stimulus signature fails, fix stimulus placement on the
-  SELECTED display (`VIDEORC_SCREEN_MOTION_*`) — never loosen the
-  signature assertion.
+     If the motion-stimulus signature fails, fix stimulus placement on the
+     SELECTED display (`VIDEORC_SCREEN_MOTION_*`) — never loosen the
+     signature assertion.
 - **Provider live readiness, strict**: with the smoke-only provider
   credentials from [../oauth-live-smoke.md](../oauth-live-smoke.md) in the
   environment, run readiness with `VIDEORC_SMOKE_REQUIRE_PROVIDER_READY=1`
@@ -169,8 +167,8 @@ ever changes again, update `publish.url`, `videorc-web-links.ts`, and the Rust
 ## Gotchas (hard-won)
 
 - **Bucket-less endpoint** (above) — the #1 silent failure: a doubled key uploads
-  "successfully" but the feed/download then 404. Verify by *following the
-  redirect* to R2, not just checking the route returns a 302.
+  "successfully" but the feed/download then 404. Verify by _following the
+  redirect_ to R2, not just checking the route returns a 302.
 - **Never cache the presigned redirect** — `/api/updates/*` 302s to a ~15-min
   presigned URL and is intentionally cached `max-age=60`. Do not restore a long /
   `immutable` cache, or the CDN serves an expired redirect (403). (videorc-web

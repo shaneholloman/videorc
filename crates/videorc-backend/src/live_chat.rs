@@ -184,10 +184,10 @@ fn capability_state_tag(state: ChatCapabilityState) -> &'static str {
 
 /// The OAuth scope each platform needs to READ live chat.
 ///
-/// YouTube's `youtube.force-ssl` scope (already requested by Videorc) covers live chat
-/// reads, so connected YouTube accounts are ready. Twitch needs `user:read:chat`, which is
-/// added to the OAuth config in the Twitch connector slice — until an account is
-/// reconnected with it, Twitch chat reports needs-reconnect.
+/// YouTube's chat-read path is paused with YouTube OAuth until Google approval
+/// completes. Twitch needs `user:read:chat`, which is added to the OAuth config
+/// in the Twitch connector slice — until an account is reconnected with it,
+/// Twitch chat reports needs-reconnect.
 pub const YOUTUBE_CHAT_SCOPE: &str = "https://www.googleapis.com/auth/youtube.force-ssl";
 pub const TWITCH_CHAT_SCOPE: &str = "user:read:chat";
 
@@ -226,14 +226,15 @@ pub fn chat_capability(
     account: Option<&PlatformAccount>,
 ) -> ChatCapability {
     match platform {
-        StreamPlatform::Youtube => scope_capability(
+        StreamPlatform::Youtube => ChatCapability {
             platform,
-            account,
-            YOUTUBE_CHAT_SCOPE,
-            "YouTube live comments are ready.",
-            "Reconnect YouTube to enable live comments.",
-            "Connect a YouTube account to read live comments.",
-        ),
+            state: ChatCapabilityState::Unsupported,
+            chat_read_available: false,
+            required_scope: Some(YOUTUBE_CHAT_SCOPE.to_string()),
+            account_id: account.map(|account| account.account_id.clone()),
+            account_label: account.map(|account| account.account_label.clone()),
+            message: crate::oauth::YOUTUBE_OAUTH_UNAVAILABLE_MESSAGE.to_string(),
+        },
         StreamPlatform::Twitch => scope_capability(
             platform,
             account,
@@ -1284,11 +1285,12 @@ mod tests {
     }
 
     #[test]
-    fn youtube_force_ssl_account_can_read_chat() {
+    fn youtube_chat_is_paused_until_google_approval() {
         let account = account(StreamPlatform::Youtube, &[YOUTUBE_CHAT_SCOPE]);
         let capability = chat_capability(StreamPlatform::Youtube, Some(&account));
-        assert_eq!(capability.state, ChatCapabilityState::Available);
-        assert!(capability.chat_read_available);
+        assert_eq!(capability.state, ChatCapabilityState::Unsupported);
+        assert!(!capability.chat_read_available);
+        assert!(capability.message.contains("Google approval"));
     }
 
     #[test]
@@ -1328,7 +1330,7 @@ mod tests {
     #[test]
     fn missing_account_reports_not_connected() {
         assert_eq!(
-            chat_capability(StreamPlatform::Youtube, None).state,
+            chat_capability(StreamPlatform::Twitch, None).state,
             ChatCapabilityState::NotConnected
         );
     }
@@ -1339,7 +1341,7 @@ mod tests {
         let capabilities = chat_capabilities(&accounts);
         assert_eq!(capabilities.len(), 3);
         assert_eq!(capabilities[0].platform, StreamPlatform::Youtube);
-        assert_eq!(capabilities[0].state, ChatCapabilityState::Available);
+        assert_eq!(capabilities[0].state, ChatCapabilityState::Unsupported);
         assert_eq!(capabilities[1].platform, StreamPlatform::Twitch);
         assert_eq!(capabilities[1].state, ChatCapabilityState::NotConnected);
         assert_eq!(capabilities[2].platform, StreamPlatform::X);
@@ -1391,11 +1393,11 @@ mod tests {
         assert_eq!(snapshot.providers[0].platform, StreamPlatform::Youtube);
         assert_eq!(
             snapshot.providers[0].state,
-            LiveChatProviderConnectionState::Disabled
+            LiveChatProviderConnectionState::Unsupported
         );
         assert_eq!(
             snapshot.providers[0].capabilities,
-            vec!["available".to_string()]
+            vec!["unsupported".to_string()]
         );
         assert_eq!(
             snapshot.providers[2].state,

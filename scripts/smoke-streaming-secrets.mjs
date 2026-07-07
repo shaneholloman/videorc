@@ -23,8 +23,12 @@ try {
   })
   await writeFile(tempModule, transpiled.outputText)
 
-  const { defaultCaptureConfig, normalizeStreamingSettings, patchStreamTargetForEdit, persistableCaptureConfig } =
-    require(tempModule)
+  const {
+    defaultCaptureConfig,
+    normalizeStreamingSettings,
+    patchStreamTargetForEdit,
+    persistableCaptureConfig
+  } = require(tempModule)
   const normalized = normalizeStreamingSettings({
     enabled: true,
     mode: 'single',
@@ -53,12 +57,13 @@ try {
 
   const youtube = normalized.targets.find((target) => target.platform === 'youtube')
   assert.ok(youtube)
-  assert.equal(youtube.authMode, 'oauth')
+  assert.equal(youtube.authMode, 'manual-rtmp')
   assert.equal(youtube.streamKey, '')
-  assert.equal(youtube.streamKeySecretRef, 'secret://youtube-stream-key')
-  assert.equal(youtube.streamKeyPresent, true)
-  assert.equal(youtube.platformBroadcastId, 'broadcast-123')
-  assert.equal(youtube.platformStreamId, 'stream-123')
+  assert.equal(youtube.streamKeySecretRef, undefined)
+  assert.equal(youtube.streamKeyPresent, false)
+  assert.equal(youtube.accountId, undefined)
+  assert.equal(youtube.platformBroadcastId, undefined)
+  assert.equal(youtube.platformStreamId, undefined)
 
   const twitch = normalized.targets.find((target) => target.platform === 'twitch')
   assert.ok(twitch)
@@ -93,12 +98,15 @@ try {
       )
     }
   })
-  const persistedYoutube = persisted.streaming.targets.find((target) => target.platform === 'youtube')
+  const persistedYoutube = persisted.streaming.targets.find(
+    (target) => target.platform === 'youtube'
+  )
   const persistedTwitch = persisted.streaming.targets.find((target) => target.platform === 'twitch')
   assert.equal(persisted.streamKey, '')
+  assert.equal(persistedYoutube.authMode, 'manual-rtmp')
   assert.equal(persistedYoutube.streamKey, '')
-  assert.equal(persistedYoutube.streamKeySecretRef, 'secret://youtube-stream-key')
-  assert.equal(persistedYoutube.streamKeyPresent, true)
+  assert.equal(persistedYoutube.streamKeySecretRef, undefined)
+  assert.equal(persistedYoutube.streamKeyPresent, false)
   assert.equal(persistedTwitch.streamKey, 'manual-key')
 
   const persistedManualSecret = persistableCaptureConfig({
@@ -121,7 +129,9 @@ try {
       )
     }
   })
-  const persistedManualTwitch = persistedManualSecret.streaming.targets.find((target) => target.platform === 'twitch')
+  const persistedManualTwitch = persistedManualSecret.streaming.targets.find(
+    (target) => target.platform === 'twitch'
+  )
   assert.equal(persistedManualSecret.streamKey, '')
   assert.equal(persistedManualTwitch.streamKey, '')
   assert.equal(persistedManualTwitch.streamKeySecretRef, 'stream-target:twitch:manual-stream-key')
@@ -146,7 +156,9 @@ try {
       )
     }
   })
-  const persistedManualDraftTwitch = persistedManualDraft.streaming.targets.find((target) => target.platform === 'twitch')
+  const persistedManualDraftTwitch = persistedManualDraft.streaming.targets.find(
+    (target) => target.platform === 'twitch'
+  )
   assert.equal(persistedManualDraft.streamKey, 'manual-key')
   assert.equal(persistedManualDraftTwitch.streamKey, 'manual-key')
 
@@ -173,7 +185,9 @@ try {
       )
     }
   })
-  const persistedFullUrlCustom = persistedFullUrlSecret.streaming.targets.find((target) => target.platform === 'custom')
+  const persistedFullUrlCustom = persistedFullUrlSecret.streaming.targets.find(
+    (target) => target.platform === 'custom'
+  )
   assert.equal(persistedFullUrlSecret.rtmpServerUrl, '')
   assert.equal(persistedFullUrlCustom.serverUrl, '')
   assert.equal(persistedFullUrlCustom.streamKey, '')
@@ -190,13 +204,15 @@ try {
     platformStreamId: 'old-stream',
     status: { state: 'ready', message: 'Old manual key.' }
   }
-  const oauthYouTube = patchStreamTargetForEdit(manualYouTube, { authMode: 'oauth' }, '2026-06-03T00:00:00.000Z')
-  assert.equal(oauthYouTube.authMode, 'oauth')
+  const oauthYouTube = patchStreamTargetForEdit(
+    manualYouTube,
+    { authMode: 'oauth' },
+    '2026-06-03T00:00:00.000Z'
+  )
+  assert.equal(oauthYouTube.authMode, 'manual-rtmp')
   assert.equal(oauthYouTube.streamKey, '')
-  assert.equal(oauthYouTube.streamKeySecretRef, undefined)
-  assert.equal(oauthYouTube.streamKeyPresent, false)
-  assert.equal(oauthYouTube.platformBroadcastId, undefined)
-  assert.equal(oauthYouTube.platformStreamId, undefined)
+  assert.equal(oauthYouTube.streamKeySecretRef, 'stream-target:youtube:manual-stream-key')
+  assert.equal(oauthYouTube.streamKeyPresent, true)
 
   const customFullUrl = patchStreamTargetForEdit(
     {
@@ -214,7 +230,9 @@ try {
   assert.equal(customFullUrl.streamKeySecretRef, undefined)
   assert.equal(customFullUrl.streamKeyPresent, false)
 
-  console.log('Streaming secret smoke OK - OAuth/manual secret refs survive reload and persistence without raw keys.')
+  console.log(
+    'Streaming secret smoke OK - paused YouTube OAuth and manual secret refs persist without raw keys.'
+  )
 } finally {
   await rm(tempDir, { recursive: true, force: true })
 }

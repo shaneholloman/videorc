@@ -22,6 +22,7 @@ import {
   buildCameraSources,
   areEnabledStreamTargetsStartReady,
   defaultSettings,
+  isPlatformOAuthAvailable,
   legacyStreamKeyMigrationCandidates,
   loadCaptureConfig,
   loadJson,
@@ -31,6 +32,7 @@ import {
   patchStreamTargetForEdit,
   persistableCaptureConfig,
   previewDeviceRefreshSignature,
+  oauthUnavailableReason,
   preparedXActivationTargets,
   preparedXCompletionTargets,
   preparedYouTubeActivationTargets,
@@ -1966,6 +1968,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
   const refreshYouTubeChannels = useCallback(
     async (accountId?: string, options: { background?: boolean } = {}) => {
+      const unavailable = oauthUnavailableReason('youtube')
+      if (unavailable) {
+        setYoutubeChannels([])
+        if (!options.background) {
+          toast.warning(unavailable)
+        }
+        return
+      }
       if (!client) {
         setYoutubeChannels([])
         return
@@ -1998,6 +2008,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
   const selectYouTubeChannel = useCallback(
     async (channelId: string, accountId?: string) => {
+      const unavailable = oauthUnavailableReason('youtube')
+      if (unavailable) {
+        toast.warning(unavailable)
+        return
+      }
       if (!client || wsStatus !== 'connected') {
         toast.error('Backend socket is not connected.')
         return
@@ -2056,7 +2071,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
   useEffect(() => {
     const account = platformAccounts.find((item) => item.platform === 'youtube')
-    if (!account || !shouldAutoRefreshYouTubeChannels(account, platformAccountValidations)) {
+    if (
+      !isPlatformOAuthAvailable('youtube') ||
+      !account ||
+      !shouldAutoRefreshYouTubeChannels(account, platformAccountValidations)
+    ) {
       setYoutubeChannels([])
       return
     }
@@ -4418,6 +4437,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
   const connectPlatformAccount = useCallback(
     async (platform: PlatformAccount['platform']) => {
+      const unavailable = oauthUnavailableReason(platform)
+      if (unavailable) {
+        toast.warning(unavailable)
+        return
+      }
       if (!client || wsStatus !== 'connected') {
         toast.error('Backend socket is not connected.')
         return
@@ -5021,6 +5045,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           let unhealthy: StreamTargetSettings | null = null
           let unhealthyMessage: string | null = null
           for (const target of enabledOauthTargets) {
+            const unavailable = oauthUnavailableReason(target.platform)
+            if (unavailable) {
+              unhealthy = target
+              unhealthyMessage = unavailable
+              break
+            }
             if (target.platform === 'x') {
               const capability = await client.request<XNativeLiveCapability>(
                 'streamTargets.x.capability',
@@ -5112,6 +5142,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     )) {
       try {
         if (target.platform === 'youtube') {
+          const unavailable = oauthUnavailableReason(target.platform)
+          if (unavailable) {
+            throw new Error(unavailable)
+          }
           const prepared = await client.request<PreparedYouTubeBroadcast>(
             'streamTargets.youtube.prepare',
             {

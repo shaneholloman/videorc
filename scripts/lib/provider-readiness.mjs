@@ -11,10 +11,14 @@ export const REQUIRED_OAUTH_CALLBACK_URLS = [
 ]
 
 export const PROVIDER_CALLBACKS_READY_ENV = 'VIDEORC_SMOKE_PROVIDER_CALLBACKS_READY'
+export const YOUTUBE_OAUTH_PAUSED_REASON =
+  'YouTube OAuth is paused while Videorc awaits Google approval; use Manual RTMP for YouTube acceptance.'
 
 export const PROVIDERS = [
   {
     label: 'YouTube',
+    paused: true,
+    pauseReason: YOUTUBE_OAUTH_PAUSED_REASON,
     clientIdVars: ['VIDEORC_YOUTUBE_CLIENT_ID', 'VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID'],
     secretVars: ['VIDEORC_YOUTUBE_CLIENT_SECRET'],
     secretRequired: false,
@@ -67,7 +71,9 @@ export function evaluateProviderReadiness({
   runContext = detectRunContext(env)
 } = {}) {
   const callbackCoverage = evaluateCallbackCoverage(env)
-  const providers = PROVIDERS.map((provider) => readinessForProvider(provider, env, callbackCoverage))
+  const providers = PROVIDERS.map((provider) =>
+    readinessForProvider(provider, env, callbackCoverage)
+  )
   const failures = providers.filter((provider) => !provider.ready)
 
   return {
@@ -85,7 +91,13 @@ export function evaluateProviderReadiness({
 export function formatProviderReadinessConsole(result) {
   const lines = []
   for (const provider of result.providers) {
-    lines.push(`[${provider.ready ? 'ready' : 'missing'}] ${provider.label}`)
+    lines.push(
+      `[${provider.paused ? 'paused' : provider.ready ? 'ready' : 'missing'}] ${provider.label}`
+    )
+    if (provider.paused) {
+      lines.push(`  - ${provider.pauseReason}`)
+      continue
+    }
     lines.push(`  - run context: ${result.runContext}`)
     lines.push(`  - client ID: ${credentialSourceLabel(provider.clientId)}`)
     lines.push(`  - client secret: ${secretSourceLabel(provider.clientSecret)}`)
@@ -104,10 +116,19 @@ export function formatProviderReadinessConsole(result) {
     }
   }
 
-  const readyLabels = result.providers.filter((provider) => provider.ready).map((provider) => provider.label)
+  const readyLabels = result.providers
+    .filter((provider) => provider.ready && !provider.paused)
+    .map((provider) => provider.label)
   if (readyLabels.length) {
     lines.push('')
     lines.push(`Ready providers: ${readyLabels.join(', ')}`)
+  }
+  const pausedLabels = result.providers
+    .filter((provider) => provider.paused)
+    .map((provider) => provider.label)
+  if (pausedLabels.length) {
+    lines.push('')
+    lines.push(`Paused providers: ${pausedLabels.join(', ')}`)
   }
 
   if (result.failures.length) {
@@ -118,7 +139,9 @@ export function formatProviderReadinessConsole(result) {
     }
     if (!result.strict) {
       lines.push('')
-      lines.push('Set VIDEORC_SMOKE_REQUIRE_PROVIDER_READY=1 to make missing provider prerequisites fail.')
+      lines.push(
+        'Set VIDEORC_SMOKE_REQUIRE_PROVIDER_READY=1 to make missing provider prerequisites fail.'
+      )
     }
   } else {
     lines.push('')
@@ -152,7 +175,7 @@ export function formatProviderReadinessMarkdown(result) {
 
   for (const provider of result.providers) {
     lines.push(
-      `| ${escapeMarkdown(provider.label)} | ${provider.ready ? 'ready' : 'missing'} | ${escapeMarkdown(
+      `| ${escapeMarkdown(provider.label)} | ${provider.paused ? 'paused' : provider.ready ? 'ready' : 'missing'} | ${escapeMarkdown(
         provider.clientId.source
       )} | ${escapeMarkdown(provider.clientId.envVars.join(', '))} | ${escapeMarkdown(
         secretSourceLabel(provider.clientSecret)
@@ -163,6 +186,16 @@ export function formatProviderReadinessMarkdown(result) {
   }
 
   lines.push('')
+
+  const paused = result.providers.filter((provider) => provider.paused)
+  if (paused.length) {
+    lines.push('## Paused Provider Paths')
+    lines.push('')
+    for (const provider of paused) {
+      lines.push(`- ${provider.label}: ${provider.pauseReason}`)
+    }
+    lines.push('')
+  }
 
   const x = result.providers.find((provider) => provider.label === 'X')
   if (x) {
@@ -176,7 +209,9 @@ export function formatProviderReadinessMarkdown(result) {
           : `blocked - set ${nativeLive?.env ?? 'VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS'}=1 only after live API validation`
       }`
     )
-    const oauth1 = x.accountChecks.find((check) => check.statusLabel === 'X OAuth 1.0a live credentials')
+    const oauth1 = x.accountChecks.find(
+      (check) => check.statusLabel === 'X OAuth 1.0a live credentials'
+    )
     lines.push(
       `- OAuth 1.0a credentials: ${
         oauth1?.ready
@@ -199,9 +234,13 @@ export function formatProviderReadinessMarkdown(result) {
   lines.push('## Next Acceptance Step')
   lines.push('')
   if (result.failures.length) {
-    lines.push('- Set the missing provider credentials/account flags above, then rerun `pnpm smoke:provider-readiness:strict`.')
+    lines.push(
+      '- Set the missing provider credentials/account flags above, then rerun `pnpm smoke:provider-readiness:strict`.'
+    )
   } else {
-    lines.push('- Run the real YouTube, Twitch, and X OAuth/live acceptance steps from `docs/oauth-live-smoke.md`.')
+    lines.push(
+      '- Run the real Twitch and X OAuth/live acceptance steps from `docs/oauth-live-smoke.md`; use Manual RTMP for YouTube until Google approval completes.'
+    )
   }
 
   return lines.join('\n')
@@ -219,6 +258,27 @@ export function detectRunContext(env = {}) {
 }
 
 function readinessForProvider(provider, env, callbackCoverage) {
+  if (provider.paused) {
+    return {
+      label: provider.label,
+      ready: true,
+      paused: true,
+      pauseReason: provider.pauseReason,
+      clientId: {
+        source: 'paused',
+        envVar: null,
+        envVars: provider.clientIdVars
+      },
+      clientSecret: {
+        source: 'paused',
+        required: false,
+        envVar: null,
+        envVars: provider.secretVars
+      },
+      accountChecks: [],
+      missing: []
+    }
+  }
   const clientId = credentialPresence(provider.clientIdVars, env)
   const clientSecret = secretPresence(provider.secretVars, env, provider.secretRequired)
   const accountChecks = provider.accountChecks.map((check) => ({
@@ -234,7 +294,9 @@ function readinessForProvider(provider, env, callbackCoverage) {
     missing.push(provider.secretVars.join(' or '))
   }
   if (!callbackCoverage.ready) {
-    missing.push(`${PROVIDER_CALLBACKS_READY_ENV}=1 (fixed loopback callback URLs registered/verified)`)
+    missing.push(
+      `${PROVIDER_CALLBACKS_READY_ENV}=1 (fixed loopback callback URLs registered/verified)`
+    )
   }
   for (const check of accountChecks) {
     if (!check.ready) {
@@ -245,6 +307,8 @@ function readinessForProvider(provider, env, callbackCoverage) {
   return {
     label: provider.label,
     ready: missing.length === 0,
+    paused: false,
+    pauseReason: null,
     clientId,
     clientSecret,
     accountChecks,
@@ -295,6 +359,9 @@ function secretPresence(names, env, required) {
 }
 
 function credentialSourceLabel(credential) {
+  if (credential.source === 'paused') {
+    return 'paused'
+  }
   if (credential.source === 'missing') {
     return `missing (expected ${credential.envVars.join(' or ')})`
   }
@@ -302,6 +369,9 @@ function credentialSourceLabel(credential) {
 }
 
 function secretSourceLabel(secret) {
+  if (secret.source === 'paused') {
+    return 'paused'
+  }
   if (secret.source === 'environment') {
     return `present (${secret.envVar})`
   }
@@ -309,6 +379,9 @@ function secretSourceLabel(secret) {
 }
 
 function accountChecksLabel(checks) {
+  if (!checks.length) {
+    return 'none'
+  }
   return checks.map((check) => `${check.env}=${check.ready ? '1' : 'missing'}`).join('; ')
 }
 

@@ -76,9 +76,36 @@ describe('mergeObsImportIntoConfig', () => {
   it('oauth-suggest plans change no stream targets', () => {
     const next = mergeObsImportIntoConfig(
       defaultCaptureConfig,
-      plan({ stream: { kind: 'oauth-suggest', platform: 'youtube', serviceLabel: 'YouTube' } }),
+      plan({ stream: { kind: 'oauth-suggest', platform: 'twitch', serviceLabel: 'Twitch' } }),
       null
     )
     expect(next.streaming).toEqual(defaultCaptureConfig.streaming)
+  })
+
+  it('imports YouTube common RTMP services into the YouTube Manual RTMP target', () => {
+    const next = mergeObsImportIntoConfig(
+      defaultCaptureConfig,
+      plan({
+        stream: {
+          kind: 'rtmp-platform',
+          platform: 'youtube',
+          serviceLabel: 'YouTube - RTMPS',
+          serverUrl: 'rtmps://a.rtmp.youtube.com/live2',
+          hasKey: true
+        }
+      }),
+      'youtube-key-from-obs',
+      '2026-07-08T00:00:00.000Z'
+    )
+    const youtube = next.streaming.targets.find((target) => target.platform === 'youtube')
+    expect(youtube).toMatchObject({
+      enabled: true,
+      serverUrl: 'rtmps://a.rtmp.youtube.com/live2',
+      streamKey: 'youtube-key-from-obs',
+      streamKeyPresent: true,
+      authMode: 'manual-rtmp',
+      updatedAt: '2026-07-08T00:00:00.000Z'
+    })
+    expect(next.streaming.enabledTargetIds).toContain('youtube')
   })
 })

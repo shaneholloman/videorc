@@ -1,8 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { basename, relative } from 'node:path'
 
-export const BUNDLED_YOUTUBE_OAUTH_SECRET_ENV = 'VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET'
-
 export function artifactKindFromPath(path) {
   if (String(path).endsWith('.app')) {
     return 'app'
@@ -41,16 +39,6 @@ export function captureEntitlementCheckTargets(appPath) {
     { id: 'ffmpeg', label: 'ffmpeg', path: `${appPath}/Contents/Resources/ffmpeg/bin/ffmpeg` },
     { id: 'ffprobe', label: 'ffprobe', path: `${appPath}/Contents/Resources/ffmpeg/bin/ffprobe` }
   ]
-}
-
-export function bundledYoutubeOAuthSecretCheckTarget(appPath) {
-  return {
-    id: 'bundled-youtube-oauth-secret',
-    label: 'bundled YouTube OAuth secret (videorc-backend)',
-    type: 'binary-contains-env-secret',
-    envName: BUNDLED_YOUTUBE_OAUTH_SECRET_ENV,
-    path: `${appPath}/Contents/Resources/videorc-backend`
-  }
 }
 
 export function evaluateBinaryContainsEnvSecretCheck(
@@ -126,8 +114,7 @@ export function buildMacosReleaseArtifactChecks(path) {
         command: 'codesign',
         args: ['-d', '--entitlements', ':-', target.path],
         expectOutputIncludes: REQUIRED_CAPTURE_ENTITLEMENTS
-      })),
-      bundledYoutubeOAuthSecretCheckTarget(path)
+      }))
     ]
   }
 

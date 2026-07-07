@@ -86,8 +86,13 @@ describe('mapObsSetup on the real fixture', () => {
     }
   })
 
-  it('suggests OAuth for a YouTube rtmp_common service instead of copying the key', () => {
-    expect(result.stream).toMatchObject({ kind: 'oauth-suggest', platform: 'youtube' })
+  it('imports a YouTube rtmp_common service as Manual RTMP', () => {
+    expect(result.stream).toMatchObject({
+      kind: 'rtmp-platform',
+      platform: 'youtube',
+      serverUrl: 'rtmps://x',
+      hasKey: true
+    })
   })
 
   it('never emits OBS kind ids in the report', () => {
