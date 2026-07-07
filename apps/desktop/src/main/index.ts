@@ -406,19 +406,34 @@ function setFirstFrameStatus(
   }
 }
 
+// S4 (plan 024): `null` means the contract is met/recovered — HIDE the .hint
+// container, don't just repaint its text. The .hint block lives permanently in
+// the preview-window DOM and is only ever OCCLUDED by the separate order-above
+// helper NSWindow; a click that raises the preview window above the helper for
+// one IPC hop would otherwise flash the "Waiting for preview" words. Hiding the
+// container means a z-order flash uncovers only the solid base, never the text.
+const PREVIEW_WAIT_HINT_HIDDEN = ' hidden'
+
 function updatePreviewWindowWaitDetail(text: string | null): void {
-  const detail = text ?? PREVIEW_WAIT_DETAIL_DEFAULT
-  if (detail === firstFrameLastHint) {
+  const key = text ?? PREVIEW_WAIT_HINT_HIDDEN
+  if (key === firstFrameLastHint) {
     return
   }
-  firstFrameLastHint = detail
+  firstFrameLastHint = key
   const window = previewWindow
   if (!window || window.isDestroyed() || window.webContents.isDestroyed()) {
     return
   }
+  const detail = text ?? PREVIEW_WAIT_DETAIL_DEFAULT
+  const hidden = text === null
   void window.webContents
     .executeJavaScript(
-      `(() => { const el = document.getElementById('videorc-wait-detail'); if (el) { el.textContent = ${JSON.stringify(detail)} } })()`
+      `(() => {
+        const hint = document.querySelector('.hint');
+        if (hint) { hint.style.display = ${hidden ? "'none'" : "'flex'"}; }
+        const el = document.getElementById('videorc-wait-detail');
+        if (el) { el.textContent = ${JSON.stringify(detail)} }
+      })()`
     )
     .catch(() => {
       // The hint is best-effort; presentation health is tracked in the status.

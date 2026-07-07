@@ -193,6 +193,18 @@ describe('assessPresenting', () => {
     expect(kinds).toEqual(['observing', 'observing', 'presenting', 'observing', 'observing'])
   })
 
+  // Plan 024 S4: the wait hint may only be painted for 'heal'/'stalled'. A
+  // single broken tick from a focus/click re-kick on a healthy preview must
+  // stay 'observing' (silent) — never a reason string — so the fallback hint is
+  // never un-hidden. Only 'heal'/'stalled' emit a non-empty reason.
+  it('a lone broken tick between healthy ticks never surfaces a wait-detail reason', () => {
+    const REASON_KINDS = new Set(['heal', 'stalled'])
+    const { kinds, last } = run([snapshot(), broken(), snapshot(), snapshot()])
+    expect(kinds).toEqual(['presenting', 'observing', 'presenting', 'presenting'])
+    expect(kinds.some((kind) => REASON_KINDS.has(kind))).toBe(false)
+    expect(last.assessment.kind).toBe('presenting')
+  })
+
   it('arms the ladder after the threshold, cheapest action first and immediately', () => {
     const { last } = run([broken(), broken(), broken()])
     expect(last.assessment).toMatchObject({ kind: 'heal', action: 'present-kick' })
