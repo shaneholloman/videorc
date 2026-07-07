@@ -1,5 +1,7 @@
 import type {
   AudioSettings,
+  AutomaticSourceFallbackEvent,
+  AutomaticSourceFallbackSourceKind,
   CameraTransform,
   CameraTransformMode,
   Device,
@@ -1390,43 +1392,43 @@ export function reconcileSourceSelection(
   return nextSources
 }
 
-export function sourceSelectionChangeMessages(
+export function sourceSelectionChangeEvents(
   previous: SourceSelection,
   next: SourceSelection
-): string[] {
-  const messages = [
-    sourceChangeMessage(
-      'Capture source',
+): AutomaticSourceFallbackEvent[] {
+  const events = [
+    sourceChangeEvent(
+      'capture',
       previous.windowId ?? previous.screenId,
       previous.windowName ?? previous.screenName,
       next.windowId ?? next.screenId,
       next.windowName ?? next.screenName
     ),
-    sourceChangeMessage(
-      'Camera',
+    sourceChangeEvent(
+      'camera',
       previous.cameraId,
       previous.cameraName,
       next.cameraId,
       next.cameraName
     ),
-    sourceChangeMessage(
-      'Microphone',
+    sourceChangeEvent(
+      'microphone',
       previous.microphoneId,
       previous.microphoneName,
       next.microphoneId,
       next.microphoneName
     )
   ]
-  return messages.filter((message): message is string => Boolean(message))
+  return events.filter((event): event is AutomaticSourceFallbackEvent => Boolean(event))
 }
 
-function sourceChangeMessage(
-  label: string,
+function sourceChangeEvent(
+  sourceKind: AutomaticSourceFallbackSourceKind,
   previousId: string | undefined,
   previousName: string | undefined,
   nextId: string | undefined,
   nextName: string | undefined
-): string | undefined {
+): AutomaticSourceFallbackEvent | undefined {
   if (!previousId && !previousName) {
     return undefined
   }
@@ -1434,16 +1436,22 @@ function sourceChangeMessage(
     return undefined
   }
 
-  const previousLabel = previousName ?? previousId ?? 'saved source'
+  const event = {
+    kind: 'automatic-source-fallback' as const,
+    sourceKind,
+    previousId,
+    previousName,
+    nextId,
+    nextName
+  }
   if (!nextId && !nextName) {
-    return `${label} "${previousLabel}" is unavailable, so it was cleared.`
+    return { ...event, reason: 'unavailable-cleared' }
   }
 
-  const nextLabel = nextName ?? nextId ?? 'another available source'
   if (previousName && previousName === nextName && previousId !== nextId) {
-    return `${label} "${nextLabel}" was restored by name because its system ID changed.`
+    return { ...event, reason: 'restored-by-name' }
   }
-  return `${label} "${previousLabel}" is unavailable, so Videorc selected "${nextLabel}".`
+  return { ...event, reason: 'unavailable-selected' }
 }
 
 export function startButtonLabel(recordEnabled: boolean, streamEnabled: boolean): string {

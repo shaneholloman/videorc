@@ -29,6 +29,8 @@ pub struct SupportBundleExportParams {
     /// decoupled from the shipped app version (plan 024 S2).
     #[serde(default)]
     pub app_version: Option<String>,
+    #[serde(default)]
+    pub renderer_diagnostics: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +47,7 @@ pub struct SupportBundleExportInput {
     /// The Electron app version (plan 024 S2); a missing/empty value degrades
     /// to the backend crate version rather than an empty string.
     pub app_version: Option<String>,
+    pub renderer_diagnostics: Option<Value>,
     pub database_path: PathBuf,
     pub health: BackendHealth,
     pub devices: DeviceList,
@@ -68,6 +71,8 @@ pub struct SupportBundle {
     pub entitlements: Value,
     pub recording: Value,
     pub diagnostics: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renderer_diagnostics: Option<Value>,
     pub logs: Value,
     pub sessions: Vec<SupportBundleSessionSummary>,
     pub redaction_summary: SupportBundleRedactionSummary,
@@ -188,12 +193,16 @@ pub fn build_support_bundle(input: SupportBundleExportInput) -> Result<SupportBu
     let mut entitlements = serde_json::to_value(input.entitlements)?;
     let mut recording = serde_json::to_value(input.recording)?;
     let mut diagnostics = serde_json::to_value(input.diagnostics)?;
+    let mut renderer_diagnostics = input.renderer_diagnostics;
     let mut logs = serde_json::to_value(input.logs)?;
 
     redact_value(&mut health, &mut redaction_summary);
     redact_value(&mut entitlements, &mut redaction_summary);
     redact_value(&mut recording, &mut redaction_summary);
     redact_value(&mut diagnostics, &mut redaction_summary);
+    if let Some(value) = renderer_diagnostics.as_mut() {
+        redact_value(value, &mut redaction_summary);
+    }
     redact_value(&mut logs, &mut redaction_summary);
 
     let (sessions, session_redactions) = redact_sessions(input.sessions);
@@ -214,6 +223,7 @@ pub fn build_support_bundle(input: SupportBundleExportInput) -> Result<SupportBu
         entitlements,
         recording,
         diagnostics,
+        renderer_diagnostics,
         logs,
         sessions,
         redaction_summary,
@@ -380,6 +390,7 @@ fn included_sections() -> Vec<String> {
         "entitlements",
         "recording",
         "diagnostics",
+        "rendererDiagnostics",
         "logs",
         "sessions",
     ]
@@ -649,6 +660,19 @@ mod tests {
             output_directory: Some(directory.clone()),
             // Plan 024 S2: the renderer forwards the Electron app version.
             app_version: Some("0.9.16".to_string()),
+            renderer_diagnostics: Some(json!({
+                "automaticSourceFallbacks": [
+                    {
+                        "kind": "automatic-source-fallback",
+                        "sourceKind": "camera",
+                        "reason": "unavailable-selected",
+                        "previousName": "Cam Link 4K",
+                        "nextName": "MacBook Pro Camera",
+                        "occurredAt": "2026-07-07T21:01:33Z"
+                    }
+                ],
+                "debugUrl": "https://user:password@example.test/support"
+            })),
             database_path: directory.join("videorc.sqlite3"),
             health: BackendHealth {
                 status: "ok".to_string(),
@@ -709,6 +733,10 @@ mod tests {
         assert!(text.contains(DATABASE_PATH_REDACTION));
         assert!(!text.contains("plain-key"));
         assert!(!text.contains("sk-test"));
+        assert!(!text.contains("password@example"));
+        assert!(text.contains("\"rendererDiagnostics\""));
+        assert!(text.contains("Cam Link 4K"));
+        assert!(text.contains("MacBook Pro Camera"));
         assert!(!text.contains("videorc.sqlite3"));
         assert!(text.contains("\"lastAudioMeter\""));
         assert!(text.contains("\"no-frames\""));
@@ -716,6 +744,11 @@ mod tests {
             result
                 .included_sections
                 .contains(&"diagnostics".to_string())
+        );
+        assert!(
+            result
+                .included_sections
+                .contains(&"rendererDiagnostics".to_string())
         );
         assert!(result.included_sections.contains(&"devices".to_string()));
         assert!(
@@ -742,6 +775,7 @@ mod tests {
         SupportBundleExportInput {
             output_directory: None,
             app_version,
+            renderer_diagnostics: None,
             database_path: std::path::PathBuf::from("/tmp/videorc.sqlite3"),
             health: BackendHealth {
                 status: "ok".to_string(),

@@ -34,7 +34,7 @@ import {
   resetAudioSyncCalibration,
   smokePreviewCompositorCaptureConfig,
   streamOutputVideoForTarget,
-  sourceSelectionChangeMessages,
+  sourceSelectionChangeEvents,
   streamOutputVideoSettings,
   streamOutputVideosForTargets,
   videoProfileCompatibility,
@@ -59,8 +59,8 @@ describe('reconcileSourceSelection', () => {
   // The renderer mounts with an empty deviceList placeholder and the
   // reconcile effect fires before the backend's first devices.list answer.
   // Remembered selections must survive that pre-snapshot tick: clearing them
-  // toasts 'Capture source "…" is unavailable, so it was cleared.' for
-  // devices that are actually present (startup-toast bug, 2026-06-13).
+  // used to announce a missing source for devices that were actually present
+  // one snapshot later (startup-toast bug, 2026-06-13).
   it('leaves remembered selections untouched before the first device snapshot', () => {
     const remembered: SourceSelection = {
       screenId: 'screen:1',
@@ -74,7 +74,7 @@ describe('reconcileSourceSelection', () => {
     const next = reconcileSourceSelection(remembered, [])
 
     expect(next).toEqual(remembered)
-    expect(sourceSelectionChangeMessages(remembered, next)).toEqual([])
+    expect(sourceSelectionChangeEvents(remembered, next)).toEqual([])
   })
 
   // F-013: with Screen Recording denied the only enumerable capture device is
@@ -98,9 +98,9 @@ describe('reconcileSourceSelection', () => {
   })
 
   // FX9 (0.9.8 sweep): a selected window vanishing from the next device
-  // snapshot fell back to the default display SILENTLY by eye. The message
-  // machinery must produce the fallback notice for exactly this path.
-  it('window vanishes → falls back to the default display AND says so', () => {
+  // snapshot must still fall back to the default display. Plan 027 keeps the
+  // explanation as diagnostics evidence instead of a startup warning.
+  it('window vanishes → falls back to the default display and records diagnostics evidence', () => {
     const remembered: SourceSelection = {
       windowId: 'window:screencapturekit:42',
       windowName: 'cmux - ~/projects/videorc'
@@ -118,8 +118,16 @@ describe('reconcileSourceSelection', () => {
 
     expect(next.screenId).toBe('screen:screencapturekit:1')
     expect(next.windowId).toBeUndefined()
-    expect(sourceSelectionChangeMessages(remembered, next)).toEqual([
-      'Capture source "cmux - ~/projects/videorc" is unavailable, so Videorc selected "Display 1".'
+    expect(sourceSelectionChangeEvents(remembered, next)).toEqual([
+      {
+        kind: 'automatic-source-fallback',
+        sourceKind: 'capture',
+        reason: 'unavailable-selected',
+        previousId: 'window:screencapturekit:42',
+        previousName: 'cmux - ~/projects/videorc',
+        nextId: 'screen:screencapturekit:1',
+        nextName: 'Display 1'
+      }
     ])
   })
 
@@ -218,7 +226,7 @@ describe('reconcileSourceSelection', () => {
     expect(next.screenName).toBe('Capture screen 1')
     expect(next.windowId).toBeUndefined()
     expect(next.windowName).toBeUndefined()
-    expect(sourceSelectionChangeMessages(remembered, next)).toEqual([])
+    expect(sourceSelectionChangeEvents(remembered, next)).toEqual([])
   })
 
   it('selects the avfoundation screen fallback when ScreenCaptureKit only reports status rows', () => {

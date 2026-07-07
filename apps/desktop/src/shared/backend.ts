@@ -39,6 +39,13 @@ export interface SupportBundleExportResult {
   redactionSummary: SupportBundleRedactionSummary
 }
 
+export interface SupportBundleExportParams {
+  outputDirectory?: string
+  ffmpegPath?: string
+  appVersion?: string
+  rendererDiagnostics?: RendererDiagnosticsSnapshot
+}
+
 export type FeatureId = 'local-recording' | 'livestreaming' | 'multistreaming' | 'cloud-ai'
 export type EntitlementState = 'enabled' | 'disabled' | 'developer-override'
 export type EntitlementTier = 'basic' | 'premium' | 'developer'
@@ -130,6 +137,28 @@ export interface RecordingStatus {
   pipeline?: RecordingPipelineStatus
   durationMs?: number
   message?: string
+}
+
+export type AutomaticSourceFallbackSourceKind = 'capture' | 'camera' | 'microphone'
+export type AutomaticSourceFallbackReason =
+  | 'unavailable-selected'
+  | 'unavailable-cleared'
+  | 'restored-by-name'
+
+export interface AutomaticSourceFallbackEvent {
+  kind: 'automatic-source-fallback'
+  sourceKind: AutomaticSourceFallbackSourceKind
+  reason: AutomaticSourceFallbackReason
+  previousId?: string
+  previousName?: string
+  nextId?: string
+  nextName?: string
+  sessionState?: RecordingState
+  occurredAt?: string
+}
+
+export interface RendererDiagnosticsSnapshot {
+  automaticSourceFallbacks: AutomaticSourceFallbackEvent[]
 }
 
 export type AudioTrackSource = 'microphone' | 'test-tone'

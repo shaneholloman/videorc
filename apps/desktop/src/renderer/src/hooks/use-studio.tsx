@@ -37,7 +37,7 @@ import {
   reconcileSourceSelection,
   rtmpDefaults,
   smokePreviewCompositorCaptureConfig,
-  sourceSelectionChangeMessages,
+  sourceSelectionChangeEvents,
   STORAGE_KEYS,
   streamOutputVideoSettings,
   videoProfileCompatibility,
@@ -66,6 +66,7 @@ import type {
   SessionStorageTotals,
   AiQuotaStatus,
   AiWorkflowResult,
+  AutomaticSourceFallbackEvent,
   AudioMeterResult,
   BackendConnection,
   BackendHealth,
@@ -128,6 +129,7 @@ import type {
   StreamTargetRuntime,
   StreamTargetSettings,
   StreamTargetsSnapshot,
+  SupportBundleExportParams,
   SupportBundleExportResult,
   SystemPermissionPane,
   TwitchCategory,
@@ -213,6 +215,13 @@ function premiumUpgradeToastOptions(description?: string) {
       onClick: openPremiumUpgradePage
     }
   }
+}
+
+function sourceFallbackActiveSessionMessage(state: RecordingStatus['state']): string {
+  if (state === 'streaming') {
+    return 'Source changed while streaming. Check the output before continuing.'
+  }
+  return 'Source changed while recording. Check the output before continuing.'
 }
 
 const NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS = 250
@@ -384,9 +393,6 @@ export type StudioContextValue = {
   recording: RecordingStatus
   logs: BackendLogEvent[]
   healthEvents: HealthEvent[]
-  /** Durable record of automatic source swaps (Q3); cleared by dismissal or a manual re-pick. */
-  sourceFallbackNotices: string[]
-  dismissSourceFallbackNotices: () => void
   streamHealth: StreamHealth | null
   streamTargets: StreamTargetRuntime[]
   diagnosticStats: DiagnosticStats
@@ -905,10 +911,6 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [recording, setRecording] = useState<RecordingStatus>({ state: 'idle', message: 'Ready.' })
   const [logs, setLogs] = useState<BackendLogEvent[]>([])
   const [healthEvents, setHealthEvents] = useState<HealthEvent[]>([])
-  // Q3 (plan 022): the durable record of automatic source swaps. The toast is
-  // transient; this feeds a dismissible Sources-tab notice that persists until
-  // the user re-picks a source (acknowledgement) or dismisses it.
-  const [sourceFallbackNotices, setSourceFallbackNotices] = useState<string[]>([])
   const [streamHealth, setStreamHealth] = useState<StreamHealth | null>(null)
   const [streamTargets, setStreamTargets] = useState<StreamTargetRuntime[]>([])
   const [diagnosticStats, setDiagnosticStats] = useState<DiagnosticStats>(idleDiagnosticStats)
@@ -1314,7 +1316,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     null
   )
   const nativePreviewSurfacePresentReportLastSentAtRef = useRef(0)
-  const sourceReconciliationMessages = useRef<string[]>([])
+  const automaticSourceFallbacks = useRef<AutomaticSourceFallbackEvent[]>([])
   const toastedFailedTargets = useRef<Set<string>>(new Set())
   const platformLifecycleRun = useRef(0)
   const [previewRefreshNonce, setPreviewRefreshNonce] = useState(0)
@@ -2267,31 +2269,30 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         return current
       }
 
-      sourceReconciliationMessages.current.push(
-        ...sourceSelectionChangeMessages(current.sources, nextSources)
-      )
+      const fallbackEvents = sourceSelectionChangeEvents(current.sources, nextSources)
+      if (fallbackEvents.length > 0) {
+        const occurredAt = new Date().toISOString()
+        const sessionState = recordingRef.current.state
+        const enrichedEvents = fallbackEvents.map((event) => ({
+          ...event,
+          occurredAt,
+          sessionState
+        }))
+        automaticSourceFallbacks.current = [
+          ...automaticSourceFallbacks.current,
+          ...enrichedEvents
+        ].slice(-50)
+
+        if (isActiveRecordingState(sessionState)) {
+          toast.warning(sourceFallbackActiveSessionMessage(sessionState), {
+            duration: 10_000,
+            id: 'source-reconciliation:active-session'
+          })
+        }
+      }
       return { ...current, sources: nextSources }
     })
   }, [deviceList])
-
-  useEffect(() => {
-    const messages = sourceReconciliationMessages.current.splice(0)
-    for (const message of new Set(messages)) {
-      // FX9: these fire during churny moments (backend restart, window
-      // closed) — the default 4s toast expired unseen by-eye. A source
-      // swap changes what gets recorded; give it time to be read.
-      // Q3 (plan 022): keyed by message so repeated reconciliation of the
-      // same source UPDATES one toast instead of stacking a covering pile.
-      toast.warning(message, { duration: 10_000, id: `source-reconciliation:${message}` })
-    }
-    if (messages.length > 0) {
-      setSourceFallbackNotices((current) => [...new Set([...current, ...messages])])
-    }
-  }, [captureConfig.sources])
-
-  const dismissSourceFallbackNotices = useCallback(() => {
-    setSourceFallbackNotices([])
-  }, [])
 
   useEffect(() => {
     if (!connection) {
@@ -4068,15 +4069,19 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     try {
       setLastError(null)
       setSupportBundleExportPending(true)
+      const params: SupportBundleExportParams = {
+        ffmpegPath: settings.ffmpegPath.trim() || undefined,
+        // S2 (plan 024): the backend only knows its crate version (stuck at
+        // 0.9.0); forward the real Electron app version so the bundle
+        // identifies the shipped build. Absent → backend degrades to crate.
+        appVersion: runtimeInfo?.version,
+        rendererDiagnostics: {
+          automaticSourceFallbacks: automaticSourceFallbacks.current
+        }
+      }
       const result = await client.request<SupportBundleExportResult>(
         'diagnostics.supportBundle.export',
-        {
-          ffmpegPath: settings.ffmpegPath.trim() || undefined,
-          // S2 (plan 024): the backend only knows its crate version (stuck at
-          // 0.9.0); forward the real Electron app version so the bundle
-          // identifies the shipped build. Absent → backend degrades to crate.
-          appVersion: runtimeInfo?.version
-        }
+        params
       )
       const reveal = window.videorc?.revealPath
       toast.success('Support bundle exported.', {
@@ -5765,8 +5770,6 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       recording,
       logs,
       healthEvents,
-      sourceFallbackNotices,
-      dismissSourceFallbackNotices,
       streamHealth,
       streamTargets,
       diagnosticStats,
@@ -5940,8 +5943,6 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       recording,
       logs,
       healthEvents,
-      sourceFallbackNotices,
-      dismissSourceFallbackNotices,
       streamHealth,
       streamTargets,
       diagnosticStats,

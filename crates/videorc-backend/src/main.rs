@@ -3344,6 +3344,7 @@ async fn export_support_bundle_for_state(
     support_bundle::export_support_bundle(support_bundle::SupportBundleExportInput {
         output_directory: params.output_directory.map(PathBuf::from),
         app_version: params.app_version,
+        renderer_diagnostics: params.renderer_diagnostics,
         database_path: state.database.path().clone(),
         health: backend_health(state, ffmpeg_path).await,
         devices: devices::list_devices(ffmpeg_path).await,
