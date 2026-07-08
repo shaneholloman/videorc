@@ -1141,6 +1141,8 @@ function formatEncodeBackend(backend?: string): string {
       return 'Software (x264)'
     case 'hardware-videotoolbox':
       return 'Hardware (VideoToolbox)'
+    case 'hardware-mediafoundation':
+      return 'Hardware (MediaFoundation)'
     default:
       return '--'
   }

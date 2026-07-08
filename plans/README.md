@@ -34,7 +34,7 @@ row when done.
 | 016 | Add the open-core entitlement boundary for premium features | P1 | M | 007, 009 | DONE (2026-06-13; free/premium capability model enforced, renderer wired, premium smokes opt in explicitly) |
 | 017 | Add native system audio capture and a mixed audio graph | P1 | L | 006, 007, 014 | TODO |
 | 018 | Add a redacted support bundle and diagnostics export | P1 | M | 007 | DONE (2026-06-13; backend export, Diagnostics action, verifier, docs, and required gates passed) |
-| 019 | Finish Windows v1 capture and package acceptance | P2 | L | 001, 002, 003, 006, 012 | IN PROGRESS (2026-06-13; Windows status and local gate script landed, real Windows package/capture/signing evidence pending) |
+| 019 | Finish Windows v1 capture and package acceptance | P2 | L | 001, 002, 003, 006, 012 | IN PROGRESS (2026-07-08; Windows input/discovery/device-list/job-object seams started; real Windows package/capture/process/signing evidence pending) |
 | 020 | Remediate leaked Google OAuth desktop client secret | P0 | M | Google Cloud + release access | IN PROGRESS (2026-07-06; env rotated + validation hardened, rotated release + old-secret disable pending) |
 | 021 | Fix the first external-tester feedback batch (preview vanish, nudge d-pad, silent mic) | P0 | M | Reporter support bundle (F3 attribution only) | DONE (2026-07-06; F1–F4 on main, gates PASS; pending owner: F0 Discord ask + reporter confirmation on the next shipped build) |
 | 022 | Full-app QA fix list: comments crash + gate hole, device-gate repeatability, toast/settings/light-theme/select polish | P0 | M | Owner for Q1 TCC grants + Q2 provider accounts | DONE (2026-07-06; Q0–Q8 on main, gates PASS; pending owner: Q1 TCC grants + device-gate run, Q2 provider accounts, UI by-eye) |

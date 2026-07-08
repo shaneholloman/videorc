@@ -12,12 +12,14 @@ use uuid::Uuid;
 
 use crate::camera_capture::{
     CameraFormatSummary, camera_capability_matrix_for_id, parse_native_camera_id,
+    parse_windows_dshow_camera_id,
 };
 use crate::diagnostics::{
     PreviewCameraCaptureTimingStats, apply_preview_camera_capability_stats,
     apply_preview_camera_capture_timing_stats, apply_preview_camera_source_stats,
     apply_preview_source_frame_store_stats,
 };
+use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::frame_store::{FrameHandle, FrameStore, FrameStoreStats};
 use crate::protocol::{
     CameraAspect, CameraCapabilityFormat, CameraShape, CameraSize, CameraTransformMode,
@@ -35,6 +37,15 @@ const CAMERA_REFERENCE_HEIGHT: u32 = 720;
 const CAMERA_OVERLAY_CAPTURE_MIN_WIDTH: u32 = 1280;
 const CAMERA_OVERLAY_CAPTURE_MIN_HEIGHT: u32 = 720;
 const CAMERA_CAPTURE_CPU_COPY_ENV: &str = "VIDEORC_CAMERA_CAPTURE_CPU_COPY";
+const WINDOWS_CAMERA_PREVIEW_STARTUP_TIMEOUT: Duration = Duration::from_secs(12);
+
+fn native_camera_preview_thread_startup_timeout() -> Duration {
+    if cfg!(target_os = "windows") {
+        WINDOWS_CAMERA_PREVIEW_STARTUP_TIMEOUT
+    } else {
+        Duration::from_secs(4)
+    }
+}
 
 fn native_preview_surface_env_enabled() -> bool {
     // v1 default: the native CAMetalLayer surface IS the production preview. The env
@@ -102,6 +113,7 @@ struct NativeCameraPreviewThread {
     stop_tx: std_mpsc::Sender<()>,
     join_handle: Option<thread::JoinHandle<()>>,
     shared: Arc<StdMutex<PreviewCameraShared>>,
+    ffmpeg_path: String,
     layout: LayoutSettings,
     video: VideoSettings,
 }
@@ -290,16 +302,18 @@ pub async fn start_preview_camera(
         set_camera_status(&state, status.clone()).await;
         return status;
     };
-    let Some(unique_id) = parse_native_camera_id(&camera_id) else {
+    let Some(camera_source) = selected_camera_source(&camera_id) else {
         stop_preview_camera(&state).await;
         refresh_camera_capability_diagnostics(&state, Some(camera_id.clone())).await;
         let status = status_for_missing_camera(
             Some(camera_id),
-            "Selected camera is not a native AVFoundation camera.",
+            "Selected camera is not a supported Videorc camera source.",
         );
         set_camera_status(&state, status.clone()).await;
         return status;
     };
+    let unique_id = camera_source.device_unique_id().to_string();
+    let ffmpeg_path = resolve_ffmpeg_path(params.ffmpeg_path.clone());
     refresh_camera_capability_diagnostics(&state, Some(camera_id.clone())).await;
 
     let target_fps = params.video.fps.clamp(1, 120);
@@ -316,6 +330,7 @@ pub async fn start_preview_camera(
     if let Some(status) = reuse_current_camera_source(
         &state,
         &source_key,
+        &ffmpeg_path,
         &params.layout,
         &params.video,
         target_fps,
@@ -337,6 +352,7 @@ pub async fn start_preview_camera(
     let thread_config = NativeCameraPreviewConfig {
         camera_id: camera_id.clone(),
         unique_id: unique_id.clone(),
+        ffmpeg_path: ffmpeg_path.clone(),
         video: params.video.clone(),
         layout: params.layout.clone(),
     };
@@ -388,7 +404,7 @@ pub async fn start_preview_camera(
 
     let startup = tokio::task::spawn_blocking(move || {
         startup_rx
-            .recv_timeout(Duration::from_secs(4))
+            .recv_timeout(native_camera_preview_thread_startup_timeout())
             .unwrap_or_else(|_| {
                 NativeCameraStartup::Failed(
                     "Timed out while starting native camera preview.".to_string(),
@@ -451,6 +467,7 @@ pub async fn start_preview_camera(
                     stop_tx,
                     join_handle: Some(join_handle),
                     shared,
+                    ffmpeg_path,
                     layout: params.layout,
                     video: params.video,
                 });
@@ -780,6 +797,7 @@ async fn release_current_preview_camera_source(state: &AppState) -> bool {
 async fn reuse_current_camera_source(
     state: &AppState,
     source_key: &SourceKey,
+    ffmpeg_path: &str,
     layout: &LayoutSettings,
     video: &VideoSettings,
     target_fps: u32,
@@ -788,10 +806,11 @@ async fn reuse_current_camera_source(
     if slot.source_key.as_ref() != Some(source_key) {
         return None;
     }
-    let can_reuse = slot
-        .active
-        .as_ref()
-        .is_some_and(|active| active.video == *video && slot.status.target_fps == target_fps);
+    let can_reuse = slot.active.as_ref().is_some_and(|active| {
+        active.ffmpeg_path == ffmpeg_path
+            && active.video == *video
+            && slot.status.target_fps == target_fps
+    });
     if !can_reuse {
         return None;
     }
@@ -1045,8 +1064,67 @@ fn scale_preserving_aspect(source_dimension: u32, target_dimension: u32, source_
 struct NativeCameraPreviewConfig {
     camera_id: String,
     unique_id: String,
+    ffmpeg_path: String,
     video: VideoSettings,
     layout: LayoutSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SelectedCameraSource {
+    MacAvFoundation { unique_id: String },
+    WindowsDshow { device_name: String },
+}
+
+impl SelectedCameraSource {
+    fn device_unique_id(&self) -> &str {
+        match self {
+            SelectedCameraSource::MacAvFoundation { unique_id } => unique_id,
+            SelectedCameraSource::WindowsDshow { device_name } => device_name,
+        }
+    }
+}
+
+fn selected_camera_source(camera_id: &str) -> Option<SelectedCameraSource> {
+    parse_native_camera_id(camera_id)
+        .map(|unique_id| SelectedCameraSource::MacAvFoundation { unique_id })
+        .or_else(|| {
+            parse_windows_dshow_camera_id(camera_id)
+                .map(|device_name| SelectedCameraSource::WindowsDshow { device_name })
+        })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_camera_preview_output_dimensions(config: &NativeCameraPreviewConfig) -> (u32, u32) {
+    camera_capture_target_dimensions(&config.layout, &config.video)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_camera_preview_ffmpeg_args(
+    config: &NativeCameraPreviewConfig,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> Vec<String> {
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-nostdin".to_string(),
+    ];
+    crate::capture_input::append_windows_dshow_video_input(&mut args, &config.unique_id, fps);
+    args.extend([
+        "-an".to_string(),
+        "-vf".to_string(),
+        format!(
+            "fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=bgra"
+        ),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "bgra".to_string(),
+        "-".to_string(),
+    ]);
+    args
 }
 
 fn camera_capture_target_dimensions(layout: &LayoutSettings, video: &VideoSettings) -> (u32, u32) {
@@ -1147,10 +1225,17 @@ fn run_native_camera_preview(
     stop_rx: std_mpsc::Receiver<()>,
     startup_tx: std_mpsc::Sender<NativeCameraStartup>,
 ) {
+    let _ = config.ffmpeg_path.as_str();
+
     #[cfg(target_os = "macos")]
     macos::run_native_camera_preview(config, shared, stop_rx, startup_tx);
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::run_native_camera_preview(config, shared, stop_rx, startup_tx);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = config;
         let _ = shared;
@@ -1158,6 +1243,206 @@ fn run_native_camera_preview(
         let _ = startup_tx.send(NativeCameraStartup::Failed(
             "Native camera preview is only available on macOS.".to_string(),
         ));
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::io::Read;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::process_job::spawn_owned_std;
+
+    pub fn run_native_camera_preview(
+        config: NativeCameraPreviewConfig,
+        shared: Arc<StdMutex<PreviewCameraShared>>,
+        stop_rx: std_mpsc::Receiver<()>,
+        startup_tx: std_mpsc::Sender<NativeCameraStartup>,
+    ) {
+        let (width, height) = windows_camera_preview_output_dimensions(&config);
+        let fps = config.video.fps.clamp(1, 120);
+        let Some(frame_len) = bgra_frame_len(width, height) else {
+            let _ = startup_tx.send(NativeCameraStartup::Failed(
+                "Windows camera preview dimensions are too large.".to_string(),
+            ));
+            return;
+        };
+        let args = windows_camera_preview_ffmpeg_args(&config, width, height, fps);
+        let mut command = Command::new(&config.ffmpeg_path);
+        command
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = match spawn_owned_std(&mut command) {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = startup_tx.send(NativeCameraStartup::Failed(format!(
+                    "Could not start {} for Windows camera preview: {error}",
+                    config.ffmpeg_path
+                )));
+                return;
+            }
+        };
+        let Some(mut stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = startup_tx.send(NativeCameraStartup::Failed(
+                "Windows camera preview did not expose FFmpeg stdout.".to_string(),
+            ));
+            return;
+        };
+        let stderr = collect_stderr(child.stderr.take());
+        let child = Arc::new(StdMutex::new(child));
+        let done = Arc::new(AtomicBool::new(false));
+        let stop_thread = spawn_stop_killer(Arc::clone(&child), Arc::clone(&done), stop_rx);
+
+        let mut startup_sent = false;
+        let mut buffer = vec![0; frame_len];
+        loop {
+            match stdout.read_exact(&mut buffer) {
+                Ok(()) => {
+                    publish_bgra_frame(
+                        &shared,
+                        width,
+                        height,
+                        std::mem::replace(&mut buffer, vec![0; frame_len]),
+                    );
+                    if !startup_sent {
+                        let _ = startup_tx.send(NativeCameraStartup::Live {
+                            requested_width: width,
+                            requested_height: height,
+                            selected_format_width: width,
+                            selected_format_height: height,
+                            selected_format_min_fps: fps as f64,
+                            selected_format_max_fps: fps as f64,
+                            width,
+                            height,
+                            selected_fps: fps as f64,
+                            message: Some(
+                                "Windows FFmpeg camera preview is using dshow.".to_string(),
+                            ),
+                        });
+                        startup_sent = true;
+                    }
+                }
+                Err(error) => {
+                    if !startup_sent {
+                        let _ = startup_tx.send(NativeCameraStartup::Failed(format!(
+                            "Windows FFmpeg camera preview ended before the first frame: {error}{}",
+                            stderr_suffix(&stderr)
+                        )));
+                    }
+                    break;
+                }
+            }
+        }
+
+        done.store(true, Ordering::Release);
+        let _ = child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .wait();
+        let _ = stop_thread.join();
+    }
+
+    fn bgra_frame_len(width: u32, height: u32) -> Option<usize> {
+        (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)
+    }
+
+    fn collect_stderr(stderr: Option<std::process::ChildStderr>) -> Arc<StdMutex<Vec<u8>>> {
+        let bytes = Arc::new(StdMutex::new(Vec::new()));
+        if let Some(mut stderr) = stderr {
+            let target = Arc::clone(&bytes);
+            thread::spawn(move || {
+                let mut buffer = Vec::new();
+                let _ = stderr.read_to_end(&mut buffer);
+                *target
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = buffer;
+            });
+        }
+        bytes
+    }
+
+    fn spawn_stop_killer(
+        child: Arc<StdMutex<Child>>,
+        done: Arc<AtomicBool>,
+        stop_rx: std_mpsc::Receiver<()>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            while !done.load(Ordering::Acquire) {
+                match stop_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(()) => {
+                        let _ = child
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .kill();
+                        return;
+                    }
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        })
+    }
+
+    fn publish_bgra_frame(
+        shared: &Arc<StdMutex<PreviewCameraShared>>,
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+    ) {
+        let callback_started_at = Instant::now();
+        let publish_started_at = Instant::now();
+        let frame_bytes = bytes.len() as u64;
+        let mut guard = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard
+            .capture_timings
+            .record_callback_at(callback_started_at);
+        let now = Instant::now();
+        guard.frames_captured = guard.frames_captured.saturating_add(1);
+        guard.frames_in_window = guard.frames_in_window.saturating_add(1);
+        let window_started = *guard.window_started_at.get_or_insert(now);
+        let elapsed = window_started.elapsed();
+        if elapsed >= Duration::from_millis(500) {
+            guard.source_fps =
+                Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
+            guard.frames_in_window = 0;
+            guard.window_started_at = Some(now);
+        }
+        let sequence = guard.frames_captured;
+        guard.frame_store.publish_with_metadata(
+            sequence,
+            width,
+            height,
+            PreviewCameraPixelFormat::Bgra8,
+            (),
+            now,
+            bytes,
+        );
+        let publish_ms = publish_started_at.elapsed().as_secs_f64() * 1000.0;
+        guard
+            .capture_timings
+            .record_valid_frame(0.0, 0.0, publish_ms, frame_bytes);
+    }
+
+    fn stderr_suffix(stderr: &Arc<StdMutex<Vec<u8>>>) -> String {
+        let bytes = stderr
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let message = String::from_utf8_lossy(&bytes).trim().to_string();
+        if message.is_empty() {
+            String::new()
+        } else {
+            format!(": {message}")
+        }
     }
 }
 
@@ -2131,10 +2416,61 @@ mod tests {
             },
             layout: test_layout(true),
             video: test_video(),
+            ffmpeg_path: None,
         };
 
         assert_eq!(params.video.fps, 60);
         assert!(params.layout.camera_mirror);
+    }
+
+    #[test]
+    fn selects_avfoundation_camera_source() {
+        assert_eq!(
+            selected_camera_source("camera:avfoundation-native:616263").unwrap(),
+            SelectedCameraSource::MacAvFoundation {
+                unique_id: "abc".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn selects_windows_dshow_camera_source() {
+        assert_eq!(
+            selected_camera_source("camera:windows-dshow:5553422043616d657261").unwrap(),
+            SelectedCameraSource::WindowsDshow {
+                device_name: "USB Camera".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn windows_camera_preview_ffmpeg_args_emit_raw_bgra_frames() {
+        let config = NativeCameraPreviewConfig {
+            camera_id: "camera:windows-dshow:5553422043616d657261".to_string(),
+            unique_id: "USB Camera".to_string(),
+            ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".to_string(),
+            video: test_video(),
+            layout: test_layout(false),
+        };
+        let (width, height) = windows_camera_preview_output_dimensions(&config);
+        let args = windows_camera_preview_ffmpeg_args(&config, width, height, config.video.fps);
+
+        assert_eq!((width, height), (1920, 1080));
+        assert!(args.windows(2).any(|pair| pair == ["-f", "dshow"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-i", "video=USB Camera"])
+        );
+        assert!(args.iter().any(|arg| arg.contains("scale=1920:1080")));
+        assert!(args.windows(2).any(|pair| pair == ["-pix_fmt", "bgra"]));
+        assert!(args.windows(2).any(|pair| pair == ["-f", "rawvideo"]));
+        assert_eq!(args.last().map(String::as_str), Some("-"));
+    }
+
+    #[test]
+    fn rejects_unsupported_camera_source_ids() {
+        assert!(selected_camera_source("camera:avfoundation:0").is_none());
+        assert!(selected_camera_source("camera:windows-dshow:not-hex").is_none());
     }
 
     #[cfg(target_os = "macos")]
@@ -2305,15 +2641,35 @@ mod tests {
                 stop_tx,
                 join_handle: None,
                 shared: Arc::new(StdMutex::new(PreviewCameraShared::default())),
+                ffmpeg_path: "ffmpeg".to_string(),
                 layout: test_layout(false),
                 video: video.clone(),
             });
         }
 
-        let status =
-            reuse_current_camera_source(&state, &source_key, &test_layout(true), &video, video.fps)
-                .await
-                .expect("camera source should be reused");
+        assert!(
+            reuse_current_camera_source(
+                &state,
+                &source_key,
+                "/custom/ffmpeg",
+                &test_layout(true),
+                &video,
+                video.fps
+            )
+            .await
+            .is_none()
+        );
+
+        let status = reuse_current_camera_source(
+            &state,
+            &source_key,
+            "ffmpeg",
+            &test_layout(true),
+            &video,
+            video.fps,
+        )
+        .await
+        .expect("camera source should be reused");
         let slot = state.preview_camera.lock().await;
 
         assert_eq!(status.sequence, Some(42));

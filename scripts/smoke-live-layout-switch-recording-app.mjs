@@ -121,7 +121,8 @@ async function prepareRealScreenSource(ws) {
   const status = await request(ws, timeoutMs, 'preview.screen.start', {
     sources,
     video,
-    protectedOverlayWindowIds: []
+    protectedOverlayWindowIds: [],
+    ffmpegPath
   })
   if (status.state !== 'live') {
     throw new Error(

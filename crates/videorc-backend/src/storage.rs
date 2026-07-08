@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::diagnostics::permission_pane_for_log;
 use crate::live_chat::{LiveChatEventType, LiveChatMessage, LiveChatMessageFragment};
+use crate::process_job::output_owned_std;
 use crate::protocol::{
     AiArtifact, AiArtifactKind, AiArtifactStatus, DiagnosticStats, HealthEvent, HealthLevel,
     LayoutSettings, OutputSettings, SessionLogEntry, SessionStorageTotals, SessionSummary,
@@ -1739,7 +1740,8 @@ fn optimize_screen_image(
         "[0:v]scale=3840:2160:force_original_aspect_ratio=decrease[fg];",
         "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=auto,format=rgb24[out]"
     );
-    let output = Command::new(ffmpeg_path)
+    let mut command = Command::new(ffmpeg_path);
+    command
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
@@ -1752,8 +1754,8 @@ fn optimize_screen_image(
         .arg("[out]")
         .arg("-frames:v")
         .arg("1")
-        .arg(destination_path)
-        .output()
+        .arg(destination_path);
+    let output = output_owned_std(&mut command)
         .with_context(|| format!("Could not start {ffmpeg_path} for Screen image import"))?;
 
     if output.status.success() {

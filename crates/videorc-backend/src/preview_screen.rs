@@ -14,12 +14,16 @@ use crate::diagnostics::{
     PreviewScreenCaptureTimingStats, apply_preview_screen_capture_timing_stats,
     apply_preview_screen_source_stats, apply_preview_source_frame_store_stats,
 };
+use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::frame_store::{FrameHandle, FrameStore, FrameStoreStats};
 use crate::protocol::{
     PreviewScreenSourceKind, PreviewScreenStartParams, PreviewScreenState, PreviewScreenStatus,
     VideoSettings,
 };
-use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
+use crate::screen_capture::{
+    is_windows_gdigrab_desktop_screen_id, parse_screencapturekit_display_id,
+    parse_screencapturekit_window_id, parse_windows_dxgi_output_index,
+};
 use crate::source_registry::{SourceConsumerReason, SourceIdentityConfidence, SourceKey};
 use crate::source_status::SourceLifecycleStatus;
 use crate::state::AppState;
@@ -108,6 +112,7 @@ pub struct PreviewScreenRuntime {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PreviewScreenStartKey {
     source_key: SourceKey,
+    ffmpeg_path: String,
     video: VideoSettings,
     target_fps: u32,
     protected_overlay_window_ids: Vec<u32>,
@@ -118,6 +123,7 @@ struct NativeScreenPreviewThread {
     stop_tx: std_mpsc::Sender<()>,
     join_handle: Option<thread::JoinHandle<()>>,
     shared: Arc<StdMutex<PreviewScreenShared>>,
+    ffmpeg_path: String,
     video: VideoSettings,
     protected_overlay_window_ids: Vec<u32>,
 }
@@ -295,8 +301,10 @@ pub async fn start_preview_screen(
         return status;
     }
     let source_key = source_key_for_source(&source);
+    let ffmpeg_path = resolve_ffmpeg_path(params.ffmpeg_path.clone());
     let start_key = PreviewScreenStartKey {
         source_key: source_key.clone(),
+        ffmpeg_path: ffmpeg_path.clone(),
         video: params.video.clone(),
         target_fps,
         protected_overlay_window_ids: protected_overlay_window_ids.clone(),
@@ -318,6 +326,7 @@ pub async fn start_preview_screen(
     if let Some(status) = reuse_current_screen_source(
         &state,
         &source_key,
+        &ffmpeg_path,
         &params.video,
         target_fps,
         &protected_overlay_window_ids,
@@ -375,6 +384,7 @@ pub async fn start_preview_screen(
         source_kind: source.source_kind.clone(),
         display_id: source.display_id,
         window_id: source.window_id,
+        ffmpeg_path: ffmpeg_path.clone(),
         video: params.video.clone(),
         include_cursor,
         exclude_current_process_windows,
@@ -496,6 +506,7 @@ pub async fn start_preview_screen(
                     stop_tx,
                     join_handle: Some(join_handle),
                     shared: Arc::clone(&shared),
+                    ffmpeg_path,
                     video: params.video,
                     protected_overlay_window_ids: start_key.protected_overlay_window_ids.clone(),
                 });
@@ -909,14 +920,30 @@ fn selected_screen_source(params: &PreviewScreenStartParams) -> Option<SelectedS
     }
 
     if let Some(screen_id) = params.sources.screen_id.clone() {
-        return parse_screencapturekit_display_id(&screen_id).map(|native_display_id| {
-            SelectedScreenSource {
+        if let Some(native_display_id) = parse_screencapturekit_display_id(&screen_id) {
+            return Some(SelectedScreenSource {
                 source_id: screen_id,
                 source_kind: PreviewScreenSourceKind::Screen,
                 display_id: Some(native_display_id),
                 window_id: None,
-            }
-        });
+            });
+        }
+        if let Some(output_index) = parse_windows_dxgi_output_index(&screen_id) {
+            return Some(SelectedScreenSource {
+                source_id: screen_id,
+                source_kind: PreviewScreenSourceKind::Screen,
+                display_id: Some(output_index),
+                window_id: None,
+            });
+        }
+        if is_windows_gdigrab_desktop_screen_id(&screen_id) {
+            return Some(SelectedScreenSource {
+                source_id: screen_id,
+                source_kind: PreviewScreenSourceKind::Screen,
+                display_id: None,
+                window_id: None,
+            });
+        }
     }
 
     None
@@ -927,6 +954,76 @@ fn source_key_for_source(source: &SelectedScreenSource) -> SourceKey {
         PreviewScreenSourceKind::Screen => SourceKey::screen(source.source_id.clone()),
         PreviewScreenSourceKind::Window => SourceKey::window(source.source_id.clone()),
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_screen_preview_backend(
+    config: &NativeScreenPreviewConfig,
+) -> Result<crate::capture_input::WindowsScreenCaptureBackend, String> {
+    if config.source_kind != PreviewScreenSourceKind::Screen {
+        return Err(
+            "Windows FFmpeg screen preview does not support window sources yet.".to_string(),
+        );
+    }
+    if let Some(output_index) = config.display_id {
+        return Ok(crate::capture_input::WindowsScreenCaptureBackend::Ddagrab { output_index });
+    }
+    if is_windows_gdigrab_desktop_screen_id(&config.source_id) {
+        return Ok(crate::capture_input::WindowsScreenCaptureBackend::GdiGrabDesktop);
+    }
+    Err(format!(
+        "Windows FFmpeg screen preview does not recognize source {}.",
+        config.source_id
+    ))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_screen_preview_output_dimensions(config: &NativeScreenPreviewConfig) -> (u32, u32) {
+    (
+        config
+            .video
+            .width
+            .clamp(1, PREVIEW_SCREEN_MAX_PRODUCTION_CAPTURE_WIDTH),
+        config
+            .video
+            .height
+            .clamp(1, PREVIEW_SCREEN_MAX_PRODUCTION_CAPTURE_HEIGHT),
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_screen_preview_ffmpeg_args(
+    backend: &crate::capture_input::WindowsScreenCaptureBackend,
+    width: u32,
+    height: u32,
+    fps: u32,
+    include_cursor: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-nostdin".to_string(),
+    ];
+    crate::capture_input::append_windows_screen_video_input(
+        &mut args,
+        backend,
+        fps,
+        include_cursor,
+    );
+    args.extend([
+        "-an".to_string(),
+        "-vf".to_string(),
+        format!(
+            "fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=bgra"
+        ),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "bgra".to_string(),
+        "-".to_string(),
+    ]);
+    args
 }
 
 fn source_key_from_status(status: &PreviewScreenStatus) -> Option<SourceKey> {
@@ -1072,6 +1169,7 @@ async fn release_current_preview_screen_source(state: &AppState) -> bool {
 async fn reuse_current_screen_source(
     state: &AppState,
     source_key: &SourceKey,
+    ffmpeg_path: &str,
     video: &VideoSettings,
     target_fps: u32,
     protected_overlay_window_ids: &[u32],
@@ -1081,7 +1179,8 @@ async fn reuse_current_screen_source(
         return None;
     }
     let can_reuse = slot.active.as_ref().is_some_and(|active| {
-        active.video == *video
+        active.ffmpeg_path == ffmpeg_path
+            && active.video == *video
             && slot.status.target_fps == target_fps
             && active.protected_overlay_window_ids == protected_overlay_window_ids
     });
@@ -1311,6 +1410,7 @@ struct NativeScreenPreviewConfig {
     source_kind: PreviewScreenSourceKind,
     display_id: Option<u32>,
     window_id: Option<u32>,
+    ffmpeg_path: String,
     video: VideoSettings,
     include_cursor: bool,
     exclude_current_process_windows: bool,
@@ -1340,10 +1440,17 @@ fn run_native_screen_preview(
     stop_rx: std_mpsc::Receiver<()>,
     startup_tx: std_mpsc::Sender<NativeScreenStartup>,
 ) {
+    let _ = config.ffmpeg_path.as_str();
+
     #[cfg(target_os = "macos")]
     macos::run_native_screen_preview(config, shared, stop_rx, startup_tx);
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::run_native_screen_preview(config, shared, stop_rx, startup_tx);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = config;
         let _ = shared;
@@ -1351,6 +1458,221 @@ fn run_native_screen_preview(
         let _ = startup_tx.send(NativeScreenStartup::Failed(
             "Native screen preview is only available on macOS.".to_string(),
         ));
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::io::Read;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::capture_input::WindowsScreenCaptureBackend;
+    use crate::process_job::spawn_owned_std;
+
+    pub fn run_native_screen_preview(
+        config: NativeScreenPreviewConfig,
+        shared: Arc<StdMutex<PreviewScreenShared>>,
+        stop_rx: std_mpsc::Receiver<()>,
+        startup_tx: std_mpsc::Sender<NativeScreenStartup>,
+    ) {
+        let backend = match windows_screen_preview_backend(&config) {
+            Ok(backend) => backend,
+            Err(message) => {
+                let _ = startup_tx.send(NativeScreenStartup::SourceMissing(message));
+                return;
+            }
+        };
+        let (width, height) = windows_screen_preview_output_dimensions(&config);
+        let fps = config.video.fps.clamp(1, 120);
+        let Some(frame_len) = bgra_frame_len(width, height) else {
+            let _ = startup_tx.send(NativeScreenStartup::Failed(
+                "Windows screen preview dimensions are too large.".to_string(),
+            ));
+            return;
+        };
+        let args =
+            windows_screen_preview_ffmpeg_args(&backend, width, height, fps, config.include_cursor);
+        let mut command = Command::new(&config.ffmpeg_path);
+        command
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = match spawn_owned_std(&mut command) {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = startup_tx.send(NativeScreenStartup::Failed(format!(
+                    "Could not start {} for Windows screen preview: {error}",
+                    config.ffmpeg_path
+                )));
+                return;
+            }
+        };
+        let Some(mut stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = startup_tx.send(NativeScreenStartup::Failed(
+                "Windows screen preview did not expose FFmpeg stdout.".to_string(),
+            ));
+            return;
+        };
+        let stderr = collect_stderr(child.stderr.take());
+        let child = Arc::new(StdMutex::new(child));
+        let done = Arc::new(AtomicBool::new(false));
+        let stop_thread = spawn_stop_killer(Arc::clone(&child), Arc::clone(&done), stop_rx);
+
+        let mut startup_sent = false;
+        let mut buffer = vec![0; frame_len];
+        loop {
+            match stdout.read_exact(&mut buffer) {
+                Ok(()) => {
+                    publish_bgra_frame(
+                        &shared,
+                        width,
+                        height,
+                        std::mem::replace(&mut buffer, vec![0; frame_len]),
+                    );
+                    if !startup_sent {
+                        let _ = startup_tx.send(NativeScreenStartup::Live {
+                            native_width: width,
+                            native_height: height,
+                            requested_width: width,
+                            requested_height: height,
+                            width,
+                            height,
+                            selected_fps: fps as f64,
+                            message: Some(format!(
+                                "Windows FFmpeg screen preview is using {}.",
+                                backend_label(&backend)
+                            )),
+                        });
+                        startup_sent = true;
+                    }
+                }
+                Err(error) => {
+                    if !startup_sent {
+                        let _ = startup_tx.send(NativeScreenStartup::Failed(format!(
+                            "Windows FFmpeg screen preview ended before the first frame: {error}{}",
+                            stderr_suffix(&stderr)
+                        )));
+                    }
+                    break;
+                }
+            }
+        }
+
+        done.store(true, Ordering::Release);
+        let _ = child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .wait();
+        let _ = stop_thread.join();
+    }
+
+    fn bgra_frame_len(width: u32, height: u32) -> Option<usize> {
+        (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)
+    }
+
+    fn backend_label(backend: &WindowsScreenCaptureBackend) -> &'static str {
+        match backend {
+            WindowsScreenCaptureBackend::Ddagrab { .. } => "ddagrab",
+            WindowsScreenCaptureBackend::GdiGrabDesktop => "gdigrab",
+        }
+    }
+
+    fn collect_stderr(stderr: Option<std::process::ChildStderr>) -> Arc<StdMutex<Vec<u8>>> {
+        let bytes = Arc::new(StdMutex::new(Vec::new()));
+        if let Some(mut stderr) = stderr {
+            let target = Arc::clone(&bytes);
+            thread::spawn(move || {
+                let mut buffer = Vec::new();
+                let _ = stderr.read_to_end(&mut buffer);
+                *target
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = buffer;
+            });
+        }
+        bytes
+    }
+
+    fn spawn_stop_killer(
+        child: Arc<StdMutex<Child>>,
+        done: Arc<AtomicBool>,
+        stop_rx: std_mpsc::Receiver<()>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            while !done.load(Ordering::Acquire) {
+                match stop_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(()) => {
+                        let _ = child
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .kill();
+                        return;
+                    }
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        })
+    }
+
+    fn publish_bgra_frame(
+        shared: &Arc<StdMutex<PreviewScreenShared>>,
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+    ) {
+        let callback_started_at = Instant::now();
+        let publish_started_at = Instant::now();
+        let frame_bytes = bytes.len() as u64;
+        let mut guard = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard
+            .capture_timings
+            .record_callback_at(callback_started_at);
+        let now = Instant::now();
+        guard.frames_captured = guard.frames_captured.saturating_add(1);
+        guard.frames_in_window = guard.frames_in_window.saturating_add(1);
+        let window_started = *guard.window_started_at.get_or_insert(now);
+        let elapsed = window_started.elapsed();
+        if elapsed >= Duration::from_millis(500) {
+            guard.source_fps =
+                Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
+            guard.frames_in_window = 0;
+            guard.window_started_at = Some(now);
+        }
+        let sequence = guard.frames_captured;
+        guard.frame_store.publish_with_metadata(
+            sequence,
+            width,
+            height,
+            PreviewScreenPixelFormat::Bgra8,
+            (),
+            now,
+            bytes,
+        );
+        let publish_ms = publish_started_at.elapsed().as_secs_f64() * 1000.0;
+        guard
+            .capture_timings
+            .record_valid_frame(0.0, 0.0, publish_ms, frame_bytes);
+    }
+
+    fn stderr_suffix(stderr: &Arc<StdMutex<Vec<u8>>>) -> String {
+        let bytes = stderr
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let message = String::from_utf8_lossy(&bytes).trim().to_string();
+        if message.is_empty() {
+            String::new()
+        } else {
+            format!(": {message}")
+        }
     }
 }
 
@@ -2379,6 +2701,7 @@ mod tests {
             },
             video: test_video(),
             protected_overlay_window_ids: Vec::new(),
+            ffmpeg_path: None,
         }
     }
 
@@ -2404,6 +2727,92 @@ mod tests {
 
         assert_eq!(selected.source_kind, PreviewScreenSourceKind::Screen);
         assert_eq!(selected.display_id, Some(5));
+    }
+
+    #[test]
+    fn selects_windows_dxgi_screen_source() {
+        let params = screen_params(Some("screen:dxgi:00000000000003f1:2"), None);
+
+        let selected = selected_screen_source(&params).unwrap();
+
+        assert_eq!(selected.source_kind, PreviewScreenSourceKind::Screen);
+        assert_eq!(selected.source_id, "screen:dxgi:00000000000003f1:2");
+        assert_eq!(selected.display_id, Some(2));
+        assert_eq!(
+            source_key_for_source(&selected),
+            SourceKey::screen(selected.source_id.clone())
+        );
+    }
+
+    #[test]
+    fn selects_windows_gdigrab_screen_source() {
+        let params = screen_params(Some("screen:gdigrab:desktop"), None);
+
+        let selected = selected_screen_source(&params).unwrap();
+
+        assert_eq!(selected.source_kind, PreviewScreenSourceKind::Screen);
+        assert_eq!(selected.source_id, "screen:gdigrab:desktop");
+        assert_eq!(selected.display_id, None);
+        assert_eq!(
+            source_key_for_source(&selected),
+            SourceKey::screen(selected.source_id.clone())
+        );
+    }
+
+    #[test]
+    fn windows_screen_preview_ffmpeg_args_emit_raw_bgra_frames() {
+        let config = NativeScreenPreviewConfig {
+            source_id: "screen:dxgi:00000000000003f1:2".to_string(),
+            source_kind: PreviewScreenSourceKind::Screen,
+            display_id: Some(2),
+            window_id: None,
+            ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".to_string(),
+            video: test_video(),
+            include_cursor: true,
+            exclude_current_process_windows: false,
+            protected_overlay_window_ids: Vec::new(),
+        };
+        let backend = windows_screen_preview_backend(&config).unwrap();
+        let (width, height) = windows_screen_preview_output_dimensions(&config);
+        let args = windows_screen_preview_ffmpeg_args(&backend, width, height, 30, true);
+
+        assert_eq!(
+            backend,
+            crate::capture_input::WindowsScreenCaptureBackend::Ddagrab { output_index: 2 }
+        );
+        assert_eq!((width, height), (1920, 1080));
+        assert!(args.windows(2).any(|pair| pair == ["-f", "lavfi"]));
+        assert!(args.iter().any(|arg| arg.contains("ddagrab=output_idx=2")));
+        assert!(args.iter().any(|arg| arg.contains("draw_mouse=1")));
+        assert!(args.iter().any(|arg| arg.contains("scale=1920:1080")));
+        assert!(args.windows(2).any(|pair| pair == ["-pix_fmt", "bgra"]));
+        assert!(args.windows(2).any(|pair| pair == ["-f", "rawvideo"]));
+        assert_eq!(args.last().map(String::as_str), Some("-"));
+    }
+
+    #[test]
+    fn windows_gdigrab_preview_uses_desktop_backend() {
+        let config = NativeScreenPreviewConfig {
+            source_id: "screen:gdigrab:desktop".to_string(),
+            source_kind: PreviewScreenSourceKind::Screen,
+            display_id: None,
+            window_id: None,
+            ffmpeg_path: "ffmpeg".to_string(),
+            video: test_video(),
+            include_cursor: false,
+            exclude_current_process_windows: false,
+            protected_overlay_window_ids: Vec::new(),
+        };
+        let backend = windows_screen_preview_backend(&config).unwrap();
+        let args = windows_screen_preview_ffmpeg_args(&backend, 1280, 720, 30, false);
+
+        assert_eq!(
+            backend,
+            crate::capture_input::WindowsScreenCaptureBackend::GdiGrabDesktop
+        );
+        assert!(args.windows(2).any(|pair| pair == ["-f", "gdigrab"]));
+        assert!(args.windows(2).any(|pair| pair == ["-i", "desktop"]));
+        assert!(args.windows(2).any(|pair| pair == ["-draw_mouse", "0"]));
     }
 
     #[test]
@@ -2578,6 +2987,7 @@ mod tests {
         let source_key = SourceKey::screen("screen:screencapturekit:5");
         let start_key = PreviewScreenStartKey {
             source_key: source_key.clone(),
+            ffmpeg_path: "ffmpeg".to_string(),
             video: video.clone(),
             target_fps: video.fps,
             protected_overlay_window_ids: Vec::new(),
@@ -2759,14 +3169,29 @@ mod tests {
                 stop_tx,
                 join_handle: None,
                 shared: Arc::new(StdMutex::new(PreviewScreenShared::default())),
+                ffmpeg_path: "ffmpeg".to_string(),
                 video: video.clone(),
                 protected_overlay_window_ids: Vec::new(),
             });
         }
 
-        let status = reuse_current_screen_source(&state, &source_key, &video, video.fps, &[])
+        assert!(
+            reuse_current_screen_source(
+                &state,
+                &source_key,
+                "/custom/ffmpeg",
+                &video,
+                video.fps,
+                &[]
+            )
             .await
-            .expect("screen source should be reused");
+            .is_none()
+        );
+
+        let status =
+            reuse_current_screen_source(&state, &source_key, "ffmpeg", &video, video.fps, &[])
+                .await
+                .expect("screen source should be reused");
         let slot = state.preview_screen.lock().await;
 
         assert_eq!(status.sequence, Some(24));
@@ -2815,18 +3240,19 @@ mod tests {
                 stop_tx,
                 join_handle: None,
                 shared: Arc::new(StdMutex::new(PreviewScreenShared::default())),
+                ffmpeg_path: "ffmpeg".to_string(),
                 video: video.clone(),
                 protected_overlay_window_ids: vec![42],
             });
         }
 
         assert!(
-            reuse_current_screen_source(&state, &source_key, &video, video.fps, &[42])
+            reuse_current_screen_source(&state, &source_key, "ffmpeg", &video, video.fps, &[42])
                 .await
                 .is_some()
         );
         assert!(
-            reuse_current_screen_source(&state, &source_key, &video, video.fps, &[7])
+            reuse_current_screen_source(&state, &source_key, "ffmpeg", &video, video.fps, &[7])
                 .await
                 .is_none()
         );

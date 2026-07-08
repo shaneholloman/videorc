@@ -1,4 +1,6 @@
-import type { RuntimeInfo, SystemPermissionPane } from '../shared/backend'
+import { release } from 'node:os'
+
+import type { RuntimeGpuDevice, RuntimeInfo, SystemPermissionPane } from '../shared/backend'
 
 export const MACOS_PERMISSION_URLS: Record<SystemPermissionPane, string> = {
   privacy: 'x-apple.systempreferences:com.apple.preference.security',
@@ -13,6 +15,10 @@ export interface RuntimeInfoInput {
   appVersion: string
   execPath: string
   captureExecPath?: string
+  platform?: NodeJS.Platform
+  arch?: string
+  osRelease?: string
+  gpuInfo?: unknown
   env: Partial<
     Pick<
       NodeJS.ProcessEnv,
@@ -60,6 +66,10 @@ export function buildRuntimeInfo({
   appVersion,
   execPath,
   captureExecPath,
+  platform = process.platform,
+  arch = process.arch,
+  osRelease = release(),
+  gpuInfo,
   env
 }: RuntimeInfoInput): RuntimeInfo {
   const targetPath = permissionTargetPath(execPath)
@@ -68,6 +78,10 @@ export function buildRuntimeInfo({
 
   return {
     version: appVersion,
+    platform,
+    arch,
+    osRelease,
+    gpuDevices: normalizeRuntimeGpuDevices(gpuInfo),
     isPackaged,
     permissionTargetName: isPackaged ? 'Videorc' : 'Electron',
     permissionTargetPath: targetPath,
@@ -84,4 +98,61 @@ export function buildRuntimeInfo({
     disableAutoPreview: env.VIDEORC_DISABLE_AUTO_PREVIEW === '1',
     nativePreviewSurfaceStageSuspended: env.VIDEORC_SMOKE_NATIVE_PREVIEW_SUSPENDED === '1'
   }
+}
+
+export function normalizeRuntimeGpuDevices(gpuInfo: unknown): RuntimeGpuDevice[] {
+  if (!isRecord(gpuInfo)) {
+    return []
+  }
+
+  const devices = Array.isArray(gpuInfo.gpuDevice) ? gpuInfo.gpuDevice : []
+  return devices
+    .map((device) => normalizeRuntimeGpuDevice(device))
+    .filter((device): device is RuntimeGpuDevice => device !== null)
+}
+
+function normalizeRuntimeGpuDevice(device: unknown): RuntimeGpuDevice | null {
+  if (!isRecord(device)) {
+    return null
+  }
+
+  const normalized: RuntimeGpuDevice = {}
+  const vendorId = stringOrNumber(device.vendorId)
+  const deviceId = stringOrNumber(device.deviceId)
+  const active = typeof device.active === 'boolean' ? device.active : undefined
+  const vendor = stringValue(device.vendorString ?? device.vendor)
+  const description = stringValue(device.deviceString ?? device.description)
+
+  if (vendorId !== undefined) {
+    normalized.vendorId = vendorId
+  }
+  if (deviceId !== undefined) {
+    normalized.deviceId = deviceId
+  }
+  if (active !== undefined) {
+    normalized.active = active
+  }
+  if (vendor !== undefined) {
+    normalized.vendor = vendor
+  }
+  if (description !== undefined) {
+    normalized.description = description
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function stringOrNumber(value: unknown): string | number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  return stringValue(value)
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
 }

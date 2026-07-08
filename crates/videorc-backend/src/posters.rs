@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use crate::process_job::status_owned_tokio;
 use crate::state::AppState;
 
 const POSTER_WIDTH: u32 = 320;
@@ -77,16 +78,16 @@ pub async fn ensure_session_poster(
         return false;
     }
     let _maintenance = state.ffmpeg_work.begin_maintenance_when_idle().await;
-    let status = tokio::process::Command::new(ffmpeg_path)
+    let mut command = tokio::process::Command::new(ffmpeg_path);
+    command
         .args(poster_extract_args(
             recording_path,
             &output.to_string_lossy(),
             duration_ms,
         ))
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
+        .stderr(std::process::Stdio::null());
+    let status = status_owned_tokio(&mut command).await;
     let ok = matches!(status, Ok(status) if status.success()) && output.exists();
     if !ok {
         // Never leave a truncated poster behind to be served.

@@ -13,6 +13,7 @@ use crate::protocol::{AudioMeterResult, AudioMeterStatus, Device, DeviceKind, De
 
 pub const NATIVE_AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub const NATIVE_AUDIO_CHANNELS: u16 = 2;
+const WINDOWS_DSHOW_MICROPHONE_PREFIX: &str = "microphone:windows-dshow:";
 /// Minimum elapsed capture time before audio-capture coverage is meaningful — below this
 /// the sampled count is too noisy (start-up jitter, FIFO preroll) to judge a gap.
 pub const AUDIO_COVERAGE_WARMUP_SECS: f64 = 3.0;
@@ -257,7 +258,7 @@ impl Drop for NativeAudioCaptureSession {
         if let Some(audio_unit) = self.audio_unit.as_mut() {
             let _ = audio_unit.stop();
         }
-        let _ = std::fs::remove_file(&self.fifo_path);
+        let _ = crate::fifo::cleanup(&self.fifo_path);
     }
 }
 
@@ -265,15 +266,27 @@ pub fn parse_coreaudio_microphone_id(id: &str) -> Option<u32> {
     id.strip_prefix("microphone:coreaudio:")?.parse().ok()
 }
 
+pub fn parse_windows_dshow_microphone_id(id: &str) -> Option<String> {
+    let encoded = id.strip_prefix(WINDOWS_DSHOW_MICROPHONE_PREFIX)?;
+    let bytes = decode_hex(encoded)?;
+    String::from_utf8(bytes).ok()
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_dshow_microphone_device_id(device_name: &str) -> String {
+    format!(
+        "{WINDOWS_DSHOW_MICROPHONE_PREFIX}{}",
+        encode_hex(device_name.as_bytes())
+    )
+}
+
 pub fn native_audio_fifo_path(session_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("videorc-audio-{session_id}.f32le"))
+    crate::fifo::transport_path(&format!("videorc-audio-{session_id}.f32le"))
 }
 
 pub fn create_native_audio_fifo(path: &Path) -> Result<()> {
-    if path.exists() {
-        std::fs::remove_file(path)
-            .with_context(|| format!("Could not remove stale audio FIFO {}", path.display()))?;
-    }
+    crate::fifo::cleanup(path)
+        .with_context(|| format!("Could not remove stale audio FIFO {}", path.display()))?;
 
     crate::fifo::create(path)
         .with_context(|| format!("Could not create audio FIFO {}", path.display()))
@@ -576,15 +589,7 @@ pub fn sample_native_audio_meter(
 pub fn list_native_microphones() -> Vec<Device> {
     match list_platform_microphones() {
         Ok(devices) => devices,
-        Err(error) => vec![Device {
-            id: "microphone:coreaudio-unavailable".to_string(),
-            name: "Native microphone capture".to_string(),
-            kind: DeviceKind::Microphone,
-            status: DeviceStatus::Unavailable,
-            detail: Some(error.to_string()),
-            width: None,
-            height: None,
-        }],
+        Err(error) => vec![platform_unavailable_microphone(&error.to_string())],
     }
 }
 
@@ -771,6 +776,33 @@ fn timestamp_for_frame(frame_cursor: u64) -> u64 {
     frame_cursor.saturating_mul(1_000_000) / u64::from(NATIVE_AUDIO_SAMPLE_RATE)
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+
+    value
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let high = char::from(pair[0]).to_digit(16)?;
+            let low = char::from(pair[1]).to_digit(16)?;
+            Some(((high << 4) | low) as u8)
+        })
+        .collect()
+}
+
 fn permission_or_unavailable(message: &str) -> AudioMeterStatus {
     let lower = message.to_lowercase();
     if lower.contains("permission") || lower.contains("unauthor") {
@@ -778,6 +810,41 @@ fn permission_or_unavailable(message: &str) -> AudioMeterStatus {
     } else {
         AudioMeterStatus::Unavailable
     }
+}
+
+fn unavailable_microphone(id: &str, name: &str, detail: &str) -> Device {
+    Device {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: DeviceKind::Microphone,
+        status: DeviceStatus::Unavailable,
+        detail: Some(detail.to_string()),
+        width: None,
+        height: None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn platform_unavailable_microphone(detail: &str) -> Device {
+    unavailable_microphone(
+        "microphone:coreaudio-unavailable",
+        "Native microphone capture",
+        detail,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn platform_unavailable_microphone(detail: &str) -> Device {
+    unavailable_microphone(
+        "microphone:windows-mediafoundation-unavailable",
+        "Microphone",
+        detail,
+    )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn platform_unavailable_microphone(detail: &str) -> Device {
+    unavailable_microphone("microphone:unsupported-platform", "Microphone", detail)
 }
 
 #[cfg(target_os = "macos")]
@@ -869,6 +936,113 @@ fn start_platform_audio_source(
     bail!("Native microphone capture is only implemented on macOS");
 }
 
+#[cfg(target_os = "windows")]
+mod windows_native {
+    use super::*;
+    use windows::Win32::Media::MediaFoundation::{
+        IMFActivate, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_AUDCAP_GUID,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_AUDCAP_SYMBOLIC_LINK, MF_VERSION, MFCreateAttributes,
+        MFEnumDeviceSources, MFSTARTUP_FULL, MFShutdown, MFStartup,
+    };
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::core::GUID;
+
+    pub fn list_platform_microphones() -> windows::core::Result<Vec<Device>> {
+        let mut devices = list_media_foundation_microphones()?;
+        if devices.is_empty() {
+            devices.push(unavailable_microphone(
+                "microphone:windows-mediafoundation-missing",
+                "Microphone",
+                "MediaFoundation did not report any audio capture devices.",
+            ));
+        }
+        Ok(devices)
+    }
+
+    fn list_media_foundation_microphones() -> windows::core::Result<Vec<Device>> {
+        let _media_foundation = MediaFoundationSession::start()?;
+        let mut attributes = None;
+        unsafe { MFCreateAttributes(&mut attributes, 1)? };
+        let attributes =
+            attributes.expect("MFCreateAttributes returned success without attributes");
+        unsafe {
+            attributes.SetGUID(
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_AUDCAP_GUID,
+            )?
+        };
+
+        let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
+        let mut count = 0;
+        unsafe { MFEnumDeviceSources(&attributes, &mut activates, &mut count)? };
+
+        let mut devices = Vec::new();
+        for index in 0..count {
+            let activate = unsafe { activates.add(index as usize).read() };
+            if let Some(activate) = activate {
+                devices.push(device_from_activate(&activate, index));
+            }
+        }
+        unsafe { CoTaskMemFree(Some(activates.cast())) };
+
+        Ok(devices)
+    }
+
+    fn device_from_activate(activate: &IMFActivate, index: u32) -> Device {
+        let friendly_name = mf_string(activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
+            .unwrap_or_else(|| format!("Microphone {}", index + 1));
+        let capture_name = mf_string(
+            activate,
+            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_AUDCAP_SYMBOLIC_LINK,
+        )
+        .map(|symbolic_link| format!("@{symbolic_link}"))
+        .unwrap_or_else(|| friendly_name.clone());
+        Device {
+            id: windows_dshow_microphone_device_id(&capture_name),
+            name: friendly_name.clone(),
+            kind: DeviceKind::Microphone,
+            status: DeviceStatus::Available,
+            detail: Some(windows_media_foundation_microphone_detail(
+                &friendly_name,
+                &capture_name,
+            )),
+            width: None,
+            height: None,
+        }
+    }
+
+    fn mf_string(activate: &IMFActivate, key: &GUID) -> Option<String> {
+        let len = unsafe { activate.GetStringLength(key).ok()? };
+        if len == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; len as usize + 1];
+        let mut written = 0;
+        unsafe {
+            activate
+                .GetString(key, &mut buffer, Some(&mut written))
+                .ok()?;
+        }
+        utf16_z(&buffer[..written as usize])
+    }
+
+    struct MediaFoundationSession;
+
+    impl MediaFoundationSession {
+        fn start() -> windows::core::Result<Self> {
+            unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL)? };
+            Ok(Self)
+        }
+    }
+
+    impl Drop for MediaFoundationSession {
+        fn drop(&mut self) {
+            let _ = unsafe { MFShutdown() };
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn list_platform_microphones() -> Result<Vec<Device>> {
     use coreaudio::audio_unit::Scope;
@@ -920,9 +1094,37 @@ fn list_platform_microphones() -> Result<Vec<Device>> {
     Ok(devices)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn list_platform_microphones() -> Result<Vec<Device>> {
-    bail!("Native microphone discovery is only implemented on macOS")
+    windows_native::list_platform_microphones()
+        .context("MediaFoundation microphone discovery failed")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn list_platform_microphones() -> Result<Vec<Device>> {
+    bail!("Native microphone discovery is only implemented on macOS/Windows")
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_media_foundation_microphone_detail(friendly_name: &str, capture_name: &str) -> String {
+    if capture_name == friendly_name {
+        format!("Windows MediaFoundation microphone. Recording uses dshow device `{capture_name}`.")
+    } else {
+        format!(
+            "Windows MediaFoundation microphone `{friendly_name}`. Recording uses dshow device `{capture_name}`."
+        )
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn utf16_z(value: &[u16]) -> Option<String> {
+    let len = value
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(value.len());
+    let text = String::from_utf16_lossy(&value[..len]);
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 #[cfg(test)]
@@ -1206,5 +1408,57 @@ mod tests {
             parse_coreaudio_microphone_id("microphone:avfoundation:1"),
             None
         );
+    }
+
+    #[test]
+    fn parses_windows_dshow_microphone_ids() {
+        assert_eq!(
+            parse_windows_dshow_microphone_id(
+                "microphone:windows-dshow:4d6963726f70686f6e65204172726179"
+            )
+            .as_deref(),
+            Some("Microphone Array")
+        );
+        assert_eq!(
+            parse_windows_dshow_microphone_id(&windows_dshow_microphone_device_id(
+                r"@\\?\swdevice#mmdevapi#{0.0.1.00000000}"
+            ))
+            .as_deref(),
+            Some(r"@\\?\swdevice#mmdevapi#{0.0.1.00000000}")
+        );
+        assert_eq!(
+            parse_windows_dshow_microphone_id("microphone:windows-dshow:not-hex"),
+            None
+        );
+        assert_eq!(
+            parse_windows_dshow_microphone_id("microphone:coreaudio:42"),
+            None
+        );
+    }
+
+    #[test]
+    fn describes_windows_mediafoundation_microphone_detail() {
+        assert_eq!(
+            windows_media_foundation_microphone_detail(
+                "Microphone Array",
+                r"@\\?\swdevice#mmdevapi#{0.0.1.00000000}"
+            ),
+            r"Windows MediaFoundation microphone `Microphone Array`. Recording uses dshow device `@\\?\swdevice#mmdevapi#{0.0.1.00000000}`."
+        );
+        assert_eq!(
+            windows_media_foundation_microphone_detail("Microphone Array", "Microphone Array"),
+            "Windows MediaFoundation microphone. Recording uses dshow device `Microphone Array`."
+        );
+    }
+
+    #[test]
+    fn trims_utf16_null_terminated_microphone_names() {
+        let mut value = [0u16; 8];
+        value[0] = 'M' as u16;
+        value[1] = 'i' as u16;
+        value[2] = 'c' as u16;
+
+        assert_eq!(utf16_z(&value).as_deref(), Some("Mic"));
+        assert_eq!(utf16_z(&[0, 0, 0]), None);
     }
 }

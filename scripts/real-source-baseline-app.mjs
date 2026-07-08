@@ -3000,6 +3000,7 @@ function previewSourceParams(sources, { protectedOverlayWindowIds = [] } = {}) {
     sources,
     layout: layoutSettings(sources),
     video: videoSettings(),
+    ffmpegPath: config.ffmpegPath,
     ...(protectedOverlayWindowIds.length > 0 ? { protectedOverlayWindowIds } : {})
   }
 }

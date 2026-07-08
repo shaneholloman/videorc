@@ -1018,16 +1018,18 @@ pub struct StreamHealth {
     pub created_at: String,
 }
 
-/// The encoder a recording session actually requested. `-allow_sw 1` means VideoToolbox
-/// may still fall back to software internally, so this is the *requested* backend; the
-/// final-file analyzer's codec/encoder tag is the corroborating output-side signal.
+/// The encoder a recording session actually requested. Hardware encoders may still fall
+/// back internally, so this is the requested backend; the final-file analyzer's
+/// codec/encoder tag is the corroborating output-side signal.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum EncodeBackend {
-    /// libx264 (software), used by the shared-compositor encoder-bridge path (fps ≤ 30).
+    /// libx264 (software), used on non-macOS/non-Windows fallback builds.
     SoftwareX264,
-    /// h264_videotoolbox (hardware, sw fallback allowed), used by the legacy path.
+    /// h264_videotoolbox (hardware, sw fallback allowed).
     HardwareVideotoolbox,
+    /// h264_mf (MediaFoundation hardware/software hybrid), used by Windows builds.
+    HardwareMediaFoundation,
 }
 
 /// Which compositor rendered the active shared-compositor frame. OBS-parity acceptance
@@ -1956,6 +1958,8 @@ pub struct PreviewCameraStartParams {
     pub sources: SourceSelection,
     pub layout: LayoutSettings,
     pub video: VideoSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ffmpeg_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2025,6 +2029,8 @@ pub struct PreviewScreenStartParams {
     pub video: VideoSettings,
     #[serde(default)]
     pub protected_overlay_window_ids: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ffmpeg_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

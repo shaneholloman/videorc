@@ -71,6 +71,40 @@ describe('OwnedProcessRegistry', () => {
     expect(JSON.parse(written)).toEqual([])
   })
 
+  it('reaps ledger pids on win32 with a single hard kill (no signal ladder)', () => {
+    const records: OwnedProcessRecord[] = [
+      { pid: 111, label: 'backend', startedAt: '2026-06-11T10:00:00.000Z' },
+      { pid: 222, label: 'current process', startedAt: '2026-06-11T10:00:02.000Z' }
+    ]
+    const kills: Array<{ pid: number; signal: NodeJS.Signals }> = []
+    let written = ''
+    let scheduled: (() => void) | null = null
+    const registry = new OwnedProcessRegistry({
+      ledgerPath: 'C:\\videorc\\owned-processes\\owned.json',
+      currentPid: 222,
+      platform: 'win32',
+      readFile: () => JSON.stringify(records),
+      writeFile: (_path, contents) => {
+        written = contents
+      },
+      makeDir: () => undefined,
+      killProcess: (pid, signal) => kills.push({ pid, signal }),
+      schedule: (callback) => {
+        scheduled = callback
+        return 0
+      }
+    })
+
+    const stale = registry.reapStale()
+
+    expect(stale.map((record) => record.pid)).toEqual([111])
+    // Node maps every signal to TerminateProcess on Windows, so the reap is
+    // one hard kill with no scheduled follow-up.
+    expect(kills).toEqual([{ pid: 111, signal: 'SIGKILL' }])
+    expect(scheduled).toBeNull()
+    expect(JSON.parse(written)).toEqual([])
+  })
+
   it('uses different ledger files for different worktrees', () => {
     const first = ownedProcessLedgerPath(
       '/Users/orc/Library/Application Support/Videorc',

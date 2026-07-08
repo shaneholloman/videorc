@@ -20,12 +20,15 @@ use crate::audio::{
     AudioCaptureStats, AudioProcessingSettings, NATIVE_AUDIO_CHANNELS, NATIVE_AUDIO_SAMPLE_RATE,
     NativeAudioCaptureSession, NativeAudioSource, attach_fifo_writer, audio_capture_coverage,
     create_native_audio_fifo, native_audio_fifo_path, parse_coreaudio_microphone_id,
-    start_native_audio_source,
+    parse_windows_dshow_microphone_id, start_native_audio_source,
 };
-use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
+use crate::camera_capture::{
+    native_camera_name_for_id, parse_native_camera_id, parse_windows_dshow_camera_id,
+};
 use crate::capture_input::{
-    MicrophoneInput, VideoInput, append_avfoundation_video_input, append_microphone_input,
-    microphone_channels,
+    MicrophoneInput, VideoInput, WindowsScreenCaptureBackend, append_avfoundation_video_input,
+    append_microphone_input, append_windows_dshow_video_input, append_windows_screen_video_input,
+    microphone_channels, microphone_needs_graph_gain,
 };
 use crate::compositor::{
     CompositorAuxiliaryOutput, CompositorStartParams, CompositorStartupBarrierParams,
@@ -55,6 +58,7 @@ use crate::preview_camera::{
     preview_camera_latest_frame_info, reset_preview_camera_capture_timings,
 };
 use crate::preview_screen::preview_screen_latest_frame_info;
+use crate::process_job::{spawn_owned_tokio, status_owned_tokio};
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, BackgroundFit, CameraAspect, CameraCorner,
     CameraFit, CameraShape, CameraSize, CameraTransformMode, CompositorBackend,
@@ -72,7 +76,10 @@ use crate::repair::{
     RepairJob, analyze_recording_cancellable, gate_recording_cancellable, issue_reasons,
 };
 use crate::scene::{scene_from_capture_config, validate_scene_background};
-use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
+use crate::screen_capture::{
+    is_windows_gdigrab_desktop_screen_id, parse_screencapturekit_display_id,
+    parse_screencapturekit_window_id, parse_windows_dxgi_output_index,
+};
 use crate::secrets;
 use crate::state::{AppState, PreviewFrame};
 use crate::storage::{Database, NewSession, PlatformAccountCredentials, default_preview_dir};
@@ -228,7 +235,7 @@ impl Drop for ScreenOverlaySession {
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
         }
-        let _ = std::fs::remove_file(&self.fifo_path);
+        let _ = crate::fifo::cleanup(&self.fifo_path);
     }
 }
 
@@ -551,7 +558,7 @@ pub async fn start_session(
             );
             capture.microphone = None;
         }
-        let _ = std::fs::remove_file(&prepared.fifo_path);
+        let _ = crate::fifo::cleanup(&prepared.fifo_path);
     }
     let audio_tracks = capture_audio_tracks(&capture);
     if matches!(capture.video, VideoInput::TestPattern) {
@@ -709,10 +716,10 @@ pub async fn start_session(
         starting_diagnostics(&session_id, params.output.video.fps, mode),
         duplicate_capture_sources,
     );
-    // Phase 4: both the shared-compositor bridge and the legacy path now request hardware
-    // h264_videotoolbox (sw fallback allowed). The bridge is the protected consumer of the
-    // compositor output, paced by the output clock; the legacy path captures via FFmpeg.
-    initial_diagnostics.encode_backend = Some(EncodeBackend::HardwareVideotoolbox);
+    // Both the shared-compositor bridge and the legacy path request the platform H.264
+    // encoder. The bridge is the protected consumer of the compositor output, paced by
+    // the output clock; the legacy path captures via FFmpeg.
+    initial_diagnostics.encode_backend = Some(default_h264_encode_backend());
     initial_diagnostics.recording_protected = use_encoder_bridge;
     {
         let mut diagnostics = state.diagnostics.lock().await;
@@ -802,10 +809,10 @@ pub async fn start_session(
             )
             .await;
             if let Some(fifo_path) = encoder_bridge_fifo.as_ref() {
-                let _ = std::fs::remove_file(fifo_path);
+                let _ = crate::fifo::cleanup(fifo_path);
             }
             if let Some(fifo_path) = encoder_bridge_stream_fifo.as_ref() {
-                let _ = std::fs::remove_file(fifo_path);
+                let _ = crate::fifo::cleanup(fifo_path);
             }
             return Err(error);
         }
@@ -834,10 +841,10 @@ pub async fn start_session(
                 )
                 .await;
                 if let Some(fifo_path) = encoder_bridge_fifo.as_ref() {
-                    let _ = std::fs::remove_file(fifo_path);
+                    let _ = crate::fifo::cleanup(fifo_path);
                 }
                 if let Some(fifo_path) = encoder_bridge_stream_fifo.as_ref() {
-                    let _ = std::fs::remove_file(fifo_path);
+                    let _ = crate::fifo::cleanup(fifo_path);
                 }
                 return Err(error);
             }
@@ -917,7 +924,8 @@ pub async fn start_session(
         },
     );
 
-    let mut child = ffmpeg_command(&ffmpeg_path)
+    let mut command = ffmpeg_command(&ffmpeg_path);
+    command
         .args(&args)
         .stdin(if use_encoder_bridge {
             Stdio::null()
@@ -925,8 +933,8 @@ pub async fn start_session(
             Stdio::piped()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut child = spawn_owned_tokio(&mut command)
         .with_context(|| format!("Could not start {ffmpeg_path}"))?;
 
     let stderr = child.stderr.take();
@@ -1454,9 +1462,9 @@ pub async fn remux_session(state: AppState, params: RemuxSessionParams) -> Resul
 }
 
 async fn export_mp4_from_mkv(ffmpeg_path: &str, input: &Path, output: &Path) -> Result<()> {
-    let status = Command::new(ffmpeg_path)
-        .args(mp4_export_args(input, output))
-        .status()
+    let mut command = Command::new(ffmpeg_path);
+    command.args(mp4_export_args(input, output));
+    let status = status_owned_tokio(&mut command)
         .await
         .with_context(|| format!("Could not start {ffmpeg_path} for MP4 export"))?;
 
@@ -1565,11 +1573,12 @@ async fn run_preview_command_with_timeout(
     args: &[String],
     preview_timeout: Duration,
 ) -> Result<PreviewCommandOutput> {
-    let mut child = ffmpeg_command(ffmpeg_path)
+    let mut command = ffmpeg_command(ffmpeg_path);
+    command
         .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut child = spawn_owned_tokio(&mut command)
         .with_context(|| format!("Could not start {ffmpeg_path} for preview"))?;
 
     let stderr = child.stderr.take();
@@ -1740,7 +1749,7 @@ async fn start_idle_live_preview(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = match command.spawn() {
+    let mut child = match spawn_owned_tokio(&mut command) {
         Ok(child) => child,
         Err(error) => {
             let status = unavailable_live_preview_status(Some(format!(
@@ -3451,26 +3460,16 @@ struct PreparedNativeAudioSource {
 }
 
 async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) -> CaptureInputs {
-    let microphone = params.sources.microphone_id.as_deref().and_then(|id| {
-        parse_coreaudio_microphone_id(id)
-            .map(|device_id| MicrophoneInput::CoreAudio {
-                device_id,
-                fifo_path: None,
-            })
-            .or_else(|| {
-                parse_avfoundation_id(id).map(|index| MicrophoneInput::AvFoundation { index })
-            })
-    });
+    let microphone = resolve_microphone_input(params.sources.microphone_id.as_deref());
 
     // Camera-only makes the camera the primary input. No screen is enumerated or
     // captured, so macOS Screen Recording permission is never requested.
     if matches!(params.layout.layout_preset, LayoutPreset::CameraOnly) {
-        let camera_index =
-            resolve_camera_input(ffmpeg_path, params.sources.camera_id.as_deref()).await;
+        let primary_camera =
+            resolve_primary_camera_video_input(ffmpeg_path, params.sources.camera_id.as_deref())
+                .await;
         return CaptureInputs {
-            video: camera_index
-                .map(|index| VideoInput::MacCamera { index })
-                .unwrap_or(VideoInput::TestPattern),
+            video: primary_camera.unwrap_or(VideoInput::TestPattern),
             camera_index: None,
             microphone,
         };
@@ -3481,7 +3480,7 @@ async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) 
     let selected_screen = if params.sources.test_pattern && !has_real_screen_source {
         None
     } else {
-        resolve_screen_input(ffmpeg_path, params.sources.screen_id.as_deref()).await
+        resolve_primary_screen_video_input(ffmpeg_path, params.sources.screen_id.as_deref()).await
     };
     // Screen-only intentionally skips the camera overlay so no camera permission
     // is requested.
@@ -3490,17 +3489,19 @@ async fn resolve_capture_inputs(ffmpeg_path: &str, params: &StartSessionParams) 
     } else {
         resolve_camera_input(ffmpeg_path, params.sources.camera_id.as_deref()).await
     };
-    let detected_screen =
-        if cfg!(target_os = "macos") && (!params.sources.test_pattern || has_real_screen_source) {
-            selected_screen.or(find_avfoundation_screen_index(ffmpeg_path).await)
-        } else {
-            None
-        };
+    let detected_screen = if let Some(selected_screen) = selected_screen {
+        Some(selected_screen)
+    } else if cfg!(target_os = "macos") && (!params.sources.test_pattern || has_real_screen_source)
+    {
+        find_avfoundation_screen_index(ffmpeg_path)
+            .await
+            .map(|index| VideoInput::MacScreen { index })
+    } else {
+        None
+    };
 
     CaptureInputs {
-        video: detected_screen
-            .map(|index| VideoInput::MacScreen { index })
-            .unwrap_or(VideoInput::TestPattern),
+        video: detected_screen.unwrap_or(VideoInput::TestPattern),
         camera_index,
         microphone,
     }
@@ -3531,9 +3532,15 @@ fn duplicate_capture_sources_for_statuses(
     screen_source_id: Option<&str>,
 ) -> Vec<String> {
     let mut sources = Vec::new();
-    let recording_uses_camera =
-        capture.camera_index.is_some() || matches!(capture.video, VideoInput::MacCamera { .. });
-    let recording_uses_screen = matches!(capture.video, VideoInput::MacScreen { .. });
+    let recording_uses_camera = capture.camera_index.is_some()
+        || matches!(
+            capture.video,
+            VideoInput::MacCamera { .. } | VideoInput::WindowsCamera { .. }
+        );
+    let recording_uses_screen = matches!(
+        capture.video,
+        VideoInput::MacScreen { .. } | VideoInput::WindowsScreen { .. }
+    );
 
     if recording_uses_camera && camera_state == PreviewCameraState::Live {
         let source_id = camera_id.unwrap_or("unknown");
@@ -3560,6 +3567,41 @@ fn duplicate_capture_source_label(kind: &str, source_id: &str) -> String {
     }
 }
 
+fn resolve_microphone_input(microphone_id: Option<&str>) -> Option<MicrophoneInput> {
+    let microphone_id = microphone_id?;
+    parse_coreaudio_microphone_id(microphone_id)
+        .map(|device_id| MicrophoneInput::CoreAudio {
+            device_id,
+            fifo_path: None,
+        })
+        .or_else(|| {
+            parse_avfoundation_id(microphone_id)
+                .map(|index| MicrophoneInput::AvFoundation { index })
+        })
+        .or_else(|| {
+            parse_windows_dshow_microphone_id(microphone_id)
+                .map(|device_name| MicrophoneInput::WindowsDshow { device_name })
+        })
+}
+
+async fn resolve_primary_camera_video_input(
+    ffmpeg_path: &str,
+    camera_id: Option<&str>,
+) -> Option<VideoInput> {
+    let camera_id = camera_id?;
+    if let Some(index) = parse_avfoundation_id(camera_id) {
+        return Some(VideoInput::MacCamera { index });
+    }
+    if let Some(device_name) = parse_windows_dshow_camera_id(camera_id) {
+        return Some(VideoInput::WindowsCamera { device_name });
+    }
+
+    let camera_name = native_camera_name_for_id(camera_id)?;
+    find_avfoundation_camera_index(ffmpeg_path, &camera_name)
+        .await
+        .map(|index| VideoInput::MacCamera { index })
+}
+
 async fn resolve_camera_input(ffmpeg_path: &str, camera_id: Option<&str>) -> Option<usize> {
     let camera_id = camera_id?;
     if let Some(index) = parse_avfoundation_id(camera_id) {
@@ -3570,14 +3612,31 @@ async fn resolve_camera_input(ffmpeg_path: &str, camera_id: Option<&str>) -> Opt
     find_avfoundation_camera_index(ffmpeg_path, &camera_name).await
 }
 
-async fn resolve_screen_input(ffmpeg_path: &str, screen_id: Option<&str>) -> Option<usize> {
+async fn resolve_primary_screen_video_input(
+    ffmpeg_path: &str,
+    screen_id: Option<&str>,
+) -> Option<VideoInput> {
     let screen_id = screen_id?;
     if let Some(index) = parse_avfoundation_id(screen_id) {
-        return Some(index);
+        return Some(VideoInput::MacScreen { index });
+    }
+
+    if let Some(output_index) = parse_windows_dxgi_output_index(screen_id) {
+        return Some(VideoInput::WindowsScreen {
+            backend: WindowsScreenCaptureBackend::Ddagrab { output_index },
+        });
+    }
+
+    if is_windows_gdigrab_desktop_screen_id(screen_id) {
+        return Some(VideoInput::WindowsScreen {
+            backend: WindowsScreenCaptureBackend::GdiGrabDesktop,
+        });
     }
 
     if parse_screencapturekit_display_id(screen_id).is_some() {
-        return find_avfoundation_screen_index_for_native_display_id(ffmpeg_path, screen_id).await;
+        return find_avfoundation_screen_index_for_native_display_id(ffmpeg_path, screen_id)
+            .await
+            .map(|index| VideoInput::MacScreen { index });
     }
 
     None
@@ -3865,6 +3924,119 @@ fn bool_label(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum FfmpegH264Platform {
+    Macos,
+    Windows,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FfmpegH264Encoder {
+    codec: &'static str,
+    pix_fmt: &'static str,
+    backend: EncodeBackend,
+}
+
+fn current_ffmpeg_h264_platform() -> FfmpegH264Platform {
+    #[cfg(target_os = "macos")]
+    {
+        FfmpegH264Platform::Macos
+    }
+    #[cfg(target_os = "windows")]
+    {
+        FfmpegH264Platform::Windows
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        FfmpegH264Platform::Other
+    }
+}
+
+fn ffmpeg_h264_encoder(platform: FfmpegH264Platform) -> FfmpegH264Encoder {
+    match platform {
+        FfmpegH264Platform::Macos => FfmpegH264Encoder {
+            codec: "h264_videotoolbox",
+            pix_fmt: "yuv420p",
+            backend: EncodeBackend::HardwareVideotoolbox,
+        },
+        FfmpegH264Platform::Windows => FfmpegH264Encoder {
+            codec: "h264_mf",
+            // FFmpeg's MediaFoundation wrapper accepts yuv420p on some encoders,
+            // but nv12 is the safer input shape for hardware-backed devices.
+            pix_fmt: "nv12",
+            backend: EncodeBackend::HardwareMediaFoundation,
+        },
+        FfmpegH264Platform::Other => FfmpegH264Encoder {
+            codec: "libx264",
+            pix_fmt: "yuv420p",
+            backend: EncodeBackend::SoftwareX264,
+        },
+    }
+}
+
+fn default_h264_encode_backend() -> EncodeBackend {
+    ffmpeg_h264_encoder(current_ffmpeg_h264_platform()).backend
+}
+
+fn append_h264_encoding_args(args: &mut Vec<String>, video: &VideoSettings) {
+    append_h264_encoding_args_for_platform(args, video, current_ffmpeg_h264_platform());
+}
+
+fn append_h264_encoding_args_for_platform(
+    args: &mut Vec<String>,
+    video: &VideoSettings,
+    platform: FfmpegH264Platform,
+) {
+    let encoder = ffmpeg_h264_encoder(platform);
+    args.extend([
+        "-r".to_string(),
+        video.fps.to_string(),
+        "-pix_fmt".to_string(),
+        encoder.pix_fmt.to_string(),
+        "-c:v".to_string(),
+        encoder.codec.to_string(),
+    ]);
+    match platform {
+        FfmpegH264Platform::Macos => {
+            args.extend([
+                "-allow_sw".to_string(),
+                "1".to_string(),
+                "-realtime".to_string(),
+                "1".to_string(),
+                "-prio_speed".to_string(),
+                "1".to_string(),
+            ]);
+        }
+        FfmpegH264Platform::Windows => {}
+        FfmpegH264Platform::Other => {
+            args.extend([
+                "-preset".to_string(),
+                "ultrafast".to_string(),
+                "-tune".to_string(),
+                "zerolatency".to_string(),
+            ]);
+        }
+    }
+    args.extend([
+        "-b:v".to_string(),
+        format!("{}k", video.bitrate_kbps),
+        "-maxrate".to_string(),
+        format!("{}k", video.bitrate_kbps),
+        "-bufsize".to_string(),
+        format!("{}k", video.bitrate_kbps.saturating_mul(2)),
+        // Pin a 2-second keyframe interval so YouTube and HLS/DVR go live.
+        "-g".to_string(),
+        video.fps.saturating_mul(2).to_string(),
+        "-force_key_frames".to_string(),
+        "expr:gte(t,n_forced*2)".to_string(),
+        // Tee/fifo fan-out needs H.264 SPS/PPS carried as global extradata.
+        "-flags".to_string(),
+        "+global_header".to_string(),
+    ]);
+}
+
 fn compositor_backend_label(backend: Option<CompositorBackend>) -> &'static str {
     match backend {
         Some(CompositorBackend::Metal) => "metal",
@@ -3876,6 +4048,7 @@ fn compositor_backend_label(backend: Option<CompositorBackend>) -> &'static str 
 fn encode_backend_label(backend: Option<EncodeBackend>) -> &'static str {
     match backend {
         Some(EncodeBackend::HardwareVideotoolbox) => "hardware-videotoolbox",
+        Some(EncodeBackend::HardwareMediaFoundation) => "hardware-mediafoundation",
         Some(EncodeBackend::SoftwareX264) => "software-x264",
         None => "unknown",
     }
@@ -4014,7 +4187,7 @@ async fn prepare_native_audio_source(
             })
         }
         Err(error) => {
-            let _ = std::fs::remove_file(&path);
+            let _ = crate::fifo::cleanup(&path);
             let message = format!(
                 "Native CoreAudio microphone is unavailable; continuing video-only. {error}"
             );
@@ -4377,36 +4550,7 @@ fn bridge_compositor_ffmpeg_args(
         append_audio_output_args(&mut args, &input_layout);
         match video_output {
             EncoderBridgeVideoOutput::RawYuv420p => {
-                args.extend([
-                    "-r".to_string(),
-                    params.output.video.fps.to_string(),
-                    "-pix_fmt".to_string(),
-                    "yuv420p".to_string(),
-                    // Phase 4: prefer hardware encoding on the shared-compositor path, like OBS and
-                    // the legacy path. Software libx264 ultrafast was a CPU-pressure source under
-                    // real 1080p/1440p load; h264_videotoolbox offloads the encode to the media
-                    // engine. `-allow_sw 1` keeps a software fallback so the encode never fails.
-                    "-c:v".to_string(),
-                    "h264_videotoolbox".to_string(),
-                    "-allow_sw".to_string(),
-                    "1".to_string(),
-                    "-realtime".to_string(),
-                    "1".to_string(),
-                    "-prio_speed".to_string(),
-                    "1".to_string(),
-                    "-b:v".to_string(),
-                    format!("{}k", params.output.video.bitrate_kbps),
-                    "-maxrate".to_string(),
-                    format!("{}k", params.output.video.bitrate_kbps),
-                    "-bufsize".to_string(),
-                    format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
-                    "-g".to_string(),
-                    params.output.video.fps.saturating_mul(2).to_string(),
-                    "-force_key_frames".to_string(),
-                    "expr:gte(t,n_forced*2)".to_string(),
-                    "-flags".to_string(),
-                    "+global_header".to_string(),
-                ]);
+                append_h264_encoding_args(&mut args, &params.output.video);
             }
             EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
             | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
@@ -4534,6 +4678,7 @@ fn bridge_compositor_split_output_ffmpeg_args(
         camera_input_index: None,
         screen_overlay_input_index: None,
         audio_inputs,
+        microphone_graph_gain: microphone_needs_graph_gain(capture.microphone.as_ref()),
     };
 
     args.extend([
@@ -4556,6 +4701,7 @@ fn bridge_compositor_split_output_ffmpeg_args(
         camera_input_index: None,
         screen_overlay_input_index: None,
         audio_inputs: input_layout.audio_inputs.clone(),
+        microphone_graph_gain: input_layout.microphone_graph_gain,
     };
     let mut stream_routes = Vec::new();
     let mut uses_recording_stream_input = false;
@@ -4589,6 +4735,7 @@ fn bridge_compositor_split_output_ffmpeg_args(
                 camera_input_index: None,
                 screen_overlay_input_index: None,
                 audio_inputs: input_layout.audio_inputs.clone(),
+                microphone_graph_gain: input_layout.microphone_graph_gain,
             };
             append_bridge_copy_flv_output(
                 &mut args,
@@ -4719,6 +4866,7 @@ fn append_bridge_recording_input_args(
         camera_input_index: None,
         screen_overlay_input_index: None,
         audio_inputs,
+        microphone_graph_gain: microphone_needs_graph_gain(capture.microphone.as_ref()),
     }
 }
 
@@ -4912,45 +5060,7 @@ fn ffmpeg_args(
         "[v_main]".to_string(),
     ]);
     append_audio_output_args(&mut args, &input_layout);
-    args.extend([
-        "-r".to_string(),
-        params.output.video.fps.to_string(),
-        "-pix_fmt".to_string(),
-        "yuv420p".to_string(),
-        "-c:v".to_string(),
-        "h264_videotoolbox".to_string(),
-        "-allow_sw".to_string(),
-        "1".to_string(),
-        "-realtime".to_string(),
-        "1".to_string(),
-        "-prio_speed".to_string(),
-        "1".to_string(),
-        "-b:v".to_string(),
-        format!("{}k", params.output.video.bitrate_kbps),
-        "-maxrate".to_string(),
-        format!("{}k", params.output.video.bitrate_kbps),
-        "-bufsize".to_string(),
-        format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
-        // Pin a 2-second keyframe interval (closed GOP). YouTube — and HLS/DVR on
-        // every platform — will not go live without a regular keyframe cadence, while
-        // Twitch tolerates an irregular GOP. That difference is exactly why an
-        // unpinned videotoolbox encode reaches Twitch but never appears on YouTube.
-        // `-g` bounds the max interval; `-force_key_frames` guarantees exact 2s
-        // alignment, and because there is one shared encoder every tee leg (and the
-        // MKV) inherits it.
-        "-g".to_string(),
-        params.output.video.fps.saturating_mul(2).to_string(),
-        "-force_key_frames".to_string(),
-        "expr:gte(t,n_forced*2)".to_string(),
-        // Required for the `tee` fan-out: a single shared videotoolbox encoder feeds
-        // the matroska and flv slaves, which both need the H.264 SPS/PPS carried as
-        // global extradata. Without this the matroska slave fails its header write
-        // ("Could not write header (incorrect codec parameters ?)") and, because it is
-        // onfail=abort, takes down the entire tee. Harmless for the single mkv/flv
-        // outputs (those muxers request global headers from the encoder anyway).
-        "-flags".to_string(),
-        "+global_header".to_string(),
-    ]);
+    append_h264_encoding_args(&mut args, &params.output.video);
     append_audio_encoding_args(
         &mut args,
         &input_layout,
@@ -5060,6 +5170,9 @@ struct InputLayout {
     camera_input_index: Option<usize>,
     screen_overlay_input_index: Option<usize>,
     audio_inputs: Vec<AudioInput>,
+    /// Gain/mute must ride the ffmpeg filter graph (ffmpeg-owned mic capture,
+    /// e.g. Windows dshow) instead of the in-process native audio path.
+    microphone_graph_gain: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5092,6 +5205,34 @@ fn append_input_args(
             // The cursor is only meaningful for screen capture, never the camera.
             let capture_cursor = matches!(capture.video, VideoInput::MacScreen { .. });
             append_avfoundation_video_input(args, index, video.fps, capture_cursor);
+            next_input_index += 1;
+
+            if include_audio
+                && append_microphone_input(args, capture.microphone.as_ref(), &mut next_input_index)
+            {
+                audio_inputs.push(AudioInput {
+                    input_index: next_input_index - 1,
+                    track: microphone_audio_track(),
+                    channels: microphone_channels(capture.microphone.as_ref()),
+                });
+            }
+        }
+        VideoInput::WindowsScreen { ref backend } => {
+            append_windows_screen_video_input(args, backend, video.fps, true);
+            next_input_index += 1;
+
+            if include_audio
+                && append_microphone_input(args, capture.microphone.as_ref(), &mut next_input_index)
+            {
+                audio_inputs.push(AudioInput {
+                    input_index: next_input_index - 1,
+                    track: microphone_audio_track(),
+                    channels: microphone_channels(capture.microphone.as_ref()),
+                });
+            }
+        }
+        VideoInput::WindowsCamera { ref device_name } => {
+            append_windows_dshow_video_input(args, device_name, video.fps);
             next_input_index += 1;
 
             if include_audio
@@ -5162,6 +5303,7 @@ fn append_input_args(
         camera_input_index,
         screen_overlay_input_index,
         audio_inputs,
+        microphone_graph_gain: microphone_needs_graph_gain(capture.microphone.as_ref()),
     }
 }
 
@@ -5183,26 +5325,26 @@ fn append_screen_overlay_input(args: &mut Vec<String>, overlay: &ScreenOverlayIn
 }
 
 fn screen_overlay_fifo_path(session_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("videorc-screen-overlay-{session_id}.rgba"))
+    crate::fifo::transport_path(&format!("videorc-screen-overlay-{session_id}.rgba"))
 }
 
 fn recording_encoder_bridge_fifo_path(session_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("videorc-recording-encoder-bridge-{session_id}.yuv"))
+    crate::fifo::transport_path(&format!(
+        "videorc-recording-encoder-bridge-{session_id}.yuv"
+    ))
 }
 
 fn stream_encoder_bridge_fifo_path(session_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("videorc-stream-encoder-bridge-{session_id}.h264"))
+    crate::fifo::transport_path(&format!("videorc-stream-encoder-bridge-{session_id}.h264"))
 }
 
 fn create_recording_encoder_bridge_fifo(path: &Path) -> Result<()> {
-    if path.exists() {
-        std::fs::remove_file(path).with_context(|| {
-            format!(
-                "Could not remove stale recording encoder bridge FIFO {}",
-                path.display()
-            )
-        })?;
-    }
+    crate::fifo::cleanup(path).with_context(|| {
+        format!(
+            "Could not remove stale recording encoder bridge FIFO {}",
+            path.display()
+        )
+    })?;
 
     crate::fifo::create(path).with_context(|| {
         format!(
@@ -5213,14 +5355,12 @@ fn create_recording_encoder_bridge_fifo(path: &Path) -> Result<()> {
 }
 
 fn create_stream_encoder_bridge_fifo(path: &Path) -> Result<()> {
-    if path.exists() {
-        std::fs::remove_file(path).with_context(|| {
-            format!(
-                "Could not remove stale stream encoder bridge FIFO {}",
-                path.display()
-            )
-        })?;
-    }
+    crate::fifo::cleanup(path).with_context(|| {
+        format!(
+            "Could not remove stale stream encoder bridge FIFO {}",
+            path.display()
+        )
+    })?;
 
     crate::fifo::create(path).with_context(|| {
         format!(
@@ -5231,14 +5371,12 @@ fn create_stream_encoder_bridge_fifo(path: &Path) -> Result<()> {
 }
 
 fn create_screen_overlay_fifo(path: &Path) -> Result<()> {
-    if path.exists() {
-        std::fs::remove_file(path).with_context(|| {
-            format!(
-                "Could not remove stale Screen overlay FIFO {}",
-                path.display()
-            )
-        })?;
-    }
+    crate::fifo::cleanup(path).with_context(|| {
+        format!(
+            "Could not remove stale Screen overlay FIFO {}",
+            path.display()
+        )
+    })?;
 
     crate::fifo::create(path)
         .with_context(|| format!("Could not create Screen overlay FIFO {}", path.display()))
@@ -5400,6 +5538,17 @@ fn capture_audio_filter(input_layout: &InputLayout, audio: &AudioSettings) -> St
                 filters.push(format!("atrim=start={trim_seconds:.3}"));
                 filters.push("asetpts=PTS-STARTPTS".to_string());
             }
+        }
+    }
+
+    if has_microphone && input_layout.microphone_graph_gain {
+        // ffmpeg-owned mic capture records the raw device signal, so mute and
+        // gain live here — mirroring the native path's in-process processing
+        // (muted wins and records digital silence, keeping the track alive).
+        if audio.microphone_muted {
+            filters.push("volume=0".to_string());
+        } else if audio.microphone_gain_db != 0.0 {
+            filters.push(format!("volume={}dB", audio.microphone_gain_db));
         }
     }
 
@@ -5629,13 +5778,19 @@ fn scene_source_input_index(
     input_layout: &InputLayout,
 ) -> Option<usize> {
     match kind {
-        SceneSourceKind::Camera => input_layout
-            .camera_input_index
-            .or_else(|| matches!(capture.video, VideoInput::MacCamera { .. }).then_some(0)),
+        SceneSourceKind::Camera => input_layout.camera_input_index.or_else(|| {
+            matches!(
+                capture.video,
+                VideoInput::MacCamera { .. } | VideoInput::WindowsCamera { .. }
+            )
+            .then_some(0)
+        }),
         SceneSourceKind::Screen | SceneSourceKind::Window | SceneSourceKind::TestPattern => {
             matches!(
                 capture.video,
-                VideoInput::MacScreen { .. } | VideoInput::TestPattern
+                VideoInput::MacScreen { .. }
+                    | VideoInput::WindowsScreen { .. }
+                    | VideoInput::TestPattern
             )
             .then_some(0)
         }
@@ -7398,10 +7553,84 @@ mod tests {
             "hardware-videotoolbox"
         );
         assert_eq!(
+            encode_backend_label(Some(EncodeBackend::HardwareMediaFoundation)),
+            "hardware-mediafoundation"
+        );
+        assert_eq!(
             encode_backend_label(Some(EncodeBackend::SoftwareX264)),
             "software-x264"
         );
         assert_eq!(encode_backend_label(None), "unknown");
+    }
+
+    #[test]
+    fn h264_encoder_args_are_platform_specific() {
+        let video = VideoSettings {
+            preset: VideoPreset::Custom,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            bitrate_kbps: 6_000,
+        };
+
+        let mut macos_args = Vec::new();
+        append_h264_encoding_args_for_platform(&mut macos_args, &video, FfmpegH264Platform::Macos);
+        assert_eq!(arg_value(&macos_args, "-c:v"), Some("h264_videotoolbox"));
+        assert_eq!(arg_value(&macos_args, "-pix_fmt"), Some("yuv420p"));
+        assert_eq!(arg_value(&macos_args, "-allow_sw"), Some("1"));
+        assert_eq!(arg_value(&macos_args, "-realtime"), Some("1"));
+        assert_eq!(arg_value(&macos_args, "-prio_speed"), Some("1"));
+
+        let mut windows_args = Vec::new();
+        append_h264_encoding_args_for_platform(
+            &mut windows_args,
+            &video,
+            FfmpegH264Platform::Windows,
+        );
+        assert_eq!(arg_value(&windows_args, "-c:v"), Some("h264_mf"));
+        assert_eq!(arg_value(&windows_args, "-pix_fmt"), Some("nv12"));
+        assert_eq!(arg_value(&windows_args, "-allow_sw"), None);
+        assert_eq!(arg_value(&windows_args, "-realtime"), None);
+        assert_eq!(arg_value(&windows_args, "-prio_speed"), None);
+
+        let mut fallback_args = Vec::new();
+        append_h264_encoding_args_for_platform(
+            &mut fallback_args,
+            &video,
+            FfmpegH264Platform::Other,
+        );
+        assert_eq!(arg_value(&fallback_args, "-c:v"), Some("libx264"));
+        assert_eq!(arg_value(&fallback_args, "-pix_fmt"), Some("yuv420p"));
+        assert_eq!(arg_value(&fallback_args, "-preset"), Some("ultrafast"));
+        assert_eq!(arg_value(&fallback_args, "-tune"), Some("zerolatency"));
+
+        for args in [&macos_args, &windows_args, &fallback_args] {
+            assert_eq!(arg_value(args, "-b:v"), Some("6000k"));
+            assert_eq!(arg_value(args, "-maxrate"), Some("6000k"));
+            assert_eq!(arg_value(args, "-bufsize"), Some("12000k"));
+            assert_eq!(arg_value(args, "-g"), Some("60"));
+            assert_eq!(
+                arg_value(args, "-force_key_frames"),
+                Some("expr:gte(t,n_forced*2)")
+            );
+            assert_eq!(arg_value(args, "-flags"), Some("+global_header"));
+        }
+    }
+
+    #[test]
+    fn h264_encoder_backends_are_platform_specific() {
+        assert_eq!(
+            ffmpeg_h264_encoder(FfmpegH264Platform::Macos).backend,
+            EncodeBackend::HardwareVideotoolbox
+        );
+        assert_eq!(
+            ffmpeg_h264_encoder(FfmpegH264Platform::Windows).backend,
+            EncodeBackend::HardwareMediaFoundation
+        );
+        assert_eq!(
+            ffmpeg_h264_encoder(FfmpegH264Platform::Other).backend,
+            EncodeBackend::SoftwareX264
+        );
     }
 
     #[test]
@@ -8289,6 +8518,60 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "-capture_cursor"));
     }
 
+    #[test]
+    fn windows_screen_input_can_be_primary_recording_input() {
+        let params = base_params(true, false);
+        let mut args = Vec::new();
+        let layout = append_input_args(
+            &mut args,
+            &CaptureInputs {
+                video: VideoInput::WindowsScreen {
+                    backend: crate::capture_input::WindowsScreenCaptureBackend::Ddagrab {
+                        output_index: 1,
+                    },
+                },
+                camera_index: None,
+                microphone: Some(MicrophoneInput::WindowsDshow {
+                    device_name: "Microphone Array".to_string(),
+                }),
+            },
+            true,
+            &params.output.video,
+            None,
+        );
+
+        assert_eq!(layout.video_input_index, 0);
+        assert_eq!(layout.camera_input_index, None);
+        assert_eq!(layout.audio_inputs.len(), 1);
+        assert_eq!(layout.audio_inputs[0].input_index, 1);
+        assert!(args.iter().any(|arg| arg.contains("ddagrab=output_idx=1")));
+        assert!(args.contains(&"audio=Microphone Array".to_string()));
+    }
+
+    #[test]
+    fn windows_camera_input_can_be_primary_recording_input() {
+        let params = base_params(true, false);
+        let mut args = Vec::new();
+        let layout = append_input_args(
+            &mut args,
+            &CaptureInputs {
+                video: VideoInput::WindowsCamera {
+                    device_name: "USB Camera".to_string(),
+                },
+                camera_index: None,
+                microphone: None,
+            },
+            false,
+            &params.output.video,
+            None,
+        );
+
+        assert_eq!(layout.video_input_index, 0);
+        assert!(layout.camera_input_index.is_none());
+        assert!(args.contains(&"dshow".to_string()));
+        assert!(args.contains(&"video=USB Camera".to_string()));
+    }
+
     #[tokio::test]
     async fn camera_only_resolves_camera_as_video_input() {
         let mut params = base_params(true, false);
@@ -8318,6 +8601,50 @@ mod tests {
         let capture = resolve_capture_inputs("ffmpeg", &params).await;
 
         assert_eq!(capture.video, VideoInput::MacScreen { index: 3 });
+    }
+
+    #[tokio::test]
+    async fn selected_windows_screen_and_microphone_resolve_to_windows_inputs() {
+        let mut params = base_params(true, false);
+        params.layout.layout_preset = LayoutPreset::ScreenOnly;
+        params.sources.screen_id = Some("screen:dxgi:00000000000003f1:2".to_string());
+        params.sources.microphone_id =
+            Some("microphone:windows-dshow:4d6963726f70686f6e65204172726179".to_string());
+
+        let capture = resolve_capture_inputs("ffmpeg", &params).await;
+
+        assert_eq!(
+            capture.video,
+            VideoInput::WindowsScreen {
+                backend: WindowsScreenCaptureBackend::Ddagrab { output_index: 2 },
+            }
+        );
+        assert_eq!(capture.camera_index, None);
+        assert_eq!(
+            capture.microphone,
+            Some(MicrophoneInput::WindowsDshow {
+                device_name: "Microphone Array".to_string(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn camera_only_resolves_windows_camera_as_primary_video_input() {
+        let mut params = base_params(true, false);
+        params.layout.layout_preset = LayoutPreset::CameraOnly;
+        params.sources.camera_id = Some("camera:windows-dshow:5553422043616d657261".to_string());
+        params.sources.microphone_id = None;
+
+        let capture = resolve_capture_inputs("ffmpeg", &params).await;
+
+        assert_eq!(
+            capture.video,
+            VideoInput::WindowsCamera {
+                device_name: "USB Camera".to_string(),
+            }
+        );
+        assert!(capture.camera_index.is_none());
+        assert!(capture.microphone.is_none());
     }
 
     #[test]
@@ -8394,6 +8721,32 @@ mod tests {
         args[start..input_position].iter().any(|arg| arg == name)
     }
 
+    fn assert_current_h264_encoder_args(args: &[String]) {
+        let platform = current_ffmpeg_h264_platform();
+        let encoder = ffmpeg_h264_encoder(platform);
+        assert_eq!(arg_value(args, "-c:v"), Some(encoder.codec));
+        match platform {
+            FfmpegH264Platform::Macos => {
+                assert_eq!(arg_value(args, "-allow_sw"), Some("1"));
+                assert_eq!(arg_value(args, "-realtime"), Some("1"));
+                assert_eq!(arg_value(args, "-prio_speed"), Some("1"));
+            }
+            FfmpegH264Platform::Windows => {
+                assert_eq!(arg_value(args, "-allow_sw"), None);
+                assert_eq!(arg_value(args, "-realtime"), None);
+                assert_eq!(arg_value(args, "-prio_speed"), None);
+                assert_eq!(encoder.backend, EncodeBackend::HardwareMediaFoundation);
+            }
+            FfmpegH264Platform::Other => {
+                assert_eq!(arg_value(args, "-allow_sw"), None);
+                assert_eq!(arg_value(args, "-realtime"), None);
+                assert_eq!(arg_value(args, "-prio_speed"), None);
+                assert_eq!(arg_value(args, "-preset"), Some("ultrafast"));
+                assert_eq!(arg_value(args, "-tune"), Some("zerolatency"));
+            }
+        }
+    }
+
     #[test]
     fn bridge_recording_args_use_raw_yuv_video_and_existing_audio() {
         let params = base_params(true, false);
@@ -8438,10 +8791,7 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "[v_main]"));
         assert!(!args.iter().any(|arg| arg == "[preview]"));
         assert!(args.iter().any(|arg| arg == "1:a?"));
-        assert_eq!(arg_value(&args, "-c:v"), Some("h264_videotoolbox"));
-        assert_eq!(arg_value(&args, "-allow_sw"), Some("1"));
-        assert_eq!(arg_value(&args, "-realtime"), Some("1"));
-        assert_eq!(arg_value(&args, "-prio_speed"), Some("1"));
+        assert_current_h264_encoder_args(&args);
         assert_eq!(arg_value(&args, "-c:a"), Some("pcm_s16le"));
         assert!(args.iter().any(|arg| arg == "-shortest"));
 
@@ -8705,7 +9055,13 @@ mod tests {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            assert_eq!(arg_value(&args, "-c:v"), Some("h264_videotoolbox"));
+            assert_eq!(
+                arg_value(&args, "-c:v"),
+                Some(ffmpeg_h264_encoder(current_ffmpeg_h264_platform()).codec)
+            );
+            assert_eq!(arg_value(&args, "-allow_sw"), None);
+            assert_eq!(arg_value(&args, "-realtime"), None);
+            assert_eq!(arg_value(&args, "-prio_speed"), None);
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-pix_fmt"),
                 Some("yuv420p")
@@ -8781,7 +9137,13 @@ mod tests {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            assert_eq!(arg_value(&args, "-c:v"), Some("h264_videotoolbox"));
+            assert_eq!(
+                arg_value(&args, "-c:v"),
+                Some(ffmpeg_h264_encoder(current_ffmpeg_h264_platform()).codec)
+            );
+            assert_eq!(arg_value(&args, "-allow_sw"), None);
+            assert_eq!(arg_value(&args, "-realtime"), None);
+            assert_eq!(arg_value(&args, "-prio_speed"), None);
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-pix_fmt"),
                 Some("yuv420p")
@@ -8877,7 +9239,13 @@ mod tests {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            assert_eq!(arg_value(&args, "-c:v"), Some("h264_videotoolbox"));
+            assert_eq!(
+                arg_value(&args, "-c:v"),
+                Some(ffmpeg_h264_encoder(current_ffmpeg_h264_platform()).codec)
+            );
+            assert_eq!(arg_value(&args, "-allow_sw"), None);
+            assert_eq!(arg_value(&args, "-realtime"), None);
+            assert_eq!(arg_value(&args, "-prio_speed"), None);
             assert_eq!(
                 input_arg_value(&args, &fifo_path.display().to_string(), "-pix_fmt"),
                 Some("yuv420p")
@@ -9425,6 +9793,67 @@ mod tests {
         assert!(!CAPTURE_AUDIO_FILTER.contains("volume=24dB"));
     }
 
+    fn microphone_input_layout(microphone_graph_gain: bool) -> InputLayout {
+        InputLayout {
+            video_input_index: 0,
+            camera_input_index: None,
+            screen_overlay_input_index: None,
+            audio_inputs: vec![AudioInput {
+                input_index: 1,
+                track: microphone_audio_track(),
+                channels: NATIVE_AUDIO_CHANNELS,
+            }],
+            microphone_graph_gain,
+        }
+    }
+
+    // The native CoreAudio path applies gain/mute in-process; the ffmpeg-owned
+    // dshow mic (Windows) records the raw signal, so gain/mute must ride the
+    // filter graph or the mute toggle silently records live audio.
+    #[test]
+    fn capture_audio_filter_applies_graph_gain_only_for_ffmpeg_owned_mics() {
+        let audio = AudioSettings {
+            microphone_gain_db: 6.5,
+            microphone_muted: false,
+            microphone_sync_offset_ms: 0,
+        };
+
+        let native = capture_audio_filter(&microphone_input_layout(false), &audio);
+        assert!(
+            !native.contains("volume="),
+            "native mic path must not double-apply gain: {native}"
+        );
+
+        let graph = capture_audio_filter(&microphone_input_layout(true), &audio);
+        assert!(
+            graph.contains("volume=6.5dB"),
+            "ffmpeg-owned mic must carry gain in the graph: {graph}"
+        );
+    }
+
+    #[test]
+    fn capture_audio_filter_mutes_ffmpeg_owned_mics_with_silence_not_track_loss() {
+        let audio = AudioSettings {
+            microphone_gain_db: 6.5,
+            microphone_muted: true,
+            microphone_sync_offset_ms: 0,
+        };
+
+        let filter = capture_audio_filter(&microphone_input_layout(true), &audio);
+        assert!(
+            filter.contains("volume=0"),
+            "muted ffmpeg-owned mic must record digital silence: {filter}"
+        );
+        assert!(
+            !filter.contains("6.5dB"),
+            "mute must win over gain, matching the native in-process path: {filter}"
+        );
+        assert!(
+            filter.contains(CAPTURE_AUDIO_FILTER),
+            "resample contract stays regardless of gain handling: {filter}"
+        );
+    }
+
     #[test]
     fn default_recordings_dir_uses_videorc_media_folder() {
         let path = default_recordings_dir();
@@ -9611,9 +10040,7 @@ mod tests {
         assert_eq!(arg_value(&args, "-ac"), Some("2"));
         assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
         assert_eq!(arg_value(&args, "-b:a"), Some("160k"));
-        assert_eq!(arg_value(&args, "-allow_sw"), Some("1"));
-        assert_eq!(arg_value(&args, "-realtime"), Some("1"));
-        assert_eq!(arg_value(&args, "-prio_speed"), Some("1"));
+        assert_current_h264_encoder_args(&args);
         // A pinned 2-second keyframe interval so YouTube (and HLS/DVR) go live.
         assert_eq!(
             arg_value(&args, "-force_key_frames"),
@@ -9769,6 +10196,7 @@ mod tests {
                 camera_input_index: Some(1),
                 screen_overlay_input_index: None,
                 audio_inputs: Vec::new(),
+                microphone_graph_gain: false,
             },
             &params,
             false,
@@ -9824,6 +10252,7 @@ mod tests {
                 camera_input_index: Some(1),
                 screen_overlay_input_index: None,
                 audio_inputs: Vec::new(),
+                microphone_graph_gain: false,
             },
             &params,
             false,
@@ -9879,6 +10308,7 @@ mod tests {
                     camera_input_index: None,
                     screen_overlay_input_index: None,
                     audio_inputs: Vec::new(),
+                    microphone_graph_gain: false,
                 },
                 &params,
                 false,
@@ -10431,6 +10861,7 @@ mod tests {
             camera_input_index: Some(1),
             screen_overlay_input_index: None,
             audio_inputs: Vec::new(),
+            microphone_graph_gain: false,
         };
         let recording_filter = recording_video_filter(&capture, &input_layout, &recording, true);
         let preview_session = live_preview_session_params(
@@ -10663,6 +11094,7 @@ mod tests {
             camera_input_index: Some(1),
             screen_overlay_input_index: None,
             audio_inputs: Vec::new(),
+            microphone_graph_gain: false,
         };
         let recording = recording_video_filter(&capture, &input_layout, &params, false);
         let preview_session = live_preview_session_params(

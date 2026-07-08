@@ -30,6 +30,7 @@ mod preflight;
 mod preview_camera;
 mod preview_screen;
 mod preview_surface;
+mod process_job;
 mod protocol;
 mod recording;
 mod repair;
@@ -111,6 +112,7 @@ use uuid::Uuid;
 use crate::ffmpeg::{default_ffmpeg_path, resolve_ffmpeg_path_ref};
 use crate::oauth::{OAuthCompleteParams, OAuthStartParams, OAuthStartProviderParams};
 use crate::preflight::GoLivePreflightParams;
+use crate::process_job::output_owned_tokio;
 use crate::state::AppState;
 use crate::storage::Database;
 use crate::streaming::{
@@ -304,10 +306,11 @@ async fn shutdown_signal(state: AppState) {
 /// to die. Orphaned backends hold the camera/microphone/ScreenCaptureKit and starve
 /// fresh app instances (screen layers fall to the synthetic pattern mid-session).
 ///
-/// Unix-only by design. On Windows the supervisor assigns the backend to a Job
-/// Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the OS tears the backend
-/// (and its ffmpeg children) down when Electron exits — a stronger guarantee than
-/// PID polling. See docs/windows-port-plan.md, Phase 1.
+/// On Windows the same guarantee comes from waiting on a `VIDEORC_SUPERVISOR_PID`
+/// process handle: when the Electron supervisor exits (including a crash), the wait
+/// completes and the backend exits, and the backend-owned Job Object
+/// (`process_job.rs`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) tears down its ffmpeg
+/// children with it. See docs/windows-port-plan.md, Phase 1.
 fn spawn_orphan_watchdog_thread() {
     #[cfg(unix)]
     {
@@ -343,6 +346,46 @@ fn spawn_orphan_watchdog_thread() {
                     std::process::exit(1);
                 }
                 std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::WAIT_OBJECT_0;
+        use windows::Win32::System::Threading::{
+            INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        };
+
+        let Some(supervisor_pid) = std::env::var("VIDEORC_SUPERVISOR_PID")
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|pid| *pid > 1)
+        else {
+            // No supervisor (bare `cargo run` / smoke harness): nothing to watch.
+            return;
+        };
+        std::thread::spawn(move || {
+            let handle = match unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, supervisor_pid) } {
+                Ok(handle) => handle,
+                // The supervisor is already gone (or unwaitable): treat it as
+                // dead rather than running unsupervised with live devices.
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    eprintln!(
+                        "Supervisor process {supervisor_pid} is not waitable; exiting so capture devices are released."
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
+            if wait == WAIT_OBJECT_0 {
+                // Give the async graceful path a moment, then exit
+                // unconditionally; process teardown releases every capture
+                // device and drops the Job Object holding the ffmpeg children.
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                eprintln!("Supervisor process died; exiting so capture devices are released.");
+                std::process::exit(1);
             }
         });
     }
@@ -4081,15 +4124,13 @@ async fn export_support_bundle_for_state(
 }
 
 async fn ffmpeg_status(ffmpeg_path: &str) -> ToolStatus {
-    let output = timeout(
-        Duration::from_secs(4),
-        Command::new(ffmpeg_path)
-            .arg("-version")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output(),
-    )
-    .await;
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .arg("-version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = timeout(Duration::from_secs(4), output_owned_tokio(&mut command)).await;
 
     match output {
         Ok(Ok(output)) if output.status.success() => {

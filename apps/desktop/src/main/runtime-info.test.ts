@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   assertPermissionShortcutSupported,
   buildRuntimeInfo,
+  normalizeRuntimeGpuDevices,
   permissionTargetPath,
   permissionUrlForPane
 } from './runtime-info'
@@ -134,10 +135,60 @@ describe('runtime info helpers', () => {
     const info = buildRuntimeInfo({
       appVersion: '1.2.3',
       execPath: '/Applications/Videorc.app/Contents/MacOS/Videorc',
+      platform: 'win32',
+      arch: 'x64',
+      osRelease: '10.0.22631',
+      gpuInfo: {
+        gpuDevice: [
+          {
+            vendorId: 4318,
+            deviceId: 9348,
+            active: true,
+            vendorString: 'NVIDIA',
+            deviceString: 'NVIDIA RTX'
+          }
+        ]
+      },
       env: {}
     })
 
     expect(info.version).toBe('1.2.3')
+    expect(info.platform).toBe('win32')
+    expect(info.arch).toBe('x64')
+    expect(info.osRelease).toBe('10.0.22631')
+    expect(info.gpuDevices).toEqual([
+      {
+        vendorId: 4318,
+        deviceId: 9348,
+        active: true,
+        vendor: 'NVIDIA',
+        description: 'NVIDIA RTX'
+      }
+    ])
+  })
+
+  it('drops malformed GPU entries from runtime diagnostics', () => {
+    expect(
+      normalizeRuntimeGpuDevices({
+        gpuDevice: [
+          null,
+          {},
+          {
+            vendorId: '0x8086',
+            deviceId: '0x9a49',
+            active: false,
+            deviceString: 'Intel Iris Xe'
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        vendorId: '0x8086',
+        deviceId: '0x9a49',
+        active: false,
+        description: 'Intel Iris Xe'
+      }
+    ])
   })
 
   it('rejects permission shortcuts outside macOS', () => {

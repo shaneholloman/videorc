@@ -12,6 +12,9 @@ function parseArgs(argv) {
       case '--json':
         args.json = true
         break
+      case '--windows-acceptance':
+        args.windowsAcceptance = true
+        break
       case '-h':
       case '--help':
         args.help = true
@@ -29,9 +32,10 @@ function parseArgs(argv) {
 
 const HELP = `Verify a Videorc support bundle JSON file.
 
-Usage: node scripts/verify-support-bundle.mjs <bundle.json> [--json]
+Usage: node scripts/verify-support-bundle.mjs <bundle.json> [--json] [--windows-acceptance]
 
-Exits 0 when required sections exist and sensitive values are redacted.`
+Exits 0 when required sections exist and sensitive values are redacted.
+Use --windows-acceptance for the stricter Windows app acceptance evidence profile.`
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
@@ -42,12 +46,16 @@ async function main() {
 
   const text = await readFile(args.file, 'utf8')
   const bundle = JSON.parse(text)
-  const result = validateSupportBundle(bundle)
+  const result = validateSupportBundle(bundle, {
+    windowsAcceptance: args.windowsAcceptance === true
+  })
 
   if (args.json) {
     console.log(JSON.stringify(result, null, 2))
   } else if (result.ok) {
-    console.log(`Support bundle OK: ${args.file}`)
+    console.log(
+      `Support bundle OK${args.windowsAcceptance ? ' (Windows acceptance)' : ''}: ${args.file}`
+    )
     if (result.warnings.length) {
       console.log(`Warnings: ${result.warnings.join('; ')}`)
     }

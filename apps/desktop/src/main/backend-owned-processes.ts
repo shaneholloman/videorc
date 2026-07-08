@@ -172,7 +172,7 @@ export class OwnedProcessRegistry {
   }
 
   reapStale(options: ReapOwnedProcessesOptions = {}): OwnedProcessRecord[] {
-    if (this.platform === 'win32' || options.disabled) {
+    if (options.disabled) {
       return []
     }
 
@@ -184,6 +184,18 @@ export class OwnedProcessRegistry {
     }
 
     this.writeRecords([])
+
+    if (this.platform === 'win32') {
+      // Windows has no graceful signal: Node maps every signal to
+      // TerminateProcess, so the SIGTERM → grace → SIGKILL ladder collapses
+      // into one hard kill. Only ledger-recorded PIDs are touched, same as
+      // the Unix arm.
+      for (const record of stale) {
+        this.tryKill(record.pid, 'SIGKILL')
+      }
+      return stale
+    }
+
     for (const record of stale) {
       this.tryKill(record.pid, 'SIGTERM')
     }

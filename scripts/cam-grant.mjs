@@ -55,7 +55,12 @@ try {
     const sources = { screenId: null, windowId: null, cameraId: cam.id, microphoneId: null, testPattern: false }
     console.log(`\n>>> Starting camera "${cam.name}" — a macOS camera prompt should appear now. CLICK ALLOW. <<<\n`)
     try {
-      const started = await request(ws, timeoutMs, 'preview.camera.start', { sources, layout, video })
+      const started = await request(ws, timeoutMs, 'preview.camera.start', {
+        sources,
+        layout,
+        video,
+        ffmpegPath
+      })
       console.log('preview.camera.start ->', JSON.stringify({ state: started.state, permission: started.permission, message: started.message }))
     } catch (e) {
       console.log('preview.camera.start error:', String(e?.message ?? e))

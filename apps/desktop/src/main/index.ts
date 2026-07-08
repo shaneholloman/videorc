@@ -5429,7 +5429,7 @@ async function primeScreenCapturePermission(): Promise<void> {
   }
 
   try {
-    const info = runtimeInfo()
+    const info = await runtimeInfo()
     const status = systemPreferences.getMediaAccessStatus('screen')
     if (status === 'granted') {
       return
@@ -7017,11 +7017,16 @@ const mediaPermissionGrantWatcher = createMediaPermissionGrantWatcher({
   restartBackend
 })
 
-function runtimeInfo(): RuntimeInfo {
+async function runtimeInfo(): Promise<RuntimeInfo> {
+  const gpuInfo = await app.getGPUInfo('basic').catch(() => null)
   return buildRuntimeInfo({
     appVersion: app.getVersion(),
     execPath: process.execPath,
     captureExecPath: resolveBackendPermissionTargetPath(),
+    platform: process.platform,
+    arch: process.arch,
+    osRelease: release(),
+    gpuInfo,
     env: process.env
   })
 }

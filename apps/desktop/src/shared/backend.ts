@@ -159,6 +159,7 @@ export interface AutomaticSourceFallbackEvent {
 
 export interface RendererDiagnosticsSnapshot {
   automaticSourceFallbacks: AutomaticSourceFallbackEvent[]
+  runtimeInfo?: RuntimeInfo
 }
 
 export type AudioTrackSource = 'microphone' | 'test-tone'
@@ -1079,10 +1080,10 @@ export type PreviewTransport =
   | 'mjpeg-stream'
   | 'unavailable'
 
-/** Which encoder a recording session requested. `-allow_sw 1` means videotoolbox may still
- * fall back to software, so this is the requested backend; the final-file codec/encoder tag
- * is the corroborating output-side signal. */
-export type EncodeBackend = 'software-x264' | 'hardware-videotoolbox'
+/** Which encoder a recording session requested. Hardware encoders may still fall back
+ * internally, so this is the requested backend; the final-file codec/encoder tag is the
+ * corroborating output-side signal. */
+export type EncodeBackend = 'software-x264' | 'hardware-videotoolbox' | 'hardware-mediafoundation'
 export type CompositorBackend = 'metal' | 'cpu-fallback'
 
 /** Cumulative request counts for the HTTP image-polling preview transports. A native
@@ -1366,6 +1367,7 @@ export interface PreviewCameraStartParams {
   sources: SourceSelection
   layout: LayoutSettings
   video: VideoSettings
+  ffmpegPath?: string
 }
 
 export interface PreviewCameraStatus {
@@ -1411,6 +1413,7 @@ export interface PreviewScreenStartParams {
   sources: SourceSelection
   video: VideoSettings
   protectedOverlayWindowIds?: number[]
+  ffmpegPath?: string
 }
 
 export interface PreviewScreenStatus {
@@ -2144,6 +2147,10 @@ export interface ReorderScreensParams {
 export interface RuntimeInfo {
   /** The running app version (`app.getVersion()`), shown in Settings → About. */
   version: string
+  platform: string
+  arch: string
+  osRelease: string
+  gpuDevices: RuntimeGpuDevice[]
   isPackaged: boolean
   permissionTargetName: string
   permissionTargetPath: string
@@ -2157,6 +2164,14 @@ export interface RuntimeInfo {
   previewSmokeMode?: boolean
   disableAutoPreview?: boolean
   nativePreviewSurfaceStageSuspended?: boolean
+}
+
+export interface RuntimeGpuDevice {
+  vendorId?: string | number
+  deviceId?: string | number
+  active?: boolean
+  vendor?: string
+  description?: string
 }
 
 // Floating: the user drags/resizes the preview window freely (default).

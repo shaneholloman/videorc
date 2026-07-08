@@ -1,6 +1,7 @@
 use crate::protocol::{Device, DeviceKind, DeviceStatus};
 
 const NATIVE_CAMERA_PREFIX: &str = "camera:avfoundation-native:";
+const WINDOWS_DSHOW_CAMERA_PREFIX: &str = "camera:windows-dshow:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeCameraDevices {
@@ -31,20 +32,21 @@ pub enum NativeCameraPermission {
     Unknown,
 }
 
+#[cfg(target_os = "macos")]
 pub fn list_native_cameras() -> NativeCameraDevices {
-    #[cfg(target_os = "macos")]
-    {
-        macos::list_native_cameras()
-    }
+    macos::list_native_cameras()
+}
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        NativeCameraDevices {
-            devices: Vec::new(),
-            warnings: vec![
-                "Native AVFoundation camera discovery is only available on macOS.".to_string(),
-            ],
-        }
+#[cfg(target_os = "windows")]
+pub fn list_native_cameras() -> NativeCameraDevices {
+    windows_native::list_native_cameras()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn list_native_cameras() -> NativeCameraDevices {
+    NativeCameraDevices {
+        devices: Vec::new(),
+        warnings: vec!["Native camera discovery is only available on macOS/Windows.".to_string()],
     }
 }
 
@@ -66,6 +68,12 @@ pub fn native_camera_name_for_id(camera_id: &str) -> Option<String> {
 pub fn camera_capability_matrix_for_id(
     camera_id: &str,
 ) -> Result<Vec<CameraFormatSummary>, String> {
+    if parse_windows_dshow_camera_id(camera_id).is_some() {
+        return Err(
+            "Windows camera capability diagnostics need on-box dshow format probing.".to_string(),
+        );
+    }
+
     let unique_id = parse_native_camera_id(camera_id)
         .ok_or_else(|| "Selected camera is not a native AVFoundation camera.".to_string())?;
 
@@ -92,6 +100,20 @@ pub fn parse_native_camera_id(id: &str) -> Option<String> {
     let encoded = id.strip_prefix(NATIVE_CAMERA_PREFIX)?;
     let bytes = decode_hex(encoded)?;
     String::from_utf8(bytes).ok()
+}
+
+pub fn parse_windows_dshow_camera_id(id: &str) -> Option<String> {
+    let encoded = id.strip_prefix(WINDOWS_DSHOW_CAMERA_PREFIX)?;
+    let bytes = decode_hex(encoded)?;
+    String::from_utf8(bytes).ok()
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_dshow_camera_device_id(device_name: &str) -> String {
+    format!(
+        "{WINDOWS_DSHOW_CAMERA_PREFIX}{}",
+        encode_hex(device_name.as_bytes())
+    )
 }
 
 pub fn camera_permission_status(permission: NativeCameraPermission) -> DeviceStatus {
@@ -226,6 +248,160 @@ fn hex_value(value: u8) -> Option<u8> {
         b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
     }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_native {
+    use super::*;
+    use windows::Win32::Media::MediaFoundation::{
+        IMFActivate, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_VERSION, MFCreateAttributes,
+        MFEnumDeviceSources, MFSTARTUP_FULL, MFShutdown, MFStartup,
+    };
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::core::GUID;
+
+    pub fn list_native_cameras() -> NativeCameraDevices {
+        match list_media_foundation_cameras() {
+            Ok(mut devices) => {
+                let mut warnings = Vec::new();
+                if devices.is_empty() {
+                    warnings.push(
+                        "MediaFoundation did not report any video capture devices.".to_string(),
+                    );
+                    devices.push(unavailable_camera(
+                        "camera:windows-mediafoundation-missing",
+                        "MediaFoundation did not report any video capture devices.",
+                    ));
+                }
+                NativeCameraDevices { devices, warnings }
+            }
+            Err(error) => NativeCameraDevices {
+                devices: vec![unavailable_camera(
+                    "camera:windows-mediafoundation-unavailable",
+                    &format!("MediaFoundation camera discovery failed: {error}"),
+                )],
+                warnings: vec![format!("MediaFoundation camera discovery failed: {error}")],
+            },
+        }
+    }
+
+    fn list_media_foundation_cameras() -> windows::core::Result<Vec<Device>> {
+        let _media_foundation = MediaFoundationSession::start()?;
+        let mut attributes = None;
+        unsafe { MFCreateAttributes(&mut attributes, 1)? };
+        let attributes =
+            attributes.expect("MFCreateAttributes returned success without attributes");
+        unsafe {
+            attributes.SetGUID(
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+            )?
+        };
+
+        let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
+        let mut count = 0;
+        unsafe { MFEnumDeviceSources(&attributes, &mut activates, &mut count)? };
+
+        let mut devices = Vec::new();
+        for index in 0..count {
+            let activate = unsafe { activates.add(index as usize).read() };
+            if let Some(activate) = activate {
+                devices.push(device_from_activate(&activate, index));
+            }
+        }
+        unsafe { CoTaskMemFree(Some(activates.cast())) };
+
+        Ok(devices)
+    }
+
+    fn device_from_activate(activate: &IMFActivate, index: u32) -> Device {
+        let friendly_name = mf_string(activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
+            .unwrap_or_else(|| format!("Camera {}", index + 1));
+        let capture_name = mf_string(
+            activate,
+            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+        )
+        .map(|symbolic_link| format!("@{symbolic_link}"))
+        .unwrap_or_else(|| friendly_name.clone());
+        Device {
+            id: windows_dshow_camera_device_id(&capture_name),
+            name: friendly_name.clone(),
+            kind: DeviceKind::Camera,
+            status: DeviceStatus::Available,
+            detail: Some(windows_media_foundation_camera_detail(
+                &friendly_name,
+                &capture_name,
+            )),
+            width: None,
+            height: None,
+        }
+    }
+
+    fn mf_string(activate: &IMFActivate, key: &GUID) -> Option<String> {
+        let len = unsafe { activate.GetStringLength(key).ok()? };
+        if len == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; len as usize + 1];
+        let mut written = 0;
+        unsafe {
+            activate
+                .GetString(key, &mut buffer, Some(&mut written))
+                .ok()?;
+        }
+        utf16_z(&buffer[..written as usize])
+    }
+
+    struct MediaFoundationSession;
+
+    impl MediaFoundationSession {
+        fn start() -> windows::core::Result<Self> {
+            unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL)? };
+            Ok(Self)
+        }
+    }
+
+    impl Drop for MediaFoundationSession {
+        fn drop(&mut self) {
+            let _ = unsafe { MFShutdown() };
+        }
+    }
+
+    fn unavailable_camera(id: &str, detail: &str) -> Device {
+        Device {
+            id: id.to_string(),
+            name: "Camera".to_string(),
+            kind: DeviceKind::Camera,
+            status: DeviceStatus::Unavailable,
+            detail: Some(detail.to_string()),
+            width: None,
+            height: None,
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_media_foundation_camera_detail(friendly_name: &str, capture_name: &str) -> String {
+    if capture_name == friendly_name {
+        format!("Windows MediaFoundation camera. Recording uses dshow device `{capture_name}`.")
+    } else {
+        format!(
+            "Windows MediaFoundation camera `{friendly_name}`. Recording uses dshow device `{capture_name}`."
+        )
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn utf16_z(value: &[u16]) -> Option<String> {
+    let len = value
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(value.len());
+    let text = String::from_utf16_lossy(&value[..len]);
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -479,6 +655,60 @@ mod tests {
             parse_native_camera_id("camera:avfoundation-native:not-hex"),
             None
         );
+    }
+
+    #[test]
+    fn parses_windows_dshow_camera_ids() {
+        assert_eq!(
+            parse_windows_dshow_camera_id("camera:windows-dshow:5553422043616d657261").as_deref(),
+            Some("USB Camera")
+        );
+        assert_eq!(
+            parse_windows_dshow_camera_id(&windows_dshow_camera_device_id(
+                r"@\\?\usb#vid_1234&pid_5678"
+            ))
+            .as_deref(),
+            Some(r"@\\?\usb#vid_1234&pid_5678")
+        );
+        assert_eq!(
+            parse_windows_dshow_camera_id("camera:windows-dshow:not-hex"),
+            None
+        );
+        assert_eq!(parse_windows_dshow_camera_id("camera:avfoundation:0"), None);
+    }
+
+    #[test]
+    fn windows_dshow_camera_capabilities_report_pending_format_probe() {
+        let error = camera_capability_matrix_for_id("camera:windows-dshow:5553422043616d657261")
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Windows camera capability diagnostics need on-box dshow format probing."
+        );
+    }
+
+    #[test]
+    fn describes_windows_mediafoundation_camera_detail() {
+        assert_eq!(
+            windows_media_foundation_camera_detail("USB Camera", r"@\\?\usb#vid_1234"),
+            r"Windows MediaFoundation camera `USB Camera`. Recording uses dshow device `@\\?\usb#vid_1234`."
+        );
+        assert_eq!(
+            windows_media_foundation_camera_detail("USB Camera", "USB Camera"),
+            "Windows MediaFoundation camera. Recording uses dshow device `USB Camera`."
+        );
+    }
+
+    #[test]
+    fn trims_utf16_null_terminated_camera_names() {
+        let mut value = [0u16; 8];
+        value[0] = 'C' as u16;
+        value[1] = 'a' as u16;
+        value[2] = 'm' as u16;
+
+        assert_eq!(utf16_z(&value).as_deref(), Some("Cam"));
+        assert_eq!(utf16_z(&[0, 0, 0]), None);
     }
 
     #[test]

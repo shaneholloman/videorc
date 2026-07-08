@@ -18,6 +18,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::process_job::spawn_owned_std;
+
 pub const MAINTENANCE_CANCELLED: &str = "maintenance cancelled";
 pub const STRICT_AV_SKEW_HARD_FAIL_MS: f64 = 150.0;
 pub const STRICT_MAX_AUDIO_GAP_MS: f64 = 20.0;
@@ -73,9 +75,8 @@ fn run_output_cancellable(
 ) -> Result<Output, String> {
     check_cancelled(is_cancelled)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("could not spawn process: {error}"))?;
+    let mut child =
+        spawn_owned_std(command).map_err(|error| format!("could not spawn process: {error}"))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();

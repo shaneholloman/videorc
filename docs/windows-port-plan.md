@@ -4,10 +4,16 @@ Goal: ship a Windows version of Videorc that hits the project's real bar — a
 smooth preview and a correct recording (docs/, memory: OBS parity is dropped).
 Dark-glass UI carries over; macOS-only niceties degrade gracefully.
 
-## Current status (reconciled 2026-06-13)
+## Current status (reconciled 2026-07-08)
 
 This plan is still a follow-through track, not a claim that Windows is ready.
 The completed work is packaging and platform-seam preparation:
+
+- **Parent track exists.** The Obsidian parent plan is
+  `2026-07-07 - Videorc Complete Windows App Plan`; this repo file remains the
+  engineering detail for Windows capture/package execution. W0 evidence now
+  has a tracked template at `docs/acceptance/windows-app-acceptance-template.md`,
+  while generated artifacts belong under ignored `docs/acceptance/artifacts/`.
 
 - **Packaging scaffold is landed.** `package:desktop:windows`,
   `dist:desktop:windows`, `ffmpeg:fetch:windows`, and
@@ -20,13 +26,67 @@ The completed work is packaging and platform-seam preparation:
   normal native frame and themed base. Evidence: commit `c2cc42b9`. Dragging
   the preview window and toggling theme still need Windows-box verification.
 - **Capture-input and FIFO seams are tested.** `capture_input.rs` and
-  `fifo.rs` now isolate the platform arms before Windows ddagrab/dshow/named
-  pipe work lands. Evidence: commits `4f0c82e6`, `d5a478d5`, and `a8417a1c`.
-- **Windows capture is not done.** There is no dated Windows recording
-  artifact for display, camera, microphone, streaming, or packaged cleanup.
-  Phase 2 remains the product proof.
-- **Windows release is not done.** Signing is undecided
-  (internal unsigned vs Azure Trusted Signing vs Authenticode), and no
+  `fifo.rs` isolate the platform arms, and the first Windows ffmpeg input
+  builders now cover ddagrab/gdigrab display capture plus dshow camera and
+  microphone inputs. The selected-source resolver also maps Windows DXGI screen
+  IDs and dshow camera/microphone IDs into those inputs. Evidence: commits
+  `4f0c82e6`, `d5a478d5`, `a8417a1c`, and the 2026-07-08 Windows capture-input
+  slices.
+- **Windows native discovery has first display, camera, and microphone slices.**
+  `screen_capture.rs` now uses the Windows `windows` crate and DXGI to enumerate
+  attached outputs as `screen:dxgi:<adapterLuid>:<output>` devices, with a
+  `screen:gdigrab:desktop` fallback when DXGI reports no outputs or discovery
+  fails. `camera_capture.rs` now uses MediaFoundation to enumerate video capture
+  devices and emit dshow-compatible camera IDs for the existing recording input
+  builders. `audio.rs` now uses MediaFoundation to enumerate audio capture
+  devices and emit dshow-compatible microphone IDs, and `devices.rs` exposes the
+  Windows-native display/camera/microphone rows instead of the old unsupported
+  platform placeholder. The renderer source picker now treats DXGI and gdigrab
+  screen IDs as selectable native screen sources. These paths are compile-checked
+  by `pnpm check:windows`; they still need an on-box Windows run to verify actual
+  device rows, dimensions, and dshow symbolic-link behavior.
+- **Windows capture is not done.** Renderer-driven selection from real
+  enumerated Windows devices and dated on-box recording artifacts are still
+  pending for display, camera, microphone, streaming, and packaged cleanup.
+  Preview source selection now recognizes Windows DXGI, gdigrab, and dshow IDs
+  instead of reporting them as missing macOS-native sources, preview start
+  commands carry the configured FFmpeg path, and the Windows preview runners now
+  spawn FFmpeg to publish raw BGRA frames into the existing frame stores.
+  First-frame, smoothness, dimensions, and device-format behavior still need the
+  on-box Windows slice. Phase 2 remains the product proof. The Windows local gate
+  now routes its
+  packaged test-pattern
+  smoke output to the ignored acceptance artifact directory so on-box runs can
+  be copied into the dated acceptance note instead of disappearing into a temp
+  folder. Its manifest also prints the strict support-bundle verifier command:
+  `pnpm support-bundle:verify -- <support-bundle.json> --windows-acceptance`.
+- **The FIFO output transport is ported (2026-07-08).** `fifo.rs` now has a
+  named-pipe arm (`\\.\pipe\` namespace) behind the same
+  create/open_writer/cleanup contract, so the encoder-bridge FIFO, per-leg
+  stream FIFOs, and the screen-overlay FIFO no longer bail `Unsupported` at
+  session start on Windows. Windows writes are always blocking after the
+  reader attaches (PIPE_NOWAIT reports full buffers as zero-byte successes).
+  Compile-checked by `pnpm check:windows`; end-to-end write→ffmpeg-read proof
+  needs the Windows box. The same slice made the dshow microphone honour
+  gain/mute through a `volume=` filter leg (the in-process CoreAudio path is
+  unchanged), bundled `ffprobe.exe` next to the Windows ffmpeg, and gave the
+  package preflight a fail-closed on-box capability probe (rtmp/rtmps/tls +
+  h264_mf/aac — the 0.9.23 TLS-less-ffmpeg lesson applied to Windows).
+- **Crash-orphan ownership is closed in code (2026-07-08).** The backend now
+  waits on a `VIDEORC_SUPERVISOR_PID` process handle on Windows and exits when
+  Electron dies (including crash/force-kill), which drops the backend-owned
+  Job Object and its ffmpeg children. `OwnedProcessRegistry.reapStale` also
+  reaps stale ledger PIDs on win32 (single hard kill — Windows has no graceful
+  signal). On-box process-tree proof still pending.
+- **Windows child-process ownership has a backend slice.** `process_job.rs`
+  wraps backend FFmpeg/FFprobe children used for capture, media maintenance,
+  imports, health checks, and AI/audio extraction. On Windows, those children
+  are assigned to a backend-owned Job Object with `KILL_ON_JOB_CLOSE`. This is
+  compile-checked by `pnpm check:windows`; it still needs on-box process-tree
+  proof from a packaged app run.
+- **Windows release is not done.** Windows builds stay unsigned for internal
+  testing until capture/package acceptance passes. Public distribution is blocked
+  on a later Azure Trusted Signing vs OV/EV Authenticode decision, and no
   clean-machine Windows acceptance note exists.
 - **Mac media stabilization still constrains this track.** Plan 006 remains
   blocked locally by source/hardware and ScreenCaptureKit start evidence, so
@@ -44,9 +104,9 @@ already exist:
 - **Every macOS framework is already `cfg`-gated** (`screen_capture.rs`,
   `camera_capture.rs`, `audio.rs`, `video_toolbox_encoder.rs`,
   `metal_compositor.rs`, …) with non-macOS stubs that return empty lists or
-  bail. The backend should be *near*-compilable for Windows today.
+  bail. The backend should be _near_-compilable for Windows today.
 - **The capture/encode hot path is ffmpeg subprocesses**, not frameworks.
-  ScreenCaptureKit/AVFoundation are used for *discovery* (device lists,
+  ScreenCaptureKit/AVFoundation are used for _discovery_ (device lists,
   format matrices); recording assembles ffmpeg arg lists. VideoToolbox and
   the Metal compositor are opt-in sidecars with CPU/ffmpeg fallbacks.
 - **The Electron app is ~95% portable.** Shortcuts already check
@@ -81,6 +141,19 @@ Decisions to make before any code; each unblocks a later phase.
   recommended (capture + hardware-encode behavior can't be judged in a VM;
   preview smoothness is judged by eye per project memory). A Windows ARM VM
   on the Mac (Parallels/UTM) is fine for Phase 1 bring-up only.
+- **Evidence base.** Copy `docs/acceptance/windows-app-acceptance-template.md`
+  to a dated note for each Windows lab pass. Generated package logs,
+  recordings, analyzer JSON, screenshots, process-tree logs, and support
+  bundles go under `docs/acceptance/artifacts/windows/<date>/` (ignored by
+  git), then the dated note references those paths. Set
+  `VIDEORC_WINDOWS_ACCEPTANCE_DIR=docs/acceptance/artifacts/windows/<date>`
+  before `pnpm smoke:local-gates:windows` when the output folder should match a
+  specific acceptance note. Do not commit generated media or local support
+  bundles. Verify the copied support bundle with
+  `pnpm support-bundle:verify -- <support-bundle.json> --windows-acceptance`;
+  this checks schema v2, Windows 11 host/runtime info, GPU adapter metadata,
+  packaged runtime context, Windows device backend proof, encoder diagnostics,
+  and redaction. Authenticode signing still needs a separate manual check.
 - **CI reality.** GitHub Actions budget is exhausted (memory) — plan around
   local gates on the Windows box, mirroring `smoke:local-gates`. Optional
   later: self-hosted runner on that box.
@@ -105,6 +178,7 @@ Outcome: app starts on Windows, glass-ish UI renders, backend spawns and
 connects over loopback, device lists are empty but nothing crashes.
 
 Backend:
+
 - Add Windows clauses to `storage.rs` paths (`%APPDATA%\Videorc`,
   `%USERPROFILE%\Videos\Videorc\Recordings`) and `secrets.rs`. **DONE
   2026-06-12:** database under `%APPDATA%\Videorc`, recordings under
@@ -115,7 +189,7 @@ Backend:
   ACL. The recordings-dir test now asserts per-platform.
 - Replace Unix signal handling/orphan watchdog in `main.rs` with
   `tokio::signal::ctrl_c` + a Job Object ("kill on job close") so the
-  backend and its ffmpeg children die with the app — this is *better* than
+  backend and its ffmpeg children die with the app — this is _better_ than
   the PID-ledger semantics and worth doing first, not as polish. **Backend
   side DONE 2026-06-12:** `shutdown_signal` already had a `cfg(not(unix))`
   ctrl_c arm and the watchdog was already `cfg(unix)`-gated (no-op on
@@ -128,7 +202,8 @@ Backend:
 - Gate: `cargo check --target x86_64-pc-windows-msvc` (cross-check runs on
   the Mac — catches type errors without the Windows box). **Green.**
 
-Electron: **DONE 2026-06-12 (slice 4), except the Job Object.**
+Electron: **DONE 2026-06-12 (slice 4).**
+
 - `.exe` suffixes in backend/ffmpeg resolution were ALREADY present
   (`resolveCargoBinary`/`resolvePackagedBackendBinary`/
   `resolvePackagedFfmpegBinDir` branch on `win32`).
@@ -151,12 +226,16 @@ Electron: **DONE 2026-06-12 (slice 4), except the Job Object.**
   now (Phase 5).
 - Runtime Windows 11 guard: `enforceWindowsVersionFloor()` quits with a
   dialog when `os.release()` build < 22000.
-- **Deferred to a Windows-box slice: the Job Object.** `backendProcess.kill`
-  maps to TerminateProcess on Windows, which kills the backend but orphans
-  its ffmpeg children, and `OwnedProcessRegistry.reapStale` already
-  early-returns on win32. The kill-on-job-close guarantee needs a native
-  addon and on-Windows testing — graceful quit still stops the backend; only
-  force-kill/crash leaks ffmpeg until then.
+- **Backend Job Object slice DONE 2026-07-08, on-box proof pending.**
+  `process_job.rs` creates a backend-owned Windows Job Object with
+  `KILL_ON_JOB_CLOSE` and routes capture, remux, poster, import probe,
+  media-repair, health-check, and AI/audio extraction FFmpeg/FFprobe children
+  through wrappers that assign children to that job. This moves the
+  kill-on-backend-death guarantee into Rust, where the media children are
+  spawned, instead of needing an Electron native addon.
+  `OwnedProcessRegistry.reapStale` still early-returns on win32; the remaining
+  proof is a packaged Windows run showing the backend and its FFmpeg children
+  exit cleanly after stop, quit, and forced backend termination.
 - Gate: `pnpm typecheck` + `pnpm build` + `smoke:dev` green on macOS
   (proves the chrome refactor is behavior-neutral). `pnpm package` on
   Windows is the on-box gate when hardware lands.
@@ -168,12 +247,12 @@ correct file, push a stream. This is the slice that proves the product on
 Windows.
 
 **Architecture insight (from the grill):** in the default encoder-bridge
-path, devices are owned by the *preview* pipelines; recording composites
+path, devices are owned by the _preview_ pipelines; recording composites
 from their frame stores (`recording.rs:532-615` → `compositor.rs:314-316`)
 and opens no device of its own. So the Windows capture work lands in
 `preview_camera.rs` / `preview_screen.rs` first, and recording follows
 almost for free. Build one shared per-platform input-builder (device ID →
-ffmpeg input args) used by previews *and* the legacy direct-capture path
+ffmpeg input args) used by previews _and_ the legacy direct-capture path
 (fps > 30), so both routes get Windows support from the same seam —
 extracting that seam is a mac-side refactor slice that existing smokes can
 verify before any Windows code lands.
@@ -183,7 +262,7 @@ verify before any Windows code lands.
   input via `-f lavfi ddagrab=...,hwdownload,format=bgra` (GPU Desktop
   Duplication; the bridge consumes raw frames over a pipe, hence the
   download) with `gdigrab` fallback. Display capture only — window capture
-  is *also* display-fallback on macOS today (`recording.rs:5268`
+  is _also_ display-fallback on macOS today (`recording.rs:5268`
   "window-capture-fallback"), so Windows v1 owes nothing there.
 - **Camera:** enumeration via MediaFoundation `MFEnumDeviceSources` +
   format matrix behind `camera_capture.rs` stub; ID = MF symbolic link
@@ -196,15 +275,16 @@ verify before any Windows code lands.
   in the MVP. The native WASAPI port is Phase 3 and motivated by epoch
   alignment + future system audio, not by missing knobs.
 - **Encoder:** default `h264_mf` (MediaFoundation = the VideoToolbox analog
-  in LGPL ffmpeg); startup one-frame probe (pattern exists:
+  in LGPL ffmpeg). The recording argument builders now choose the platform
+  H.264 encoder instead of hardcoding `h264_videotoolbox` on every OS. The
+  startup one-frame probe still needs a Windows-box slice (pattern exists:
   `VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_PROBE`) preferring
-  NVENC → QSV → AMF → MF. Wire the same
+  NVENC → QSV → AMF → MF. Keep the same
   `VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT` switchboard.
 - **Streaming rides along:** the RTMP chain is already portable — flv/tee
-  muxers with per-leg fifo isolation (`recording.rs:3872-3892`); the only
-  mac-ism is the literal `h264_videotoolbox` codec name
-  (`recording.rs:3816`), which the encoder probe replaces. Include one
-  multistream smoke in this phase's gate rather than deferring.
+  muxers with per-leg fifo isolation; the mac-only encoder literal is now
+  replaced by platform H.264 selection. Include one multistream smoke in this
+  phase's gate rather than deferring.
 - Preview stays on the existing portable frame-polling surface (the
   IOSurface/CAMetalLayer zero-copy driver is mac-only and explicitly
   optional).
@@ -223,7 +303,7 @@ Outcome: Windows quality matches macOS daily-driver quality.
   already have parity via the Phase 2 volume filter). Design the module
   WASAPI-loopback-ready: system audio is plan-only on macOS today
   (docs/system-audio-capture-plan.md, `DeviceKind::SystemAudio` always
-  Unavailable), and when SA lands, Windows loopback capture is the *easy*
+  Unavailable), and when SA lands, Windows loopback capture is the _easy_
   platform — don't paint it out.
 - **Windows.Graphics.Capture** only if/when macOS grows native window
   capture — today window selection falls back to display recording on BOTH
@@ -264,8 +344,10 @@ app in exile.
 - NSIS installer + portable dir; ffmpeg + backend.exe in `resources`;
   LGPL compliance is already satisfied by shipping ffmpeg as a separate
   spawned binary (same as macOS).
-- Code signing: Azure Trusted Signing (cheapest route past SmartScreen) or
-  an OV/EV Authenticode cert; unsigned is fine for internal testing only.
+- Code signing status: unsigned Windows builds are the internal-testing path for
+  this PR. Do not buy or wire signing until Windows capture/package acceptance
+  passes. Public distribution remains blocked on choosing Azure Trusted Signing
+  (likely cheapest route past SmartScreen) vs an OV/EV Authenticode cert.
 - Port the smoke harness tier by tier: the ~30 portable smokes first
   (`smoke:dev`, `smoke:oauth*`, `smoke:sources`, lifecycle, multistream),
   then baselines (`real-source-baseline-app.mjs` needs the Windows device
@@ -275,9 +357,13 @@ app in exile.
   merge gate (no Actions budget). **Script DONE 2026-06-13:** the gate runs
   desktop unit tests, capture-input/FIFO backend seam tests, release backend
   build, pinned Windows FFmpeg fetch, package preflight, Windows dir package,
-  and packaged boot plus test-pattern recording smoke. The packaged smoke now
-  understands both macOS app bundles and Windows `win-unpacked` layouts. The
-  on-box Windows 11 x64 execution is still pending.
+  owned-process lifecycle cleanup, and packaged boot plus test-pattern
+  recording smoke. The packaged smoke now understands both macOS app bundles
+  and Windows `win-unpacked` layouts.
+  **Manifest slice DONE 2026-07-08:** the gate writes
+  `windows-local-gates.manifest.json` into the ignored Windows acceptance
+  artifact directory with host blockers, command status, errors, and evidence
+  paths. The on-box Windows 11 x64 execution is still pending.
 
 ## Risks / open questions
 
@@ -301,6 +387,7 @@ Phases 0–2 are the critical path and deliberately lean on ffmpeg for
 everything; that's the shortest route to "a correct recording on Windows."
 Phases 3–5 are quality/productization and can interleave with ongoing macOS
 work. Two slices run entirely on the Mac and should come first:
+
 1. `cargo check --target x86_64-pc-windows-msvc` green — forces every
    Unix-ism into the open. **DONE 2026-06-12:** `pnpm check:windows`
    (cargo-xwin + Homebrew LLVM for `llvm-lib`; the Unix-isms were the five
@@ -322,16 +409,16 @@ work. Two slices run entirely on the Mac and should come first:
 Questions stress-tested against the codebase; answers verified, not
 assumed.
 
-| # | Question | Resolution (evidence) |
-|---|----------|----------------------|
-| 1 | Is streaming in Windows v1 or recording-only? | **In v1, nearly free.** RTMP chain is flv/tee + fifo isolation, fully portable (`recording.rs:3872-3892`); only mac-ism is the `h264_videotoolbox` codec literal (`recording.rs:3816`) which the encoder probe replaces. |
-| 2 | Does the dshow-direct mic MVP lose user-facing features vs the native CoreAudio path? | **No.** Native path's gain/mute are start-time params (`protocol.rs:592-594`) with no live-update command; an `-af volume` filter at spawn matches them. The avfoundation *fallback* on mac loses gain/mute today — the Windows MVP with the filter is actually closer to parity than mac's own fallback. |
-| 3 | Will preview + recording fight over the same device (dshow opens are exclusive)? | **No contention in the default path.** Encoder-bridge recording composites from the preview pipelines' frame stores (`recording.rs:532-615`, `compositor.rs:314-316`) — one open per device. Implication: port the *preview* capture first; recording follows. The legacy direct path (fps > 30) is the only second-open risk and shares the same input-builder seam. |
-| 4 | Must Windows v1 capture individual windows? | **No.** Window selection is metadata-only on macOS too — recording warns `window-capture-fallback` and records the display (`recording.rs:5268-5271`). Display-only is parity. |
-| 5 | System audio in scope? | **No — plan-only on macOS** (docs/system-audio-capture-plan.md; `DeviceKind::SystemAudio` always Unavailable). Phase 3's WASAPI module just keeps loopback reachable for when SA lands. |
-| 6 | Do device IDs need to be durable across sessions? | **Soft requirement.** Selections travel in per-session params; no device IDs in the sqlite schema (`storage.rs` tables). Still prefer MF symbolic links / adapter LUIDs so remembered selections survive replugs. |
-| 7 | Can ddagrab feed the raw-frame pipe the bridge expects? | **Yes, with `hwdownload,format=bgra`** — ddagrab produces D3D11 frames; the bridge consumes raw frames over a pipe. CPU download cost is the thing to measure on the Windows box; `gdigrab` is the fallback. |
-| 8 | Windows 10 or 11 floor? | **Windows 11 only — owner decision 2026-06-12.** Runtime guard in Phase 1; unlocks Mica/acrylic and `IDesktopWallpaper`. |
+| #   | Question                                                                              | Resolution (evidence)                                                                                                                                                                                                                                                                                                                                                 |
+| --- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Is streaming in Windows v1 or recording-only?                                         | **In v1, nearly free.** RTMP chain is flv/tee + fifo isolation, fully portable (`recording.rs:3872-3892`); only mac-ism is the `h264_videotoolbox` codec literal (`recording.rs:3816`) which the encoder probe replaces.                                                                                                                                              |
+| 2   | Does the dshow-direct mic MVP lose user-facing features vs the native CoreAudio path? | **No.** Native path's gain/mute are start-time params (`protocol.rs:592-594`) with no live-update command; an `-af volume` filter at spawn matches them. The avfoundation _fallback_ on mac loses gain/mute today — the Windows MVP with the filter is actually closer to parity than mac's own fallback.                                                             |
+| 3   | Will preview + recording fight over the same device (dshow opens are exclusive)?      | **No contention in the default path.** Encoder-bridge recording composites from the preview pipelines' frame stores (`recording.rs:532-615`, `compositor.rs:314-316`) — one open per device. Implication: port the _preview_ capture first; recording follows. The legacy direct path (fps > 30) is the only second-open risk and shares the same input-builder seam. |
+| 4   | Must Windows v1 capture individual windows?                                           | **No.** Window selection is metadata-only on macOS too — recording warns `window-capture-fallback` and records the display (`recording.rs:5268-5271`). Display-only is parity.                                                                                                                                                                                        |
+| 5   | System audio in scope?                                                                | **No — plan-only on macOS** (docs/system-audio-capture-plan.md; `DeviceKind::SystemAudio` always Unavailable). Phase 3's WASAPI module just keeps loopback reachable for when SA lands.                                                                                                                                                                               |
+| 6   | Do device IDs need to be durable across sessions?                                     | **Soft requirement.** Selections travel in per-session params; no device IDs in the sqlite schema (`storage.rs` tables). Still prefer MF symbolic links / adapter LUIDs so remembered selections survive replugs.                                                                                                                                                     |
+| 7   | Can ddagrab feed the raw-frame pipe the bridge expects?                               | **Yes, with `hwdownload,format=bgra`** — ddagrab produces D3D11 frames; the bridge consumes raw frames over a pipe. CPU download cost is the thing to measure on the Windows box; `gdigrab` is the fallback.                                                                                                                                                          |
+| 8   | Windows 10 or 11 floor?                                                               | **Windows 11 only — owner decision 2026-06-12.** Runtime guard in Phase 1; unlocks Mica/acrylic and `IDesktopWallpaper`.                                                                                                                                                                                                                                              |
 
 Open items that stay with the owner: which Windows box/GPUs to buy (one
 discrete + one iGPU machine ideal), and when to pay for code signing

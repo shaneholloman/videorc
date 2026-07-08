@@ -414,6 +414,7 @@ async fn start_missing_sources(
     missing: &[&'static str],
     action_label: &'static str,
 ) -> Result<()> {
+    let ffmpeg_path = active_recording_ffmpeg_path(state).await;
     for source in missing {
         match *source {
             "camera" => {
@@ -423,6 +424,7 @@ async fn start_missing_sources(
                         sources: params.sources.clone(),
                         layout: params.layout.clone(),
                         video: params.video.clone().unwrap_or_else(fallback_video_settings),
+                        ffmpeg_path: ffmpeg_path.clone(),
                     },
                 )
                 .await;
@@ -446,6 +448,7 @@ async fn start_missing_sources(
                         sources: params.sources.clone(),
                         video: params.video.clone().unwrap_or_else(fallback_video_settings),
                         protected_overlay_window_ids: params.protected_overlay_window_ids.clone(),
+                        ffmpeg_path: ffmpeg_path.clone(),
                     },
                 )
                 .await;
@@ -466,6 +469,15 @@ async fn start_missing_sources(
         }
     }
     Ok(())
+}
+
+async fn active_recording_ffmpeg_path(state: &AppState) -> Option<String> {
+    state
+        .recording
+        .lock()
+        .await
+        .as_ref()
+        .map(|recording| recording.ffmpeg_path.clone())
 }
 
 async fn wait_for_sources_ready(

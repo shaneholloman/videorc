@@ -5,6 +5,8 @@ use crate::protocol::{Device, DeviceKind, DeviceStatus};
 
 const SCREEN_CAPTUREKIT_PREFIX: &str = "screen:screencapturekit:";
 const WINDOW_CAPTUREKIT_PREFIX: &str = "window:screencapturekit:";
+const WINDOWS_DXGI_SCREEN_PREFIX: &str = "screen:dxgi:";
+const WINDOWS_GDIGRAB_DESKTOP_ID: &str = "screen:gdigrab:desktop";
 const SCREEN_CAPTUREKIT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,16 +23,55 @@ pub fn parse_screencapturekit_window_id(id: &str) -> Option<u32> {
     id.strip_prefix(WINDOW_CAPTUREKIT_PREFIX)?.parse().ok()
 }
 
+pub fn parse_windows_dxgi_output_index(id: &str) -> Option<u32> {
+    let value = id.strip_prefix(WINDOWS_DXGI_SCREEN_PREFIX)?;
+    let (adapter_luid, output_index) = value.rsplit_once(':')?;
+    if adapter_luid.is_empty() {
+        return None;
+    }
+    output_index.parse().ok()
+}
+
+pub fn is_windows_gdigrab_desktop_screen_id(id: &str) -> bool {
+    id == WINDOWS_GDIGRAB_DESKTOP_ID
+}
+
 #[cfg(target_os = "macos")]
 pub fn list_native_capture_sources() -> NativeCaptureSources {
     macos::list_native_capture_sources()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn list_native_capture_sources() -> NativeCaptureSources {
+    windows_native::list_native_capture_sources()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn list_native_capture_sources() -> NativeCaptureSources {
     NativeCaptureSources {
         devices: Vec::new(),
         warnings: vec!["ScreenCaptureKit is only available on macOS.".to_string()],
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_dxgi_screen_device_id(adapter_luid: u64, output_index: u32) -> String {
+    format!("{WINDOWS_DXGI_SCREEN_PREFIX}{adapter_luid:016x}:{output_index}")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_gdigrab_desktop_device() -> Device {
+    Device {
+        id: WINDOWS_GDIGRAB_DESKTOP_ID.to_string(),
+        name: "Desktop".to_string(),
+        kind: DeviceKind::Screen,
+        status: DeviceStatus::Available,
+        detail: Some(
+            "Windows gdigrab desktop fallback. Use when DXGI Desktop Duplication is unavailable."
+                .to_string(),
+        ),
+        width: None,
+        height: None,
     }
 }
 
@@ -69,6 +110,131 @@ fn should_include_window_metadata(
 
 pub(crate) fn is_foreign_session_window_app(app_name: Option<&str>) -> bool {
     app_name.is_some_and(|value| value.eq_ignore_ascii_case("loginwindow"))
+}
+
+#[cfg(target_os = "windows")]
+mod windows_native {
+    use super::*;
+    use windows::Win32::Foundation::{LUID, RECT};
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIAdapter1, IDXGIFactory1,
+    };
+
+    pub fn list_native_capture_sources() -> NativeCaptureSources {
+        match list_dxgi_displays() {
+            Ok(mut devices) => {
+                let mut warnings = Vec::new();
+                if devices.is_empty() {
+                    warnings.push(
+                        "DXGI did not report any attached outputs; offering gdigrab desktop fallback."
+                            .to_string(),
+                    );
+                    devices.push(windows_gdigrab_desktop_device());
+                }
+                NativeCaptureSources { devices, warnings }
+            }
+            Err(error) => NativeCaptureSources {
+                devices: vec![windows_gdigrab_desktop_device()],
+                warnings: vec![format!(
+                    "DXGI display discovery failed; offering gdigrab desktop fallback: {error}"
+                )],
+            },
+        }
+    }
+
+    fn list_dxgi_displays() -> windows::core::Result<Vec<Device>> {
+        let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1()? };
+        let mut devices = Vec::new();
+        let mut adapter_index = 0;
+
+        loop {
+            let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+                Ok(adapter) => adapter,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => return Err(error),
+            };
+
+            append_adapter_outputs(&mut devices, &adapter)?;
+            adapter_index += 1;
+        }
+
+        Ok(devices)
+    }
+
+    fn append_adapter_outputs(
+        devices: &mut Vec<Device>,
+        adapter: &IDXGIAdapter1,
+    ) -> windows::core::Result<()> {
+        let adapter_desc = unsafe { adapter.GetDesc1()? };
+        let adapter_luid = adapter_luid_u64(adapter_desc.AdapterLuid);
+        let adapter_name = utf16_z(&adapter_desc.Description);
+        let mut output_index = 0;
+
+        loop {
+            let output = match unsafe { adapter.EnumOutputs(output_index) } {
+                Ok(output) => output,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => return Err(error),
+            };
+            let output_desc = unsafe { output.GetDesc()? };
+            let output_name = utf16_z(&output_desc.DeviceName)
+                .unwrap_or_else(|| format!("DXGI output {output_index}"));
+            let (width, height) = rect_dimensions(output_desc.DesktopCoordinates);
+            devices.push(Device {
+                id: windows_dxgi_screen_device_id(adapter_luid, output_index),
+                name: format!("Display {}", devices.len() + 1),
+                kind: DeviceKind::Screen,
+                status: DeviceStatus::Available,
+                detail: Some(windows_dxgi_display_detail(
+                    adapter_name.as_deref(),
+                    &output_name,
+                )),
+                width,
+                height,
+            });
+            output_index += 1;
+        }
+
+        Ok(())
+    }
+
+    fn adapter_luid_u64(luid: LUID) -> u64 {
+        (u64::from(luid.HighPart as u32) << 32) | u64::from(luid.LowPart)
+    }
+
+    fn rect_dimensions(rect: RECT) -> (Option<u32>, Option<u32>) {
+        (
+            positive_span(rect.left, rect.right),
+            positive_span(rect.top, rect.bottom),
+        )
+    }
+
+    fn positive_span(start: i32, end: i32) -> Option<u32> {
+        end.checked_sub(start)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_dxgi_display_detail(adapter_name: Option<&str>, output_name: &str) -> String {
+    match adapter_name {
+        Some(adapter_name) if !adapter_name.is_empty() => {
+            format!("Windows DXGI output {output_name} on {adapter_name}.")
+        }
+        _ => format!("Windows DXGI output {output_name}."),
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn utf16_z(value: &[u16]) -> Option<String> {
+    let len = value
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(value.len());
+    let text = String::from_utf16_lossy(&value[..len]);
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -443,6 +609,57 @@ mod tests {
         assert_eq!(
             parse_screencapturekit_window_id("screen:screencapturekit:2"),
             None
+        );
+    }
+
+    #[test]
+    fn parses_windows_screen_source_ids() {
+        assert_eq!(
+            parse_windows_dxgi_output_index("screen:dxgi:00000000000003f1:2"),
+            Some(2)
+        );
+        assert_eq!(parse_windows_dxgi_output_index("screen:dxgi::2"), None);
+        assert_eq!(
+            parse_windows_dxgi_output_index("screen:screencapturekit:2"),
+            None
+        );
+        assert!(is_windows_gdigrab_desktop_screen_id(
+            "screen:gdigrab:desktop"
+        ));
+        assert!(!is_windows_gdigrab_desktop_screen_id(
+            "screen:dxgi:00000000000003f1:2"
+        ));
+    }
+
+    #[test]
+    fn formats_windows_dxgi_screen_device_ids() {
+        assert_eq!(
+            windows_dxgi_screen_device_id(0x0000_0000_0000_03f1, 2),
+            "screen:dxgi:00000000000003f1:2"
+        );
+    }
+
+    #[test]
+    fn trims_utf16_null_terminated_windows_names() {
+        let mut value = [0u16; 8];
+        value[0] = 'D' as u16;
+        value[1] = 'X' as u16;
+        value[2] = 'G' as u16;
+        value[3] = 'I' as u16;
+
+        assert_eq!(utf16_z(&value).as_deref(), Some("DXGI"));
+        assert_eq!(utf16_z(&[0, 0, 0]), None);
+    }
+
+    #[test]
+    fn describes_windows_dxgi_display_detail() {
+        assert_eq!(
+            windows_dxgi_display_detail(Some("NVIDIA RTX"), r"\\.\DISPLAY1"),
+            r"Windows DXGI output \\.\DISPLAY1 on NVIDIA RTX."
+        );
+        assert_eq!(
+            windows_dxgi_display_detail(None, r"\\.\DISPLAY1"),
+            r"Windows DXGI output \\.\DISPLAY1."
         );
     }
 

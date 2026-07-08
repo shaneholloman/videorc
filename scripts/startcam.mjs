@@ -31,13 +31,21 @@ function fetchToFile(path, out) {
 
 const ws = await connectBackend({ host: H, port: P, token: T }, timeoutMs)
 try {
-  const devs = await request(ws, timeoutMs, 'devices.list', { ffmpegPath: '/opt/homebrew/bin/ffmpeg' })
-  const cam = (devs.devices ?? []).find((d) => d.kind === 'camera' && d.id.includes('avfoundation-native') && /cam link/i.test(d.name))
+  const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? '/opt/homebrew/bin/ffmpeg'
+  const devs = await request(ws, timeoutMs, 'devices.list', { ffmpegPath })
+  const cam = (devs.devices ?? []).find(
+    (d) => d.kind === 'camera' && d.id.includes('avfoundation-native') && /cam link/i.test(d.name)
+  )
   if (!cam) { console.log('No Cam Link found'); }
   else {
     console.log(`Starting ${cam.name} at ${W}x${HH}...`)
     const sources = { screenId: null, windowId: null, cameraId: cam.id, microphoneId: null, testPattern: false }
-    const started = await request(ws, timeoutMs, 'preview.camera.start', { sources, layout, video })
+    const started = await request(ws, timeoutMs, 'preview.camera.start', {
+      sources,
+      layout,
+      video,
+      ffmpegPath
+    })
     console.log('start ->', JSON.stringify({ state: started.state, width: started.width, height: started.height, message: started.message }))
     for (let i = 0; i < 14; i += 1) {
       await sleep(1000)

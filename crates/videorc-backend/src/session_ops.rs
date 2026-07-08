@@ -6,6 +6,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
+use crate::process_job::output_owned_tokio;
 use crate::state::AppState;
 
 const IMPORTABLE_EXTENSIONS: [&str; 5] = ["mp4", "mov", "m4v", "mkv", "webm"];
@@ -90,7 +91,8 @@ fn import_destination(output_directory: &Path, source: &Path) -> PathBuf {
 
 async fn probe_duration_ms(ffmpeg_path: &str, file: &Path) -> Option<i64> {
     let ffprobe = crate::ffmpeg::ffprobe_path_for(ffmpeg_path);
-    let output = tokio::process::Command::new(ffprobe)
+    let mut command = tokio::process::Command::new(ffprobe);
+    command
         .args([
             "-v",
             "error",
@@ -100,9 +102,9 @@ async fn probe_duration_ms(ffmpeg_path: &str, file: &Path) -> Option<i64> {
             "json",
         ])
         .arg(file)
-        .output()
-        .await
-        .ok()?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let output = output_owned_tokio(&mut command).await.ok()?;
     if !output.status.success() {
         return None;
     }

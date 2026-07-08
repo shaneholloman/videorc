@@ -8,6 +8,7 @@ import {
   collectProcessCensus,
   ownedProcessLedgerPaths,
   parseProcessTable,
+  parseWindowsProcessTable,
   pruneDeadOwnedProcessRecords,
   readOwnedProcessLedgers,
   summarizeRows
@@ -89,6 +90,83 @@ test('parseProcessTable keeps command args with spaces and classifies Videorc ro
   assert.equal(classifyProcess(rows[2]), 'backend')
   assert.equal(classifyProcess(rows[3]), 'electron-renderer')
   assert.equal(classifyProcess(rows[4]), 'native-preview-helper')
+})
+
+test('parseWindowsProcessTable normalizes CIM process JSON and classifies Videorc roles', () => {
+  const rows = parseWindowsProcessTable(`[
+    {
+      "ProcessId": 301,
+      "ParentProcessId": 300,
+      "WorkingSetSize": 4194304,
+      "ExecutablePath": "C:\\\\repo\\\\target\\\\debug\\\\videorc-backend.exe",
+      "CommandLine": "\\"C:\\\\repo\\\\target\\\\debug\\\\videorc-backend.exe\\" --port 1234"
+    },
+    {
+      "ProcessId": 302,
+      "ParentProcessId": 301,
+      "WorkingSetSize": 2097152,
+      "ExecutablePath": null,
+      "CommandLine": "\\"C:\\\\repo\\\\vendor\\\\ffmpeg\\\\bin\\\\ffmpeg.exe\\" -version"
+    },
+    {
+      "ProcessId": 303,
+      "ParentProcessId": 301,
+      "WorkingSetSize": 1048576,
+      "ExecutablePath": "C:\\\\repo\\\\target\\\\debug\\\\native_preview_host_helper.exe",
+      "CommandLine": null
+    }
+  ]`)
+
+  assert.deepEqual(
+    rows.map((row) => ({
+      pid: row.pid,
+      ppid: row.ppid,
+      pgid: row.pgid,
+      rssKb: row.rssKb,
+      command: row.command,
+      role: classifyProcess(row)
+    })),
+    [
+      {
+        pid: 301,
+        ppid: 300,
+        pgid: null,
+        rssKb: 4096,
+        command: 'C:\\repo\\target\\debug\\videorc-backend.exe',
+        role: 'backend'
+      },
+      {
+        pid: 302,
+        ppid: 301,
+        pgid: null,
+        rssKb: 2048,
+        command: 'C:\\repo\\vendor\\ffmpeg\\bin\\ffmpeg.exe',
+        role: 'ffmpeg'
+      },
+      {
+        pid: 303,
+        ppid: 301,
+        pgid: null,
+        rssKb: 1024,
+        command: 'C:\\repo\\target\\debug\\native_preview_host_helper.exe',
+        role: 'native-preview-helper'
+      }
+    ]
+  )
+})
+
+test('parseWindowsProcessTable accepts a single CIM process object', () => {
+  const rows = parseWindowsProcessTable(`{
+    "ProcessId": 404,
+    "ParentProcessId": 12,
+    "WorkingSetSize": 1024,
+    "ExecutablePath": null,
+    "CommandLine": "C:\\\\Windows\\\\System32\\\\cmd.exe /c echo ok"
+  }`)
+
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].pid, 404)
+  assert.equal(rows[0].command, 'C:\\Windows\\System32\\cmd.exe')
 })
 
 test('collectProcessCensus reports alive and dead ledger records without killing anything', async () => {

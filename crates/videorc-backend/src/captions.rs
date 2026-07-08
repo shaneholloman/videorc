@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 use crate::audio::AudioFrame;
+use crate::process_job::spawn_owned_tokio;
 use crate::state::AppState;
 use crate::videorc_api::{CaptionChunkFailure, VideorcApiClient};
 
@@ -609,7 +610,8 @@ fn enqueue_caption_overlay_burn(state: AppState, pending: PendingCueRender) {
             format!("Burning captions into {}.", output_path.display()),
         );
 
-        let spawned = tokio::process::Command::new(&pending.ffmpeg_path)
+        let mut command = tokio::process::Command::new(&pending.ffmpeg_path);
+        command
             .arg("-y")
             .arg("-i")
             .arg(&pending.recording_path)
@@ -624,8 +626,8 @@ fn enqueue_caption_overlay_burn(state: AppState, pending: PendingCueRender) {
             .arg(&output_path)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+            .stderr(std::process::Stdio::null());
+        let spawned = spawn_owned_tokio(&mut command);
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {

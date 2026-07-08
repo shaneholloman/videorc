@@ -3,6 +3,8 @@ const REQUIRED_TOP_LEVEL_SECTIONS = [
   'generatedAt',
   'app',
   'health',
+  'devices',
+  'lastAudioMeter',
   'entitlements',
   'recording',
   'diagnostics',
@@ -20,6 +22,9 @@ const REDACTION_SUMMARY_FIELDS = [
   'aiArtifactBodies'
 ]
 
+const SUPPORTED_SCHEMA_VERSION = 2
+const WINDOWS_ACCEPTANCE_REQUIRED_DEVICE_KINDS = ['screen', 'camera', 'microphone']
+
 const AI_ARTIFACT_BODY_KEYS = new Set([
   'body',
   'chapters',
@@ -31,7 +36,7 @@ const AI_ARTIFACT_BODY_KEYS = new Set([
   'transcript'
 ])
 
-export function validateSupportBundle(bundle) {
+export function validateSupportBundle(bundle, options = {}) {
   const failures = []
   const warnings = []
 
@@ -49,7 +54,7 @@ export function validateSupportBundle(bundle) {
     }
   }
 
-  if (bundle.schemaVersion !== 1) {
+  if (bundle.schemaVersion !== SUPPORTED_SCHEMA_VERSION) {
     failures.push(`Unsupported support bundle schemaVersion: ${String(bundle.schemaVersion)}`)
   }
   if (!isPlainObject(bundle.app)) {
@@ -60,6 +65,28 @@ export function validateSupportBundle(bundle) {
         failures.push(`app.${field} must be a non-empty string.`)
       }
     }
+  }
+  if (!isPlainObject(bundle.health)) {
+    failures.push('health section must be an object.')
+  } else {
+    for (const field of ['status', 'version', 'platform']) {
+      if (typeof bundle.health[field] !== 'string' || bundle.health[field].trim() === '') {
+        failures.push(`health.${field} must be a non-empty string.`)
+      }
+    }
+    if (!isPlainObject(bundle.health.ffmpeg)) {
+      failures.push('health.ffmpeg must be an object.')
+    } else if (typeof bundle.health.ffmpeg.available !== 'boolean') {
+      failures.push('health.ffmpeg.available must be a boolean.')
+    }
+  }
+  if (!isPlainObject(bundle.devices)) {
+    failures.push('devices section must be an object.')
+  } else if (!Array.isArray(bundle.devices.devices)) {
+    failures.push('devices.devices must be an array.')
+  }
+  if (!isPlainObject(bundle.diagnostics)) {
+    failures.push('diagnostics section must be an object.')
   }
   if (!Array.isArray(bundle.logs)) {
     failures.push('logs section must be an array.')
@@ -79,11 +106,106 @@ export function validateSupportBundle(bundle) {
   }
 
   inspectValue(bundle, [], failures, warnings)
+  if (options.windowsAcceptance === true) {
+    inspectWindowsAcceptance(bundle, failures, warnings)
+  }
 
   return {
     ok: failures.length === 0,
     failures,
     warnings
+  }
+}
+
+function inspectWindowsAcceptance(bundle, failures, warnings) {
+  if (!isPlainObject(bundle)) {
+    return
+  }
+
+  if (bundle.schemaVersion !== SUPPORTED_SCHEMA_VERSION) {
+    failures.push(
+      `windows acceptance requires support bundle schemaVersion ${SUPPORTED_SCHEMA_VERSION}.`
+    )
+  }
+  requireString(bundle, ['app', 'platform'], 'windows', failures)
+  requireString(bundle, ['health', 'platform'], 'windows', failures)
+  requireString(bundle, ['app', 'runMode'], 'packaged', failures)
+
+  if (bundle.health?.ffmpeg?.available !== true) {
+    failures.push('windows acceptance requires health.ffmpeg.available to be true.')
+  }
+  if (typeof bundle.health?.ffmpeg?.version !== 'string' || !bundle.health.ffmpeg.version.trim()) {
+    failures.push('windows acceptance requires health.ffmpeg.version to be present.')
+  }
+
+  const runtimeInfo = bundle.rendererDiagnostics?.runtimeInfo
+  if (!isPlainObject(runtimeInfo)) {
+    failures.push('windows acceptance requires rendererDiagnostics.runtimeInfo.')
+  } else {
+    requireString(runtimeInfo, ['platform'], 'win32', failures, 'rendererDiagnostics.runtimeInfo')
+    requireString(runtimeInfo, ['arch'], 'x64', failures, 'rendererDiagnostics.runtimeInfo')
+    if (runtimeInfo.isPackaged !== true) {
+      failures.push('windows acceptance requires rendererDiagnostics.runtimeInfo.isPackaged=true.')
+    }
+    if (typeof runtimeInfo.osRelease !== 'string' || !runtimeInfo.osRelease.trim()) {
+      failures.push('windows acceptance requires rendererDiagnostics.runtimeInfo.osRelease.')
+    } else {
+      const build = windowsBuildNumber(runtimeInfo.osRelease)
+      if (build === null) {
+        failures.push(
+          `rendererDiagnostics.runtimeInfo.osRelease must include a Windows build number: ${runtimeInfo.osRelease}`
+        )
+      } else if (build < 22000) {
+        failures.push(`windows acceptance requires Windows 11 build 22000+; found ${build}.`)
+      }
+    }
+    if (!Array.isArray(runtimeInfo.gpuDevices) || runtimeInfo.gpuDevices.length === 0) {
+      failures.push('windows acceptance requires rendererDiagnostics.runtimeInfo.gpuDevices.')
+    } else {
+      runtimeInfo.gpuDevices.forEach((device, index) => {
+        if (!isPlainObject(device)) {
+          failures.push(`rendererDiagnostics.runtimeInfo.gpuDevices.${index} must be an object.`)
+          return
+        }
+        if (
+          stringOrNumber(device.vendorId) === undefined &&
+          stringOrNumber(device.deviceId) === undefined &&
+          typeof device.description !== 'string'
+        ) {
+          failures.push(
+            `rendererDiagnostics.runtimeInfo.gpuDevices.${index} must include a vendorId, deviceId, or description.`
+          )
+        }
+      })
+    }
+  }
+
+  const devices = Array.isArray(bundle.devices?.devices) ? bundle.devices.devices : []
+  for (const kind of WINDOWS_ACCEPTANCE_REQUIRED_DEVICE_KINDS) {
+    if (!devices.some((device) => device?.kind === kind && device?.status === 'available')) {
+      failures.push(`windows acceptance requires an available ${kind} device.`)
+    }
+  }
+  if (!hasWindowsCaptureBackendProof(devices)) {
+    failures.push(
+      'windows acceptance requires Windows capture backend proof in devices (DXGI/gdigrab/dshow/MediaFoundation).'
+    )
+  }
+
+  const diagnostics = diagnosticSnapshots(bundle)
+  if (!diagnostics.some((snapshot) => typeof snapshot.encodeBackend === 'string')) {
+    failures.push('windows acceptance requires encodeBackend in diagnostics or session finalDiagnostics.')
+  }
+  if (
+    !diagnostics.some(
+      (snapshot) =>
+        typeof snapshot.compositorBackend === 'string' ||
+        typeof snapshot.compositorFallbackReason === 'string'
+    )
+  ) {
+    warnings.push(
+      'windows acceptance bundle does not include compositor backend/fallback diagnostics; device backend proof is still required.'
+    )
   }
 }
 
@@ -142,6 +264,82 @@ function inspectScalar(value, path, failures, warnings) {
   if (isRedacted(value) && value.includes('\n')) {
     warnings.push(`${location} redaction marker contains a newline.`)
   }
+}
+
+function requireString(root, path, expected, failures, prefix) {
+  const value = valueAt(root, path)
+  const location = prefix ? `${prefix}.${path.join('.')}` : path.join('.')
+  if (value !== expected) {
+    failures.push(`${location} must be ${JSON.stringify(expected)}; found ${JSON.stringify(value)}.`)
+  }
+}
+
+function valueAt(root, path) {
+  let current = root
+  for (const part of path) {
+    if (!isPlainObject(current)) {
+      return undefined
+    }
+    current = current[part]
+  }
+  return current
+}
+
+function diagnosticSnapshots(bundle) {
+  const snapshots = []
+  if (isPlainObject(bundle.diagnostics)) {
+    snapshots.push(bundle.diagnostics)
+  }
+  if (Array.isArray(bundle.sessions)) {
+    for (const session of bundle.sessions) {
+      if (isPlainObject(session?.finalDiagnostics)) {
+        snapshots.push(session.finalDiagnostics)
+      }
+    }
+  }
+  return snapshots
+}
+
+function hasWindowsCaptureBackendProof(devices) {
+  const availableDevices = devices.filter((device) => device?.status === 'available')
+  return (
+    availableDevices.some(
+      (device) =>
+        (device.kind === 'screen' || device.kind === 'window') &&
+        windowsBackendText(device).match(/\b(dxgi|gdigrab|desktop duplication)\b/i)
+    ) &&
+    availableDevices.some(
+      (device) =>
+        device.kind === 'camera' &&
+        windowsBackendText(device).match(/\b(dshow|directshow|mediafoundation)\b/i)
+    ) &&
+    availableDevices.some(
+      (device) => device.kind === 'microphone' && windowsBackendText(device).match(/\bdshow\b/i)
+    )
+  )
+}
+
+function windowsBackendText(device) {
+  return [device.id, device.name, device.detail].filter(Boolean).join(' ')
+}
+
+function windowsBuildNumber(release) {
+  if (typeof release !== 'string' || !release.trim()) {
+    return null
+  }
+  const parts = release.split('.')
+  const build = Number(parts[2])
+  return Number.isFinite(build) ? build : null
+}
+
+function stringOrNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim()) {
+    return value
+  }
+  return undefined
 }
 
 function isPlainObject(value) {

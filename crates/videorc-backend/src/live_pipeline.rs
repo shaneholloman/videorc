@@ -22,6 +22,7 @@ use crate::live_render::{CaptureInput, LiveRenderConsumer, SourceFrame, capture_
 use crate::live_scene::{
     ActiveScene, LiveEditDecision, LiveEditEvent, MutationContext, SceneMutation,
 };
+use crate::process_job::spawn_owned_std;
 
 /// The canvas the pipeline renders at. Every capture is scaled to this size so the
 /// render loop can read fixed-size frames.
@@ -63,7 +64,8 @@ impl LiveSessionPipeline {
         let mut capture_children = Vec::with_capacity(captures.len());
         let mut capture_streams: Vec<(String, ChildStdout)> = Vec::with_capacity(captures.len());
         for spec in &captures {
-            match Command::new(ffmpeg_path)
+            let mut command = Command::new(ffmpeg_path);
+            command
                 .args(capture_ffmpeg_args(
                     &spec.input,
                     config.width,
@@ -71,9 +73,8 @@ impl LiveSessionPipeline {
                     config.fps,
                 ))
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-            {
+                .stderr(Stdio::null());
+            match spawn_owned_std(&mut command) {
                 Ok(mut child) => {
                     let stdout = child.stdout.take().expect("capture stdout is piped");
                     capture_streams.push((spec.source_id.clone(), stdout));
@@ -89,11 +90,12 @@ impl LiveSessionPipeline {
             }
         }
 
-        let mut encode = Command::new(ffmpeg_path)
+        let mut command = Command::new(ffmpeg_path);
+        command
             .args(&encode_args)
             .stdin(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+        let mut encode = spawn_owned_std(&mut command)?;
         let encode_in = encode.stdin.take().expect("encode stdin is piped");
 
         let consumer = Arc::new(Mutex::new(LiveRenderConsumer::start(

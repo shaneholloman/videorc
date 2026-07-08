@@ -1,6 +1,8 @@
 // Fetches the pinned prebuilt LGPL win64 FFmpeg (BtbN build) and lays it out
-// as vendor/ffmpeg/windows-x64/{bin/ffmpeg.exe,LICENSE.txt,SOURCE.txt} — the
-// shape apps/desktop/electron-builder.yml bundles for the Windows target.
+// as vendor/ffmpeg/windows-x64/{bin/{ffmpeg.exe,ffprobe.exe},LICENSE.txt,
+// SOURCE.txt} — the shape apps/desktop/electron-builder.yml bundles for the
+// Windows target. ffprobe ships too: the backend resolves it as a sibling of
+// the bundled ffmpeg (ffmpeg.rs), and repair/import/probe break without it.
 // The pin (URL + sha256) lives in vendor/ffmpeg/windows-pin.json and is the
 // committed reproducibility record; the payload itself is gitignored.
 //
@@ -55,8 +57,14 @@ if (!/lgpl/.test(pin.url)) {
 }
 
 const ffmpegExe = join(outputDir, 'bin', 'ffmpeg.exe')
+const ffprobeExe = join(outputDir, 'bin', 'ffprobe.exe')
 const sourceTxt = join(outputDir, 'SOURCE.txt')
-if (!force && (await fileExists(ffmpegExe)) && (await fileExists(sourceTxt))) {
+if (
+  !force &&
+  (await fileExists(ffmpegExe)) &&
+  (await fileExists(ffprobeExe)) &&
+  (await fileExists(sourceTxt))
+) {
   const recorded = await readFile(sourceTxt, 'utf8')
   if (recorded.includes(pin.sha256)) {
     console.log(
@@ -108,6 +116,9 @@ await mkdir(join(outputDir, 'bin'), { recursive: true })
 await copyFile(join(zipRoot, 'bin', 'ffmpeg.exe'), ffmpegExe).catch(() =>
   fail(`zip layout drift: ${extracted[0]}/bin/ffmpeg.exe not found`)
 )
+await copyFile(join(zipRoot, 'bin', 'ffprobe.exe'), ffprobeExe).catch(() =>
+  fail(`zip layout drift: ${extracted[0]}/bin/ffprobe.exe not found`)
+)
 await copyFile(join(zipRoot, 'LICENSE.txt'), join(outputDir, 'LICENSE.txt')).catch(() =>
   fail(`zip layout drift: ${extracted[0]}/LICENSE.txt not found`)
 )
@@ -125,5 +136,8 @@ await writeFile(
 
 if (!(await fileExists(ffmpegExe))) {
   fail(`assembly finished but ${ffmpegExe} is missing`)
+}
+if (!(await fileExists(ffprobeExe))) {
+  fail(`assembly finished but ${ffprobeExe} is missing`)
 }
 console.log(`FFmpeg (win64 LGPL) ready at ${outputDir}`)

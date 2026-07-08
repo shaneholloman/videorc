@@ -14,13 +14,33 @@ use crate::audio::{
 };
 
 pub const AVFOUNDATION_VIDEO_PIXEL_FORMAT: &str = "nv12";
+pub const WINDOWS_DDAGRAB_PIXEL_FORMAT: &str = "bgra";
 
 /// The primary video source a recording session captures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VideoInput {
-    MacScreen { index: usize },
-    MacCamera { index: usize },
+    MacScreen {
+        index: usize,
+    },
+    MacCamera {
+        index: usize,
+    },
+    #[allow(dead_code)]
+    WindowsScreen {
+        backend: WindowsScreenCaptureBackend,
+    },
+    #[allow(dead_code)]
+    WindowsCamera {
+        device_name: String,
+    },
     TestPattern,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowsScreenCaptureBackend {
+    Ddagrab { output_index: u32 },
+    GdiGrabDesktop,
 }
 
 /// The microphone source feeding a session, in preference order: the native
@@ -34,6 +54,10 @@ pub enum MicrophoneInput {
     },
     AvFoundation {
         index: usize,
+    },
+    #[allow(dead_code)]
+    WindowsDshow {
+        device_name: String,
     },
 }
 
@@ -67,6 +91,72 @@ pub fn append_avfoundation_video_input(
         args.extend(["-capture_cursor".to_string(), "1".to_string()]);
     }
     args.extend(["-i".to_string(), format!("{device_index}:none")]);
+}
+
+pub fn append_windows_screen_video_input(
+    args: &mut Vec<String>,
+    backend: &WindowsScreenCaptureBackend,
+    fps: u32,
+    capture_cursor: bool,
+) {
+    args.extend([
+        "-fflags".to_string(),
+        "nobuffer".to_string(),
+        "-flags".to_string(),
+        "low_delay".to_string(),
+        "-probesize".to_string(),
+        "32".to_string(),
+        "-analyzeduration".to_string(),
+        "0".to_string(),
+        "-thread_queue_size".to_string(),
+        "16".to_string(),
+    ]);
+    match backend {
+        WindowsScreenCaptureBackend::Ddagrab { output_index } => {
+            args.extend([
+                "-f".to_string(),
+                "lavfi".to_string(),
+                "-i".to_string(),
+                format!(
+                    "ddagrab=output_idx={output_index}:draw_mouse={}:framerate={fps},hwdownload,format={WINDOWS_DDAGRAB_PIXEL_FORMAT}",
+                    ffmpeg_bool(capture_cursor)
+                ),
+            ]);
+        }
+        WindowsScreenCaptureBackend::GdiGrabDesktop => {
+            args.extend([
+                "-f".to_string(),
+                "gdigrab".to_string(),
+                "-framerate".to_string(),
+                fps.to_string(),
+                "-draw_mouse".to_string(),
+                ffmpeg_bool(capture_cursor).to_string(),
+                "-i".to_string(),
+                "desktop".to_string(),
+            ]);
+        }
+    }
+}
+
+pub fn append_windows_dshow_video_input(args: &mut Vec<String>, device_name: &str, fps: u32) {
+    args.extend([
+        "-fflags".to_string(),
+        "nobuffer".to_string(),
+        "-flags".to_string(),
+        "low_delay".to_string(),
+        "-probesize".to_string(),
+        "32".to_string(),
+        "-analyzeduration".to_string(),
+        "0".to_string(),
+        "-thread_queue_size".to_string(),
+        "16".to_string(),
+        "-f".to_string(),
+        "dshow".to_string(),
+        "-framerate".to_string(),
+        fps.to_string(),
+        "-i".to_string(),
+        format!("video={device_name}"),
+    ]);
 }
 
 /// Appends the session's microphone input. The native-FIFO arm is
@@ -116,13 +206,41 @@ pub fn append_microphone_input(
             *next_input_index += 1;
             true
         }
+        MicrophoneInput::WindowsDshow { device_name } => {
+            args.extend([
+                "-f".to_string(),
+                "dshow".to_string(),
+                "-thread_queue_size".to_string(),
+                "512".to_string(),
+                "-sample_rate".to_string(),
+                NATIVE_AUDIO_SAMPLE_RATE.to_string(),
+                "-channels".to_string(),
+                NATIVE_AUDIO_CHANNELS.to_string(),
+                "-i".to_string(),
+                format!("audio={device_name}"),
+            ]);
+            *next_input_index += 1;
+            true
+        }
     }
+}
+
+/// Whether this microphone's gain/mute must be applied in the ffmpeg filter
+/// graph. The native CoreAudio path applies gain/mute in-process before
+/// samples reach the FIFO, so adding a graph filter there would double-apply.
+/// The Windows dshow mic is captured raw by ffmpeg and has no in-process
+/// stage — without a volume leg the mute toggle records live audio. (The
+/// macOS avfoundation fallback shares that gap today; it keeps its shipped
+/// behavior until it gets its own slice.)
+pub fn microphone_needs_graph_gain(microphone: Option<&MicrophoneInput>) -> bool {
+    matches!(microphone, Some(MicrophoneInput::WindowsDshow { .. }))
 }
 
 pub fn microphone_channels(microphone: Option<&MicrophoneInput>) -> u16 {
     match microphone {
         Some(MicrophoneInput::CoreAudio { .. }) => NATIVE_AUDIO_CHANNELS,
         Some(MicrophoneInput::AvFoundation { .. }) => 1,
+        Some(MicrophoneInput::WindowsDshow { .. }) => NATIVE_AUDIO_CHANNELS,
         None => 0,
     }
 }
@@ -141,9 +259,13 @@ pub fn append_live_avfoundation_video_input(args: &mut Vec<String>, device_index
     ]);
 }
 
+fn ffmpeg_bool(value: bool) -> &'static str {
+    if value { "1" } else { "0" }
+}
+
 // Arg order is the contract: ffmpeg input flags must precede their `-i`, and
 // the Windows arms (ddagrab/dshow, windows-port-plan Phase 2) get the same
-// exact-vector treatment when they land.
+// exact-vector treatment.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +312,100 @@ mod tests {
         assert!(!args.contains(&"-capture_cursor".to_string()));
         assert_eq!(args.last().map(String::as_str), Some("0:none"));
         assert_eq!(args[args.len() - 2], "-i");
+    }
+
+    #[test]
+    fn windows_ddagrab_screen_input_downloads_bgra_frames() {
+        let mut args = Vec::new();
+        append_windows_screen_video_input(
+            &mut args,
+            &WindowsScreenCaptureBackend::Ddagrab { output_index: 2 },
+            30,
+            true,
+        );
+
+        assert_eq!(
+            args,
+            strings(&[
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                "-probesize",
+                "32",
+                "-analyzeduration",
+                "0",
+                "-thread_queue_size",
+                "16",
+                "-f",
+                "lavfi",
+                "-i",
+                "ddagrab=output_idx=2:draw_mouse=1:framerate=30,hwdownload,format=bgra",
+            ])
+        );
+    }
+
+    #[test]
+    fn windows_gdigrab_screen_input_can_disable_cursor_capture() {
+        let mut args = Vec::new();
+        append_windows_screen_video_input(
+            &mut args,
+            &WindowsScreenCaptureBackend::GdiGrabDesktop,
+            15,
+            false,
+        );
+
+        assert_eq!(
+            args,
+            strings(&[
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                "-probesize",
+                "32",
+                "-analyzeduration",
+                "0",
+                "-thread_queue_size",
+                "16",
+                "-f",
+                "gdigrab",
+                "-framerate",
+                "15",
+                "-draw_mouse",
+                "0",
+                "-i",
+                "desktop",
+            ])
+        );
+    }
+
+    #[test]
+    fn windows_dshow_camera_input_uses_video_device_name() {
+        let mut args = Vec::new();
+        append_windows_dshow_video_input(&mut args, "USB Camera", 60);
+
+        assert_eq!(
+            args,
+            strings(&[
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                "-probesize",
+                "32",
+                "-analyzeduration",
+                "0",
+                "-thread_queue_size",
+                "16",
+                "-f",
+                "dshow",
+                "-framerate",
+                "60",
+                "-i",
+                "video=USB Camera",
+            ])
+        );
     }
 
     #[test]
@@ -263,6 +479,35 @@ mod tests {
     }
 
     #[test]
+    fn windows_dshow_microphone_args_request_native_audio_shape() {
+        let microphone = MicrophoneInput::WindowsDshow {
+            device_name: "Microphone Array".to_string(),
+        };
+        let mut args = Vec::new();
+        let mut next_input_index = 2;
+
+        let appended = append_microphone_input(&mut args, Some(&microphone), &mut next_input_index);
+
+        assert!(appended);
+        assert_eq!(next_input_index, 3);
+        assert_eq!(
+            args,
+            vec![
+                "-f".to_string(),
+                "dshow".to_string(),
+                "-thread_queue_size".to_string(),
+                "512".to_string(),
+                "-sample_rate".to_string(),
+                NATIVE_AUDIO_SAMPLE_RATE.to_string(),
+                "-channels".to_string(),
+                NATIVE_AUDIO_CHANNELS.to_string(),
+                "-i".to_string(),
+                "audio=Microphone Array".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn absent_microphone_appends_nothing() {
         let mut args = Vec::new();
         let mut next_input_index = 1;
@@ -281,9 +526,13 @@ mod tests {
             fifo_path: None,
         };
         let avfoundation = MicrophoneInput::AvFoundation { index: 0 };
+        let dshow = MicrophoneInput::WindowsDshow {
+            device_name: "Microphone Array".to_string(),
+        };
 
         assert_eq!(microphone_channels(Some(&coreaudio)), NATIVE_AUDIO_CHANNELS);
         assert_eq!(microphone_channels(Some(&avfoundation)), 1);
+        assert_eq!(microphone_channels(Some(&dshow)), NATIVE_AUDIO_CHANNELS);
         assert_eq!(microphone_channels(None), 0);
     }
 

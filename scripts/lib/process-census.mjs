@@ -165,7 +165,26 @@ export async function pruneDeadOwnedProcessRecords({
   return pruned
 }
 
-export async function readSystemProcessTable() {
+export async function readSystemProcessTable({ platform = process.platform } = {}) {
+  if (platform === 'win32') {
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        [
+          'Get-CimInstance Win32_Process',
+          'Select-Object ProcessId,ParentProcessId,WorkingSetSize,ExecutablePath,CommandLine',
+          'ConvertTo-Json -Compress'
+        ].join(' | ')
+      ],
+      { maxBuffer: 16 * 1024 * 1024 }
+    )
+    return parseWindowsProcessTable(stdout)
+  }
+
   const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,pgid=,rss=,comm=,args='])
   return parseProcessTable(stdout)
 }
@@ -189,41 +208,68 @@ export function parseProcessTable(stdout) {
   return rows
 }
 
+export function parseWindowsProcessTable(stdout) {
+  const trimmed = typeof stdout === 'string' ? stdout.trim() : ''
+  if (!trimmed) {
+    return []
+  }
+
+  const parsed = JSON.parse(trimmed)
+  const entries = Array.isArray(parsed) ? parsed : [parsed]
+  return entries
+    .map((entry) => windowsProcessRow(entry))
+    .filter((row) => row !== null)
+    .sort((a, b) => a.pid - b.pid)
+}
+
 export function classifyProcess(row) {
   const text = `${row.command} ${row.args}`
-  const commandName = row.command.split('/').pop() ?? row.command
+  const lowerText = text.toLowerCase()
+  const commandName = (row.command.split(/[\\/]/).pop() ?? row.command).toLowerCase()
   if (commandName === 'cargo') {
     return 'cargo'
   }
-  if (commandName === 'native_preview_host_helper' || text.includes('native_preview_host_helper')) {
+  if (
+    commandName === 'native_preview_host_helper' ||
+    commandName === 'native_preview_host_helper.exe' ||
+    lowerText.includes('native_preview_host_helper')
+  ) {
     return 'native-preview-helper'
   }
   if (
     commandName === 'videorc-backend' ||
     commandName === 'videorc-backend.exe' ||
-    text.includes('videorc-backend')
+    lowerText.includes('videorc-backend')
   ) {
     return 'backend'
   }
-  if (text.includes('ffmpeg')) {
+  if (lowerText.includes('ffmpeg')) {
     return 'ffmpeg'
   }
-  if (text.includes('ffprobe')) {
+  if (lowerText.includes('ffprobe')) {
     return 'ffprobe'
   }
-  if (text.includes('--type=renderer')) {
+  if (lowerText.includes('--type=renderer')) {
     return 'electron-renderer'
   }
-  if (text.includes('--type=gpu-process')) {
+  if (lowerText.includes('--type=gpu-process')) {
     return 'electron-gpu'
   }
-  if (text.includes('--type=')) {
+  if (lowerText.includes('--type=')) {
     return 'electron-child'
   }
-  if (/Electron\.app\/Contents\/MacOS\/Electron/.test(text) || /\/Videorc(?:\.app)?\//.test(text)) {
+  if (
+    /electron\.app\/contents\/macos\/electron/.test(lowerText) ||
+    /\/videorc(?:\.app)?\//.test(lowerText) ||
+    commandName === 'videorc.exe'
+  ) {
     return 'electron-main'
   }
-  if (text.includes('pnpm') || text.includes('electron-vite') || text.includes('esbuild')) {
+  if (
+    lowerText.includes('pnpm') ||
+    lowerText.includes('electron-vite') ||
+    lowerText.includes('esbuild')
+  ) {
     return 'tooling'
   }
   return 'other'
@@ -281,6 +327,44 @@ function isOwnedProcessRecord(value) {
     typeof value.label === 'string' &&
     typeof value.startedAt === 'string'
   )
+}
+
+function windowsProcessRow(entry) {
+  const pid = Number(entry?.ProcessId)
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return null
+  }
+  const ppid = Number(entry?.ParentProcessId)
+  const workingSetSize = Number(entry?.WorkingSetSize)
+  const args = typeof entry?.CommandLine === 'string' ? entry.CommandLine : ''
+  const command =
+    typeof entry?.ExecutablePath === 'string' && entry.ExecutablePath.trim()
+      ? entry.ExecutablePath
+      : firstWindowsCommandToken(args)
+
+  return {
+    pid,
+    ppid: Number.isInteger(ppid) && ppid >= 0 ? ppid : 0,
+    pgid: null,
+    rssKb: Number.isFinite(workingSetSize) ? Math.round(workingSetSize / 1024) : 0,
+    command,
+    args
+  }
+}
+
+function firstWindowsCommandToken(commandLine) {
+  if (typeof commandLine !== 'string') {
+    return ''
+  }
+  const trimmed = commandLine.trim()
+  if (!trimmed) {
+    return ''
+  }
+  const quoted = /^"([^"]+)"/.exec(trimmed)
+  if (quoted) {
+    return quoted[1]
+  }
+  return trimmed.split(/\s+/)[0] ?? ''
 }
 
 function sleep(ms) {

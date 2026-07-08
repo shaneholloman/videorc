@@ -10,6 +10,7 @@ use tokio::time::{Duration, sleep, timeout};
 
 use crate::account;
 use crate::ffmpeg::resolve_ffmpeg_path;
+use crate::process_job::output_owned_tokio;
 use crate::protocol::{
     AiArtifact, AiArtifactKind, AiArtifactStatus, AiCapabilities, AiJobSnapshot, AiWorkflowResult,
     ExportPublishPackParams, ExportPublishPackResult, HealthEvent, HealthLevel,
@@ -676,10 +677,13 @@ async fn extract_audio(ffmpeg_path: &str, input_path: &Path, output_path: &Path)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
-    let output = timeout(Duration::from_secs(20 * 60), command.output())
-        .await
-        .context("FFmpeg audio extraction timed out")?
-        .with_context(|| format!("Could not start {ffmpeg_path} for audio extraction"))?;
+    let output = timeout(
+        Duration::from_secs(20 * 60),
+        output_owned_tokio(&mut command),
+    )
+    .await
+    .context("FFmpeg audio extraction timed out")?
+    .with_context(|| format!("Could not start {ffmpeg_path} for audio extraction"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

@@ -24,6 +24,7 @@ use crate::diagnostics::{
 };
 use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::mpeg_ts::{MpegTsH264Writer, timing_to_90khz};
+use crate::process_job::spawn_owned_tokio;
 use crate::protocol::{EncoderBridgeSyntheticParams, EncoderBridgeSyntheticResult};
 use crate::state::AppState;
 #[cfg(target_os = "macos")]
@@ -256,7 +257,7 @@ impl Drop for EncoderBridgeRecordingSession {
         if let Some(task) = self.diagnostics_task.take() {
             task.abort();
         }
-        let _ = std::fs::remove_file(&self.fifo_path);
+        let _ = crate::fifo::cleanup(&self.fifo_path);
     }
 }
 
@@ -292,12 +293,13 @@ pub async fn run_synthetic_encoder_bridge(
     .await;
 
     let progress = Arc::new(Mutex::new(EncoderBridgeProgress::default()));
-    let mut child = Command::new(&settings.ffmpeg_path)
+    let mut command = Command::new(&settings.ffmpeg_path);
+    command
         .args(encoder_bridge_ffmpeg_args(&settings))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut child = spawn_owned_tokio(&mut command)
         .with_context(|| format!("Could not start {}", settings.ffmpeg_path))?;
 
     let mut stdin = child
