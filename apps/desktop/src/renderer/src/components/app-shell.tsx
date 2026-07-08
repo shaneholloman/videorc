@@ -290,7 +290,10 @@ export function AppShell(): ReactElement {
                 <Kbd>P</Kbd>
               </KbdGroup>
             </Button>
-            {runtimeInfo?.notesWindowEnabled ? (
+            {/* Flags default ON and runtimeInfo lands async — treating null
+                as enabled keeps the footer at its final width from the first
+                paint instead of growing when the fetch resolves. */}
+            {runtimeInfo?.notesWindowEnabled !== false ? (
               <>
                 <FooterActionDivider />
                 <Button
@@ -309,7 +312,7 @@ export function AppShell(): ReactElement {
                 </Button>
               </>
             ) : null}
-            {runtimeInfo?.commentsWindowEnabled ? (
+            {runtimeInfo?.commentsWindowEnabled !== false ? (
               <>
                 <FooterActionDivider />
                 <Button

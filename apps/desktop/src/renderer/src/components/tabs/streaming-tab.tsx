@@ -122,6 +122,7 @@ export function StreamingTab(): ReactElement {
     xNativeCapability,
     xNativeCapabilityLoading,
     refreshXNativeCapability,
+    authorizeXLive,
     stopSession
   } = useStudio()
   const streaming = captureConfig.streaming
@@ -231,6 +232,7 @@ export function StreamingTab(): ReactElement {
             onRestorePreviousStreamKey={restorePreviousStreamKey}
             onRefreshYouTubeChannels={refreshYouTubeChannels}
             onRefreshXNativeCapability={refreshXNativeCapability}
+            onAuthorizeXLive={authorizeXLive}
             onSelectYouTubeChannel={selectYouTubeChannel}
           />
         ))}
@@ -561,6 +563,7 @@ function DestinationCard({
   onRestorePreviousStreamKey,
   onRefreshYouTubeChannels,
   onRefreshXNativeCapability,
+  onAuthorizeXLive,
   onSelectYouTubeChannel
 }: {
   target: StreamTargetSettings
@@ -581,6 +584,7 @@ function DestinationCard({
   onRestorePreviousStreamKey: (targetId: string) => Promise<void>
   onRefreshYouTubeChannels: (accountId?: string) => Promise<void>
   onRefreshXNativeCapability: (accountId?: string) => Promise<void>
+  onAuthorizeXLive: () => Promise<void>
   onSelectYouTubeChannel: (channelId: string, accountId?: string) => Promise<void>
 }): ReactElement {
   const ready = isStreamTargetReady(target)
@@ -817,6 +821,7 @@ function DestinationCard({
               onDisconnect={onDisconnect}
               onRefreshYouTubeChannels={onRefreshYouTubeChannels}
               onRefreshXNativeCapability={onRefreshXNativeCapability}
+              onAuthorizeXLive={onAuthorizeXLive}
               onSelectYouTubeChannel={onSelectYouTubeChannel}
               onUseManualRtmp={() => onPatch(target.id, { authMode: 'manual-rtmp' })}
             />
@@ -1082,6 +1087,7 @@ function OAuthAccountPanel({
   onDisconnect,
   onRefreshYouTubeChannels,
   onRefreshXNativeCapability,
+  onAuthorizeXLive,
   onSelectYouTubeChannel,
   onUseManualRtmp
 }: {
@@ -1098,6 +1104,7 @@ function OAuthAccountPanel({
   onDisconnect: (platform: StreamPlatform) => void
   onRefreshYouTubeChannels: (accountId?: string) => Promise<void>
   onRefreshXNativeCapability: (accountId?: string) => Promise<void>
+  onAuthorizeXLive: () => Promise<void>
   onSelectYouTubeChannel: (channelId: string, accountId?: string) => Promise<void>
   onUseManualRtmp: () => void
 }): ReactElement {
@@ -1226,11 +1233,13 @@ function OAuthAccountPanel({
             >
               {xNativeCapability?.nativeAvailable
                 ? 'X API ready'
-                : xNativeCapability?.state === 'missing-credentials'
-                  ? 'Credentials needed'
-                  : xNativeCapability?.state === 'account-mismatch'
-                    ? 'Account mismatch'
-                    : 'X API check needed'}
+                : xNativeCapability?.state === 'needs-authorization'
+                  ? 'Authorization needed'
+                  : xNativeCapability?.state === 'missing-credentials'
+                    ? 'Credentials needed'
+                    : xNativeCapability?.state === 'account-mismatch'
+                      ? 'Account mismatch'
+                      : 'X API check needed'}
             </Badge>
             <Button
               disabled={disabled || xNativeCapabilityLoading}
@@ -1269,6 +1278,23 @@ function OAuthAccountPanel({
           ) : null}
           {xNativeCapability && !xNativeCapability.nativeAvailable ? (
             <div className="flex flex-col gap-1.5">
+              {xNativeCapability.state === 'needs-authorization' ||
+              xNativeCapability.state === 'account-mismatch' ? (
+                <div className="flex flex-col gap-1">
+                  <Button
+                    className="w-fit"
+                    disabled={disabled}
+                    size="sm"
+                    onClick={() => void onAuthorizeXLive()}
+                  >
+                    Authorize X Live
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Opens x.com in the browser to approve live broadcasting for this account. The
+                    token stays in the local secret store.
+                  </span>
+                </div>
+              ) : null}
               <Button
                 className="w-fit"
                 disabled={disabled}
@@ -1420,6 +1446,10 @@ function MetadataEditor({
                 <SelectItem value="public">Public</SelectItem>
               </SelectContent>
             </Select>
+            <FieldDescription>
+              Applies to YouTube. Twitch channels are always public; X broadcasts are always public
+              — use its Announce toggle below to control the announcement post.
+            </FieldDescription>
           </Field>
 
           <div className="flex flex-col gap-4">
@@ -1536,16 +1566,25 @@ function MetadataOverride({
         <FieldLabel htmlFor={`${override.platform}-metadata-description`}>Description</FieldLabel>
         <Textarea
           className="min-h-20 resize-y"
-          disabled={fieldsDisabled || twitch}
+          disabled={fieldsDisabled || twitch || x}
           id={`${override.platform}-metadata-description`}
           placeholder={
-            twitch ? 'Not supported by Twitch' : draft.description || 'Inherits global description'
+            twitch
+              ? 'Not supported by Twitch'
+              : x
+                ? 'Not supported by X'
+                : draft.description || 'Inherits global description'
           }
-          value={twitch ? '' : override.description}
+          value={twitch || x ? '' : override.description}
           onChange={(event) => onPatch({ description: event.target.value })}
         />
         {twitch ? (
           <FieldDescription>Twitch supports title, category, and language.</FieldDescription>
+        ) : null}
+        {x ? (
+          <FieldDescription>
+            X broadcasts carry a title only; it doubles as the announcement post text.
+          </FieldDescription>
         ) : null}
       </Field>
 
@@ -1653,23 +1692,20 @@ function MetadataOverride({
       ) : null}
 
       {x ? (
-        <Field>
-          <FieldLabel>Visibility</FieldLabel>
-          <Select
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-col">
+            <span className="text-sm font-medium">Announce on X timeline</span>
+            <span className="text-xs text-muted-foreground">
+              X broadcasts are always public. Off skips the announcement post.
+            </span>
+          </div>
+          <Switch
+            aria-label="Announce on X timeline"
+            checked={override.xAnnounce ?? true}
             disabled={fieldsDisabled}
-            value={override.xVisibility ?? 'public'}
-            onValueChange={(value) => onPatch({ xVisibility: value as StreamPrivacy })}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="public">Public</SelectItem>
-              <SelectItem value="unlisted">Unlisted</SelectItem>
-              <SelectItem value="private">Private</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
+            onCheckedChange={(xAnnounce) => onPatch({ xAnnounce })}
+          />
+        </div>
       ) : null}
     </div>
   )

@@ -639,7 +639,11 @@ export interface StreamTargetMetadataDraft {
   twitchCategoryId?: string
   twitchCategoryName?: string
   twitchLanguage?: string
-  xVisibility?: StreamPrivacy
+  /**
+   * X has no unlisted/private concept — the only reach lever is suppressing
+   * the announcement post. Undefined means announce (the platform default).
+   */
+  xAnnounce?: boolean
   updatedAt: string
 }
 
@@ -763,6 +767,17 @@ export interface TwitchCategory {
   boxArtUrl?: string
 }
 
+/** Result of `streamTargets.twitch.applyMetadata` — channel metadata pushed without touching the stream key. */
+export interface TwitchAppliedMetadata {
+  platform: 'twitch'
+  accountId: string
+  accountLabel: string
+  title: string
+  categoryId?: string
+  categoryName?: string
+  language?: string
+}
+
 export interface PreparedTwitchBroadcast {
   platform: 'twitch'
   accountId: string
@@ -779,9 +794,17 @@ export interface PreparedTwitchBroadcast {
 
 export type XNativeLiveCapabilityState =
   | 'missing-credentials'
+  | 'needs-authorization'
   | 'ready'
   | 'account-mismatch'
   | 'api-error'
+
+/** Result of `streamTargets.x.startLiveAuthorization` — the 3-legged OAuth 1.0a browser flow. */
+export interface XLiveAuthorizationStart {
+  authUrl: string
+  redirectUri: string
+  expiresAt: string
+}
 
 export interface XNativeLiveCapabilityParams {
   accountId?: string
@@ -796,14 +819,14 @@ export interface XPublishParams {
   sourceId: string
   region: string
   isLowLatency: boolean
-  shouldNotTweet: boolean
-  locale?: string
-  chatOption?: number
+  /** Active capture session — X lifecycle events land in its session log. */
+  sessionId?: string
 }
 
 export interface XEndParams {
   accountId?: string
   broadcastId: string
+  sessionId?: string
 }
 
 export interface XLiveChatStartParams {
@@ -843,6 +866,9 @@ export interface PreparedXStreamSource {
   isStreamActive: boolean
   recommendedConfiguration?: unknown
   compatibilityInfo?: unknown
+  /** How prepare picked the source (env-override | reused-name-match | adopted-measured | created). */
+  selection: string
+  deletedRetiredSourceIds: string[]
 }
 
 export interface XPublishResult {
@@ -856,7 +882,20 @@ export interface XPublishResult {
   state: string
   tweetId?: string
   tweetError?: string
+  hlsUrl?: string
+  playableBeforePublish?: boolean
+  prePublishWaitMs?: number
+  compatibilityInfo?: unknown
   message: string
+}
+
+/** `streamTargets.x.playback` event — the post-publish watchability probe. */
+export interface XPlaybackEvent {
+  sessionId?: string | null
+  broadcastId: string
+  shareUrl: string
+  status: 'verified' | 'pending' | 'unavailable'
+  msAfterPublish?: number
 }
 
 export interface XEndResult {

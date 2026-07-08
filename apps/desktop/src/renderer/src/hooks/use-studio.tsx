@@ -111,6 +111,7 @@ import type {
   PlatformAccountValidation,
   PreparedXStreamSource,
   PreparedTwitchBroadcast,
+  TwitchAppliedMetadata,
   PreparedYouTubeBroadcast,
   OAuthCompleteParams,
   OAuthStartResult,
@@ -143,7 +144,9 @@ import type {
   VideorcAccountSnapshot,
   XNativeLiveCapability,
   XEndResult,
+  XLiveAuthorizationStart,
   XLiveChatStartParams,
+  XPlaybackEvent,
   XPublishResult,
   YouTubeBroadcastTransitionResult,
   YouTubeChannel,
@@ -521,6 +524,7 @@ export type StudioContextValue = {
   selectYouTubeChannel: (channelId: string, accountId?: string) => Promise<void>
   searchTwitchCategories: (query: string) => Promise<void>
   refreshXNativeCapability: (accountId?: string) => Promise<void>
+  authorizeXLive: () => Promise<void>
   refreshStreamMetadata: () => Promise<void>
   saveStreamMetadataDraft: () => Promise<void>
   cancelGoLiveConfirmation: () => void
@@ -1327,6 +1331,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const automaticSourceFallbacks = useRef<AutomaticSourceFallbackEvent[]>([])
   const toastedFailedTargets = useRef<Set<string>>(new Set())
   const platformLifecycleRun = useRef(0)
+  // One-shot playback toasts per broadcast+status (probe events may repeat).
+  const xPlaybackToastsRef = useRef(new Set<string>())
   const [previewRefreshNonce, setPreviewRefreshNonce] = useState(0)
   const nativePreviewSurfaceEnabled = Boolean(runtimeInfo?.nativePreviewSurfaceProofEnabled)
 
@@ -2153,6 +2159,29 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     void refreshXNativeCapability(account.accountId)
   }, [platformAccounts, refreshXNativeCapability])
 
+  const authorizeXLive = useCallback(async () => {
+    if (!client || wsStatus !== 'connected') {
+      toast.error('Backend socket is not connected.')
+      return
+    }
+    if (!window.videorc?.openOAuthUrl) {
+      toast.error('OAuth browser launch is unavailable outside Electron.')
+      return
+    }
+
+    try {
+      setLastError(null)
+      const result = await client.request<XLiveAuthorizationStart>(
+        'streamTargets.x.startLiveAuthorization',
+        {}
+      )
+      await window.videorc.openOAuthUrl(result.authUrl)
+      toast.success('Approve Videorc on x.com to enable X Live.')
+    } catch (error) {
+      reportError(error)
+    }
+  }, [client, reportError, wsStatus])
+
   const refreshStreamMetadataForClient = useCallback(async (activeClient: BackendClient | null) => {
     if (!activeClient) {
       setStreamMetadataDraft(null)
@@ -2343,6 +2372,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           // Session over: the viewer chip must clear, not freeze (rider V2).
           void window.videorc?.pushViewerSample?.(null)
         }
+        // Capture started: pull the fresh 'running' row so the Library shows
+        // the live session immediately (status ticks repeat the state, so
+        // only refresh on the transition).
+        if (
+          ['recording', 'streaming'].includes(status.state) &&
+          !['recording', 'streaming'].includes(previousState ?? '')
+        ) {
+          void refreshSessions(nextClient)
+        }
         // D6: the moment a recording lands is the moment to publish it.
         if (
           status.state === 'idle' &&
@@ -2532,20 +2570,87 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }),
       nextClient.on('platformAccounts.oauth.callback', (payload) => {
         const result = payload as {
+          platform?: string
           status?: string
           message?: string
           accountConnected?: boolean
+          tokenStored?: boolean
         }
         if (result.status === 'success' && result.accountConnected) {
           void refreshPlatformAccountsForClient(nextClient)
           void validatePlatformAccountsForClient(nextClient)
           toast.success('Account connected.')
+        } else if (result.status === 'success' && result.platform === 'x' && result.tokenStored) {
+          // Authorize X Live (OAuth 1.0a) landed a token in the secret store;
+          // re-check the capability so Ready appears without a manual refresh.
+          toast.success(result.message ?? 'X live authorization complete.')
+          void nextClient
+            .request<XNativeLiveCapability>('streamTargets.x.capability', {})
+            .then(setXNativeCapability)
+            .catch(() => undefined)
         } else if (result.status === 'success') {
           toast.success('OAuth callback received.')
         } else {
           toast.error('OAuth callback failed.', {
             description: result.message ?? result.status ?? 'Connection could not be completed.'
           })
+        }
+      }),
+      nextClient.on('streamTargets.x.playback', (payload) => {
+        const event = payload as XPlaybackEvent
+        // One toast per broadcast+status; the probe may re-emit while polling.
+        const toastKey = `${event.broadcastId}:${event.status}`
+        const alreadyToasted = xPlaybackToastsRef.current.has(toastKey)
+        xPlaybackToastsRef.current.add(toastKey)
+        const patch =
+          event.status === 'verified'
+            ? {
+                state: 'live' as const,
+                message: `Viewers can watch your X broadcast: ${event.shareUrl}`,
+                redactedUrl: event.shareUrl
+              }
+            : event.status === 'pending'
+              ? {
+                  state: 'warning' as const,
+                  message:
+                    'X is still provisioning playback — viewers may see a loading spinner. Keep streaming; this can take a few minutes.',
+                  redactedUrl: event.shareUrl
+                }
+              : {
+                  state: 'warning' as const,
+                  message:
+                    'X never produced playback for this broadcast — viewers saw a loading spinner. Your local recording is unaffected.',
+                  redactedUrl: event.shareUrl
+                }
+        setCaptureConfig((current) => {
+          const target = current.streaming.targets.find(
+            (candidate) =>
+              candidate.platform === 'x' && candidate.enabled && candidate.authMode === 'oauth'
+          )
+          if (!target) {
+            return current
+          }
+          return bridgeStreamingToLegacy({
+            ...current,
+            streaming: patchPreparedStreamTarget(current.streaming, target.id, { status: patch })
+          })
+        })
+        if (!alreadyToasted) {
+          if (event.status === 'verified') {
+            toast.success('Viewers can watch your X broadcast.', {
+              description: event.shareUrl
+            })
+          } else if (event.status === 'pending') {
+            toast.warning('X is still provisioning playback.', {
+              description:
+                'Viewers may see a loading spinner for a few minutes. Keep streaming — Videorc keeps checking.'
+            })
+          } else {
+            toast.error('X never produced playback for this broadcast.', {
+              description:
+                'Viewers saw a loading spinner. Your local recording is unaffected; the next Go Live uses a replacement source if this repeats.'
+            })
+          }
         }
       }),
       nextClient.on('ai.artifacts.changed', () => {
@@ -4467,20 +4572,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           params
         )
         await window.videorc.openOAuthUrl(result.authUrl)
-        // Exact-match providers reject unregistered callback URLs with a vague
-        // page ("Something went wrong"); surface the exact URI to register so
-        // the user can fix the portal without guessing.
-        if (platform === 'x' && result.redirectUri.startsWith('http://127.0.0.1')) {
-          toast.success('OAuth browser opened.', {
-            description:
-              `If X shows "Something went wrong", add ${result.redirectUri} ` +
-              '(plus the 27995 and 37995 port variants) to the callback URLs of ' +
-              'the X developer app — X requires an exact match, so use http and 127.0.0.1, not localhost.',
-            duration: 15000
-          })
-        } else {
-          toast.success('OAuth browser opened.')
-        }
+        // Callback-URL registration hints live in docs/distribution.md — they
+        // are developer-portal instructions, not something an end user can act
+        // on, so the toast stays quiet.
+        toast.success('OAuth browser opened.')
       } catch (error) {
         reportError(error)
       }
@@ -4838,14 +4933,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             })
           )
 
+          // Metadata (title, announce-on-timeline) is derived backend-side
+          // from the stream metadata draft — never hardcoded here.
           const result = await client.request<XPublishResult>('streamTargets.x.publish', {
             accountId: target.accountId,
             sourceId,
             region,
             isLowLatency: true,
-            shouldNotTweet: false,
-            locale: 'en',
-            chatOption: 2
+            sessionId
           })
 
           if (platformLifecycleRun.current !== runId) {
@@ -4904,6 +4999,105 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           })
         }
       }
+    },
+    [client]
+  )
+
+  // X's documented broadcast lifecycle is END first, THEN stop the encoder
+  // ("After ending, stop your encoder"). Videorc used to do the opposite —
+  // SIGKILL the RTMP leg mid-RUNNING, then send a posthumous END — which is
+  // the prime suspect for sources going playback-dead on reuse (plan 031).
+  // Returns the streaming settings with ended targets patched so a later
+  // cleanup pass does not END the same broadcast twice.
+  const endPreparedXBroadcasts = useCallback(
+    async (
+      streamingForCleanup: StreamingSettings,
+      sessionId?: string,
+      timeoutMs?: number
+    ): Promise<StreamingSettings> => {
+      if (!client) {
+        return streamingForCleanup
+      }
+      let nextStreaming = streamingForCleanup
+      const xTargets = preparedXCompletionTargets(streamingForCleanup)
+      for (const target of xTargets) {
+        const broadcastId = target.platformBroadcastId
+        if (!broadcastId) {
+          continue
+        }
+        try {
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'connecting',
+                  message: 'Ending X broadcast.'
+                }
+              })
+            })
+          )
+          const endRequest = client.request<XEndResult>('streamTargets.x.end', {
+            accountId: target.accountId,
+            broadcastId,
+            sessionId
+          })
+          // Never hold the encoder stop hostage to a slow END: on timeout the
+          // target stays 'live' so the post-stop cleanup pass retries it.
+          const result = timeoutMs
+            ? await Promise.race([
+                endRequest,
+                new Promise<never>((_, reject) =>
+                  setTimeout(() => reject(new Error('x-end-timeout')), timeoutMs)
+                )
+              ])
+            : await endRequest
+          nextStreaming = patchPreparedStreamTarget(nextStreaming, target.id, {
+            status: {
+              state: 'stopped',
+              message: result.message
+            }
+          })
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'stopped',
+                  message: result.message
+                }
+              })
+            })
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (message === 'x-end-timeout') {
+            // Leave the target 'live'; the post-stop pass retries the END.
+            continue
+          }
+          nextStreaming = patchPreparedStreamTarget(nextStreaming, target.id, {
+            status: {
+              state: 'warning',
+              message: `X cleanup needs review: ${message}`
+            }
+          })
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'warning',
+                  message: `X cleanup needs review: ${message}`
+                }
+              })
+            })
+          )
+          toast.warning(`Could not end ${target.label} on X.`, {
+            description: message
+          })
+        }
+      }
+      return nextStreaming
     },
     [client]
   )
@@ -4971,59 +5165,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         }
       }
 
-      const xTargets = preparedXCompletionTargets(streamingForCleanup)
-      for (const target of xTargets) {
-        const broadcastId = target.platformBroadcastId
-        if (!broadcastId) {
-          continue
-        }
-        try {
-          setCaptureConfig((current) =>
-            bridgeStreamingToLegacy({
-              ...current,
-              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
-                status: {
-                  state: 'connecting',
-                  message: 'Ending X broadcast.'
-                }
-              })
-            })
-          )
-          const result = await client.request<XEndResult>('streamTargets.x.end', {
-            accountId: target.accountId,
-            broadcastId
-          })
-          setCaptureConfig((current) =>
-            bridgeStreamingToLegacy({
-              ...current,
-              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
-                status: {
-                  state: 'stopped',
-                  message: result.message
-                }
-              })
-            })
-          )
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          setCaptureConfig((current) =>
-            bridgeStreamingToLegacy({
-              ...current,
-              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
-                status: {
-                  state: 'warning',
-                  message: `X cleanup needs review: ${message}`
-                }
-              })
-            })
-          )
-          toast.warning(`Could not end ${target.label} on X.`, {
-            description: message
-          })
-        }
-      }
+      await endPreparedXBroadcasts(streamingForCleanup)
     },
-    [captureConfig.streaming, client]
+    [captureConfig.streaming, client, endPreparedXBroadcasts]
   )
 
   const runStartSession = useCallback(
@@ -5231,6 +5375,45 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }
     }
 
+    // Manual-RTMP Twitch targets: the transport is a user-provided stream
+    // key, but Helix channel updates work regardless of ingest path — push
+    // title/category/language through the connected account. Best-effort:
+    // a metadata failure must not block going live over the key.
+    const twitchAccount = platformAccounts.find((item) => item.platform === 'twitch')
+    for (const target of captureConfig.streaming.targets.filter(
+      (target) => target.enabled && target.authMode !== 'oauth' && target.platform === 'twitch'
+    )) {
+      if (!twitchAccount) {
+        nextStreaming = patchPreparedStreamTarget(nextStreaming, target.id, {
+          status: {
+            state: 'ready',
+            message: 'Streaming over stream key. Connect Twitch to push title and category.'
+          }
+        })
+        continue
+      }
+      try {
+        const applied = await client.request<TwitchAppliedMetadata>(
+          'streamTargets.twitch.applyMetadata',
+          { accountId: twitchAccount.accountId }
+        )
+        nextStreaming = patchPreparedStreamTarget(nextStreaming, target.id, {
+          status: {
+            state: 'ready',
+            message: `Twitch channel metadata updated ("${applied.title}").`
+          }
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        nextStreaming = patchPreparedStreamTarget(nextStreaming, target.id, {
+          status: {
+            state: 'ready',
+            message: `Streaming over stream key; channel metadata update failed: ${message}`
+          }
+        })
+      }
+    }
+
     setCaptureConfig((current) => bridgeStreamingToLegacy({ ...current, streaming: nextStreaming }))
     await refreshPlatformAccountsForClient(client)
     return {
@@ -5238,7 +5421,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       failures,
       readyLabels: readyStreamTargetLabels(nextStreaming)
     }
-  }, [captureConfig.streaming, captureConfig.video, client, refreshPlatformAccountsForClient])
+  }, [
+    captureConfig.streaming,
+    captureConfig.video,
+    client,
+    platformAccounts,
+    refreshPlatformAccountsForClient
+  ])
 
   const openGoLiveConfirmation = useCallback(async () => {
     if (!client || startBlockedReason) {
@@ -5423,9 +5612,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setLastError(null)
       platformLifecycleRun.current += 1
       setStopRequestPending(true)
+      // Docs order: END the X broadcast while the feed is still up, THEN stop
+      // the encoder. Bounded so a slow END can never hold the stop hostage.
+      const cleaned = await endPreparedXBroadcasts(
+        captureConfig.streaming,
+        recordingRef.current.sessionId,
+        4000
+      )
       const status = await client.request<RecordingStatus>('session.stop')
       applyRecordingStatus(status)
-      await completePreparedPlatformBroadcasts()
+      await completePreparedPlatformBroadcasts(cleaned)
     } catch (error) {
       reportError(error)
     } finally {
@@ -5433,8 +5629,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [
     applyRecordingStatus,
+    captureConfig.streaming,
     client,
     completePreparedPlatformBroadcasts,
+    endPreparedXBroadcasts,
     reportError,
     stopRequestPending
   ])
@@ -6114,6 +6312,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       selectYouTubeChannel,
       searchTwitchCategories,
       refreshXNativeCapability,
+      authorizeXLive,
       refreshStreamMetadata,
       saveStreamMetadataDraft,
       cancelGoLiveConfirmation,
@@ -6287,6 +6486,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       selectYouTubeChannel,
       searchTwitchCategories,
       refreshXNativeCapability,
+      authorizeXLive,
       refreshStreamMetadata,
       saveStreamMetadataDraft,
       cancelGoLiveConfirmation,

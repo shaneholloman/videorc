@@ -4,7 +4,10 @@ import { describe, it } from 'node:test'
 import {
   artifactKindFromPath,
   buildMacosReleaseArtifactChecks,
+  BUNDLED_X_OAUTH1_CONSUMER_ENVS,
+  bundledXOauth1ConsumerCheckTargets,
   captureEntitlementCheckTargets,
+  evaluateBinaryContainsEnvSecretCheck,
   formatArtifactPath,
   formatReleaseArtifactValidationReport,
   REQUIRED_CAPTURE_ENTITLEMENTS,
@@ -35,7 +38,9 @@ describe('buildMacosReleaseArtifactChecks', () => {
         'capture entitlements (videorc-backend)',
         'capture entitlements (native_preview_host_helper)',
         'capture entitlements (ffmpeg)',
-        'capture entitlements (ffprobe)'
+        'capture entitlements (ffprobe)',
+        'bundled X OAuth1 consumer key (videorc-backend)',
+        'bundled X OAuth1 consumer secret (videorc-backend)'
       ]
     )
     assert.deepEqual(checks[0].args, [
@@ -100,6 +105,59 @@ describe('capture entitlement gate', () => {
       assert.deepEqual(check.args.slice(0, 3), ['-d', '--entitlements', ':-'])
       assert.deepEqual(check.expectOutputIncludes, REQUIRED_CAPTURE_ENTITLEMENTS)
     }
+  })
+
+  it('fails closed when the release backend lacks the baked X OAuth1 consumer pair', () => {
+    const checks = buildMacosReleaseArtifactChecks('/release/Videorc.app').filter((check) =>
+      check.label.startsWith('bundled X OAuth1')
+    )
+
+    assert.deepEqual(checks, bundledXOauth1ConsumerCheckTargets('/release/Videorc.app'))
+    assert.deepEqual(
+      checks.map((check) => check.envName),
+      BUNDLED_X_OAUTH1_CONSUMER_ENVS
+    )
+    for (const check of checks) {
+      assert.equal(check.type, 'binary-contains-env-secret')
+      assert.equal(check.command, undefined)
+      assert.equal(check.path, '/release/Videorc.app/Contents/Resources/videorc-backend')
+    }
+  })
+
+  it('requires the exact release-env X consumer values to be embedded', () => {
+    const [keyCheck] = bundledXOauth1ConsumerCheckTargets('/release/Videorc.app')
+    const secret = 'fake-x-consumer-key'
+
+    assert.deepEqual(
+      evaluateBinaryContainsEnvSecretCheck(keyCheck, {
+        env: {},
+        readFile: () => Buffer.from(secret)
+      }),
+      {
+        ok: false,
+        output: `missing required environment variable: ${keyCheck.envName}`
+      }
+    )
+
+    assert.deepEqual(
+      evaluateBinaryContainsEnvSecretCheck(keyCheck, {
+        env: { [keyCheck.envName]: secret },
+        readFile: () => Buffer.from('different binary contents')
+      }),
+      {
+        ok: false,
+        output:
+          '/release/Videorc.app/Contents/Resources/videorc-backend does not contain the VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_KEY value from the release environment'
+      }
+    )
+
+    assert.deepEqual(
+      evaluateBinaryContainsEnvSecretCheck(keyCheck, {
+        env: { [keyCheck.envName]: secret },
+        readFile: () => Buffer.from(`binary prefix ${secret} binary suffix`)
+      }),
+      { ok: true, output: '' }
+    )
   })
 
   it('pins the required entitlements to camera + microphone', () => {

@@ -1,5 +1,5 @@
 import { ArrowsClockwise, MagnifyingGlass, type Icon } from '@phosphor-icons/react'
-import type { ReactElement } from 'react'
+import { useEffect, useState, type ReactElement } from 'react'
 
 import logoUrl from '@/assets/videorc-logo.png'
 import { AccountMenu } from '@/components/account-menu'
@@ -80,22 +80,38 @@ function SidebarUpdateChip({
 }): ReactElement | null {
   const { status, install } = useUpdater()
   const chip = updateChip(status, captureActive)
+  const hasChip = Boolean(chip)
+  // The chip appears mid-session (updater status lands after launch); sliding
+  // it open keeps the account row from teleporting down when it mounts.
+  const [expanded, setExpanded] = useState(false)
+  useEffect(() => {
+    setExpanded(hasChip)
+  }, [hasChip])
   if (!chip) {
     return null
   }
   return (
-    <div className="border-t px-3 py-2">
-      <button
-        className="flex w-full items-center gap-2 rounded-row px-2.5 py-2 text-left text-xs font-medium text-foreground transition-colors hover:bg-accent"
-        type="button"
-        onClick={() => (chip.action === 'install' ? install() : onOpenSettings())}
-      >
-        <span className="relative flex size-4 shrink-0 items-center justify-center">
-          <ArrowsClockwise className="size-4 text-muted-foreground" />
-          <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[oklch(0.72_0.19_150)]" />
-        </span>
-        <span className="min-w-0 flex-1 truncate">{chip.label}</span>
-      </button>
+    <div
+      className={cn(
+        'grid transition-[grid-template-rows] duration-150 ease-out',
+        expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+      )}
+    >
+      <div className="overflow-hidden">
+        <div className="border-t px-3 py-2">
+          <button
+            className="flex w-full items-center gap-2 rounded-row px-2.5 py-2 text-left text-xs font-medium text-foreground transition-colors hover:bg-accent"
+            type="button"
+            onClick={() => (chip.action === 'install' ? install() : onOpenSettings())}
+          >
+            <span className="relative flex size-4 shrink-0 items-center justify-center">
+              <ArrowsClockwise className="size-4 text-muted-foreground" />
+              <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[oklch(0.72_0.19_150)]" />
+            </span>
+            <span className="min-w-0 flex-1 truncate">{chip.label}</span>
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

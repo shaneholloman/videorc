@@ -245,7 +245,7 @@ pub fn chat_capability(
         ),
         StreamPlatform::X => {
             let x_live_ready = account.is_some()
-                && crate::x_live::x_livestream_credentials_from_env()
+                && crate::x_live::x_livestream_credentials()
                     .ok()
                     .flatten()
                     .is_some();

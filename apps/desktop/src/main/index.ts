@@ -734,6 +734,10 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 660,
     title: 'Videorc',
+    // Hold the (transparent) window until the renderer has painted its first
+    // frame — showing it at create time put an empty pane on screen that then
+    // visibly filled in piece by piece.
+    show: false,
     ...platformWindowChromeOptions(),
     ...appWindowIconOptions(),
     webPreferences: {
@@ -744,6 +748,19 @@ function createWindow(): void {
       backgroundThrottling: false
     }
   })
+
+  let mainWindowShown = false
+  const showMainWindow = (): void => {
+    if (mainWindowShown || !mainWindow || mainWindow.isDestroyed()) {
+      return
+    }
+    mainWindowShown = true
+    mainWindow.show()
+  }
+  mainWindow.once('ready-to-show', showMainWindow)
+  // ready-to-show is not fully reliable on transparent windows: never strand
+  // the user with an invisible app.
+  setTimeout(showMainWindow, 3000)
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL
   if (rendererUrl) {
@@ -1218,7 +1235,11 @@ function notesWindowHtml(document: NotesDocument): string {
     textarea { flex: 1; resize: none; border: 0; outline: none; padding: 20px 22px;
       box-sizing: border-box; background: ${DARK_WINDOW_PALETTE.base}; color: ${DARK_WINDOW_PALETTE.textPrimary}; caret-color: ${DARK_WINDOW_PALETTE.textPrimary};
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      line-height: 1.45; -webkit-app-region: no-drag; }
+      line-height: 1.45; -webkit-app-region: no-drag;
+      /* Keep the arrow cursor: the window is capture-protected but the OS
+         composites the pointer separately, so an I-beam over "empty" space
+         would betray the hidden notes to viewers. */
+      cursor: default; }
     body[data-font-scale="sm"] textarea { font-size: 18px; }
     body[data-font-scale="md"] textarea { font-size: 24px; }
     body[data-font-scale="lg"] textarea { font-size: 32px; }
@@ -7407,6 +7428,12 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+
+  // Warm the glass-wallpaper cache while Electron/renderer boot: the underlay
+  // then finds it on first mount instead of swapping the whole background in
+  // a beat after the window shows. Fire-and-forget — osascript can stall on
+  // an Automation prompt and must never delay the window.
+  void refreshGlassWallpaper()
 
   registerOAuthCallbackProtocol()
   registerManagedAssetProtocol()

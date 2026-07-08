@@ -67,6 +67,9 @@ pub struct AppState {
     pub logs: Arc<StdMutex<Vec<BackendLogEvent>>>,
     pub database: Database,
     pub oauth: Arc<OAuthSessions>,
+    /// Pending 3-legged OAuth 1.0a authorizations for X Live (keyed by
+    /// request token — OAuth 1.0a callbacks carry no `state` param).
+    pub x_oauth1: Arc<crate::x_oauth1::XOauth1Sessions>,
     pub ffmpeg_work: Arc<FfmpegWorkCoordinator>,
     pub live_chat: LiveChatSlot,
     /// In-memory product-account session override (deep-link sign-in / Sign out).
@@ -109,6 +112,7 @@ impl AppState {
             logs: Arc::new(StdMutex::new(Vec::new())),
             database,
             oauth: Arc::new(OAuthSessions::default()),
+            x_oauth1: Arc::new(crate::x_oauth1::XOauth1Sessions::default()),
             ffmpeg_work: Arc::new(FfmpegWorkCoordinator::new()),
             live_chat: Arc::new(tokio::sync::Mutex::new(LiveChatCoordinator::default())),
             account_session: Arc::new(tokio::sync::Mutex::new(

@@ -54,6 +54,7 @@ mod videorc_api;
 mod viewer_stats;
 mod x_chat;
 mod x_live;
+mod x_oauth1;
 mod youtube;
 mod youtube_chat;
 
@@ -401,13 +402,21 @@ struct WsQuery {
     max_width: Option<u32>,
 }
 
+// No rename_all here: these are the providers' own wire names. OAuth
+// providers send snake_case query params (`error_description`,
+// `oauth_token`, `oauth_verifier`) — camelCasing them silently drops the
+// values to None.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct OAuthCallbackQuery {
-    state: String,
+    // OAuth2 providers echo `state`; OAuth 1.0a (X Live) callbacks instead
+    // carry `oauth_token` + `oauth_verifier` (or `denied` on cancel).
+    state: Option<String>,
     code: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
+    oauth_token: Option<String>,
+    oauth_verifier: Option<String>,
+    denied: Option<String>,
 }
 
 async fn health_handler(State(state): State<AppState>) -> Json<BackendHealth> {
@@ -590,16 +599,26 @@ async fn oauth_callback_handler(
     State(state): State<AppState>,
     Query(query): Query<OAuthCallbackQuery>,
 ) -> impl IntoResponse {
-    let result = complete_oauth_callback(
-        &state,
-        OAuthCompleteParams {
-            state: query.state,
-            code: query.code,
-            error: query.error,
-            error_description: query.error_description,
-        },
-    )
-    .await;
+    let result = if let Some(state_param) = query.state {
+        complete_oauth_callback(
+            &state,
+            OAuthCompleteParams {
+                state: state_param,
+                code: query.code,
+                error: query.error,
+                error_description: query.error_description,
+            },
+        )
+        .await
+    } else {
+        complete_x_oauth1_callback(
+            &state,
+            query.oauth_token,
+            query.oauth_verifier,
+            query.denied,
+        )
+        .await
+    };
     state.emit_event("platformAccounts.oauth.callback", result.clone());
 
     let title = match result.status {
@@ -651,6 +670,96 @@ async fn complete_oauth_callback(
         Err(error) => {
             result.status = oauth::OAuthCallbackStatus::Failed;
             result.message = Some(format!("OAuth token exchange failed: {error}"));
+        }
+    }
+
+    result
+}
+
+/// Completes the X Live 3-legged OAuth 1.0a callback: exchanges the verifier
+/// for the user's access token pair and stores it in the secret store. The
+/// result rides the same `platformAccounts.oauth.callback` event as OAuth2 so
+/// the renderer refresh path is shared.
+async fn complete_x_oauth1_callback(
+    state: &AppState,
+    oauth_token: Option<String>,
+    oauth_verifier: Option<String>,
+    denied: Option<String>,
+) -> oauth::OAuthCallbackResult {
+    let received_at = chrono::Utc::now().to_rfc3339();
+    let mut result = oauth::OAuthCallbackResult {
+        platform: Some(StreamPlatform::X),
+        state: String::new(),
+        status: oauth::OAuthCallbackStatus::Failed,
+        code_present: false,
+        error: None,
+        message: None,
+        token_stored: false,
+        account_connected: false,
+        received_at,
+    };
+
+    if let Some(denied_token) = denied {
+        state.x_oauth1.deny(&denied_token).await;
+        result.error = Some("access_denied".to_string());
+        result.message = Some("X live authorization was denied.".to_string());
+        return result;
+    }
+    let (Some(oauth_token), Some(oauth_verifier)) = (oauth_token, oauth_verifier) else {
+        result.status = oauth::OAuthCallbackStatus::UnknownState;
+        result.message =
+            Some("OAuth callback did not include a state or an X OAuth 1.0a token.".to_string());
+        return result;
+    };
+    result.code_present = true;
+
+    match state
+        .x_oauth1
+        .complete(&oauth_token, &oauth_verifier, &reqwest::Client::new())
+        .await
+    {
+        Ok(token) => {
+            let stored = secrets::put_secret(
+                x_live::X_OAUTH1_ACCESS_TOKEN_SECRET_REF,
+                &token.access_token,
+            )
+            .and_then(|()| {
+                secrets::put_secret(
+                    x_live::X_OAUTH1_TOKEN_SECRET_SECRET_REF,
+                    &token.access_token_secret,
+                )
+            })
+            .and_then(|()| match token.screen_name.as_deref() {
+                Some(handle) => secrets::put_secret(x_live::X_OAUTH1_HANDLE_SECRET_REF, handle),
+                None => secrets::delete_secret(x_live::X_OAUTH1_HANDLE_SECRET_REF),
+            });
+            match stored {
+                Ok(()) => {
+                    result.status = oauth::OAuthCallbackStatus::Success;
+                    result.token_stored = true;
+                    result.message = Some(format!(
+                        "X live authorization complete{}.",
+                        token
+                            .screen_name
+                            .as_deref()
+                            .map(|handle| format!(" for {handle}"))
+                            .unwrap_or_default()
+                    ));
+                }
+                Err(error) => {
+                    result.message =
+                        Some(format!("Could not store the X live access token: {error}"));
+                }
+            }
+        }
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("expired") {
+                result.status = oauth::OAuthCallbackStatus::Expired;
+            } else if message.contains("not pending") {
+                result.status = oauth::OAuthCallbackStatus::UnknownState;
+            }
+            result.message = Some(format!("X live authorization failed: {message}"));
         }
     }
 
@@ -1482,6 +1591,46 @@ async fn search_twitch_categories(
     .await
 }
 
+/// Push channel title/category/language for a manual-RTMP Twitch target.
+/// Helix channel updates work regardless of ingest path, so a stream-key
+/// session with a connected account still gets its metadata applied.
+async fn apply_twitch_stream_target_metadata(
+    state: &AppState,
+    params: TwitchPrepareParams,
+) -> anyhow::Result<twitch::TwitchAppliedMetadata> {
+    let metadata = state.database.stream_metadata_draft()?;
+    let validation = validate_stream_metadata_draft(&metadata);
+    if !validation.valid {
+        let message = validation
+            .issues
+            .first()
+            .map(|issue| issue.message.as_str())
+            .unwrap_or("Stream metadata is invalid.");
+        anyhow::bail!("{message}");
+    }
+
+    let credential = twitch_account_credentials(state, params.account_id.as_deref())?;
+    let access_ref = credential
+        .token_secret_ref
+        .as_deref()
+        .context("No Twitch access token is stored.")?;
+    let access_token = secrets::get_secret(access_ref)?;
+    let client_id = oauth::provider_client_id(StreamPlatform::Twitch)?;
+
+    twitch::apply_twitch_channel_metadata(
+        &TwitchPrepareRequest {
+            access_token,
+            client_id,
+            account_id: credential.account.account_id.clone(),
+            account_label: credential.account.account_label.clone(),
+            metadata,
+            api_base_url: None,
+        },
+        &reqwest::Client::new(),
+    )
+    .await
+}
+
 async fn prepare_twitch_stream_target(
     state: &AppState,
     params: TwitchPrepareParams,
@@ -1568,6 +1717,24 @@ fn x_native_live_capability(
     x_live::x_native_live_capability(account)
 }
 
+/// Kicks off the in-app "Authorize X Live" browser flow (3-legged OAuth
+/// 1.0a). The callback lands on the shared loopback OAuth listener.
+async fn start_x_live_authorization(
+    state: &AppState,
+) -> anyhow::Result<x_oauth1::XOauth1StartResult> {
+    let consumer = x_live::x_oauth1_consumer()?.context(
+        "This build has no X Livestream consumer credentials. Release builds bundle them; self-hosted builds set VIDEORC_X_OAUTH1_CONSUMER_KEY and VIDEORC_X_OAUTH1_CONSUMER_SECRET.",
+    )?;
+    let callback_url = format!(
+        "http://127.0.0.1:{}/oauth/callback",
+        state.oauth_redirect_port()
+    );
+    state
+        .x_oauth1
+        .start(consumer, &callback_url, &reqwest::Client::new(), None)
+        .await
+}
+
 async fn prepare_x_native_live(
     state: &AppState,
     params: XPrepareParams,
@@ -1581,19 +1748,46 @@ async fn prepare_x_native_live(
         },
     )?;
     x_live::ensure_x_native_live_available(&capability)?;
-    let credentials = x_live::x_livestream_credentials_from_env()?
-        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
-    let prepared = x_live::prepare_x_stream_source(
+    let credentials = x_live::x_livestream_credentials()?
+        .context("X Livestream OAuth 1.0a credentials are not available. Run Authorize X Live from the Streaming tab.")?;
+    let prepared = match x_live::prepare_x_stream_source(
         XPrepareSourceRequest {
             credentials: credentials.clone(),
             account: account.cloned(),
             source_name: x_live::default_source_name(),
             api_base_url: None,
+            retired_source_ids: retired_x_source_ids(state),
         },
         &reqwest::Client::new(),
         secrets::put_secret,
     )
-    .await?;
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            state.emit_log("error", format!("X source prepare failed: {error}"));
+            return Err(error);
+        }
+    };
+    // Prepare runs before the capture session exists — the global log is the
+    // durable record (the ring no longer floods with FFmpeg progress spam).
+    state.emit_log(
+        "info",
+        format!(
+            "X source prepared: {} ({:?}, region {}){}",
+            prepared.source_id,
+            prepared.selection,
+            prepared.region,
+            if prepared.deleted_retired_source_ids.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; deleted retired source(s) {}",
+                    prepared.deleted_retired_source_ids.join(", ")
+                )
+            }
+        ),
+    );
 
     let existing = state
         .database
@@ -1639,40 +1833,106 @@ async fn publish_x_native_live(
     state: &AppState,
     params: XPublishParams,
 ) -> anyhow::Result<XPublishResult> {
+    let session_id = params.session_id.clone();
     let accounts = state.database.list_platform_accounts()?;
     let account = x_live::select_x_account(&accounts, params.account_id.as_deref())?;
     let capability = x_live::x_native_live_capability(account)?;
     x_live::ensure_x_native_live_available(&capability)?;
     let metadata = state.database.stream_metadata_draft()?;
-    let credentials = x_live::x_livestream_credentials_from_env()?
-        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
-    x_live::publish_x_broadcast(
+    let credentials = x_live::x_livestream_credentials()?
+        .context("X Livestream OAuth 1.0a credentials are not available. Run Authorize X Live from the Streaming tab.")?;
+    let source_id = params.source_id.clone();
+    let result = x_live::publish_x_broadcast(
         XPublishRequest {
             credentials,
             source_id: params.source_id,
             region: params.region,
             metadata,
             is_low_latency: params.is_low_latency,
-            should_not_tweet: params.should_not_tweet,
-            locale: x_live::default_publish_locale(params.locale),
-            chat_option: x_live::default_chat_option(params.chat_option),
+            locale: x_live::default_publish_locale(),
+            chat_option: x_live::default_chat_option(),
             api_base_url: None,
             poll_attempts: 10,
             poll_interval_ms: 2_000,
+            // Bounded pre-publish playback gate: up to 45s for X to bring up
+            // the transcode BEFORE the announcement post goes out.
+            pre_publish_probe_attempts: 9,
+            pre_publish_probe_interval_ms: 5_000,
         },
         &reqwest::Client::new(),
     )
-    .await
+    .await;
+
+    match &result {
+        Ok(published) => {
+            log_x_lifecycle(
+                state,
+                session_id.as_deref(),
+                protocol::HealthLevel::Info,
+                "x-broadcast-published",
+                &format!(
+                    "X broadcast {} is live: {}{}{}",
+                    published.broadcast_id,
+                    published.share_url,
+                    match published.playable_before_publish {
+                        Some(true) => " (playback verified before the announcement post)",
+                        Some(false) =>
+                            " (playback was NOT ready before the announcement post; watching)",
+                        None => "",
+                    },
+                    published
+                        .tweet_error
+                        .as_deref()
+                        .map(|error| format!("; announcement post failed: {error}"))
+                        .unwrap_or_default()
+                ),
+            );
+            if let Some(compatibility) = published
+                .compatibility_info
+                .as_ref()
+                .filter(|info| x_compatibility_notable(info))
+            {
+                log_x_lifecycle(
+                    state,
+                    session_id.as_deref(),
+                    protocol::HealthLevel::Warn,
+                    "x-source-compatibility",
+                    &format!("X ingest compatibility report: {compatibility}"),
+                );
+            }
+            spawn_x_playback_watch(
+                state.clone(),
+                session_id.clone(),
+                source_id,
+                published.broadcast_id.clone(),
+                published.share_url.clone(),
+                published.hls_url.clone(),
+                published.playable_before_publish,
+            );
+        }
+        Err(error) => {
+            log_x_lifecycle(
+                state,
+                session_id.as_deref(),
+                protocol::HealthLevel::Error,
+                "x-publish-failed",
+                &format!("X broadcast publish failed: {error}"),
+            );
+        }
+    }
+
+    result
 }
 
 async fn end_x_native_live(state: &AppState, params: XEndParams) -> anyhow::Result<XEndResult> {
+    let session_id = params.session_id.clone();
     let accounts = state.database.list_platform_accounts()?;
     let account = x_live::select_x_account(&accounts, params.account_id.as_deref())?;
     let capability = x_live::x_native_live_capability(account)?;
     x_live::ensure_x_native_live_available(&capability)?;
-    let credentials = x_live::x_livestream_credentials_from_env()?
-        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
-    x_live::end_x_broadcast(
+    let credentials = x_live::x_livestream_credentials()?
+        .context("X Livestream OAuth 1.0a credentials are not available. Run Authorize X Live from the Streaming tab.")?;
+    let result = x_live::end_x_broadcast(
         XEndRequest {
             credentials,
             broadcast_id: params.broadcast_id,
@@ -1680,7 +1940,229 @@ async fn end_x_native_live(state: &AppState, params: XEndParams) -> anyhow::Resu
         },
         &reqwest::Client::new(),
     )
-    .await
+    .await;
+    match &result {
+        Ok(ended) => log_x_lifecycle(
+            state,
+            session_id.as_deref(),
+            protocol::HealthLevel::Info,
+            "x-broadcast-ended",
+            &format!("X broadcast {} ended.", ended.broadcast_id),
+        ),
+        Err(error) => log_x_lifecycle(
+            state,
+            session_id.as_deref(),
+            protocol::HealthLevel::Error,
+            "x-end-failed",
+            &format!("X broadcast end failed: {error}"),
+        ),
+    }
+    result
+}
+
+/// X lifecycle evidence: session log when a session exists, global log
+/// otherwise — either way it reaches the support bundle.
+fn log_x_lifecycle(
+    state: &AppState,
+    session_id: Option<&str>,
+    level: protocol::HealthLevel,
+    code: &str,
+    message: &str,
+) {
+    let log_level = match level {
+        protocol::HealthLevel::Error => "error",
+        protocol::HealthLevel::Warn => "warn",
+        protocol::HealthLevel::Info => "info",
+    };
+    match session_id {
+        Some(session_id) => {
+            if recording::emit_health_event(state, Some(session_id), level, code, message).is_err()
+            {
+                state.emit_log(log_level, message);
+            }
+        }
+        None => state.emit_log(log_level, message),
+    }
+}
+
+fn x_compatibility_notable(info: &serde_json::Value) -> bool {
+    ["errors", "warnings"].iter().any(|key| {
+        info.get(key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|entries| !entries.is_empty())
+    })
+}
+
+fn retired_x_source_ids(state: &AppState) -> Vec<String> {
+    x_source_health_map(state)
+        .into_iter()
+        .filter(|(_, health)| health.retired)
+        .map(|(source_id, _)| source_id)
+        .collect()
+}
+
+fn x_source_health_map(
+    state: &AppState,
+) -> std::collections::HashMap<String, x_live::XSourceHealth> {
+    state
+        .database
+        .load_setting(x_live::X_SOURCE_HEALTH_SETTING)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+fn record_x_playback_outcome(state: &AppState, source_id: &str, verified: bool) {
+    let mut map = x_source_health_map(state);
+    let health = map.remove(source_id).unwrap_or_default();
+    let updated =
+        x_live::apply_x_playback_outcome(health, verified, &chrono::Utc::now().to_rfc3339());
+    let retired = updated.retired;
+    map.insert(source_id.to_string(), updated);
+    if let Err(error) = state
+        .database
+        .save_setting(x_live::X_SOURCE_HEALTH_SETTING, &map)
+    {
+        state.emit_log(
+            "warn",
+            format!("Could not persist X source health for {source_id}: {error}"),
+        );
+    }
+    if retired && !verified {
+        state.emit_log(
+            "warn",
+            format!(
+                "X source {source_id} retired after {} consecutive sessions without playback; the next Go Live will replace it.",
+                x_live::X_SOURCE_RETIRE_FAILURES
+            ),
+        );
+    }
+}
+
+const X_PLAYBACK_WATCH_INTERVAL_MS: u64 = 5_000;
+const X_PLAYBACK_WATCH_MAX_ATTEMPTS: u32 = 60; // ~5 minutes
+const X_PLAYBACK_PENDING_WARN_AFTER_MS: u128 = 90_000;
+
+/// Post-publish playback watch: keeps probing the broadcast's HLS playlist
+/// so the broadcaster learns within seconds whether viewers can actually
+/// watch — the 2026-07-08 incident streamed 108s to a spinner in silence.
+#[allow(clippy::too_many_arguments)]
+fn spawn_x_playback_watch(
+    state: AppState,
+    session_id: Option<String>,
+    source_id: String,
+    broadcast_id: String,
+    share_url: String,
+    hls_url: Option<String>,
+    playable_before_publish: Option<bool>,
+) {
+    let Some(hls_url) = hls_url else {
+        log_x_lifecycle(
+            &state,
+            session_id.as_deref(),
+            protocol::HealthLevel::Warn,
+            "x-playback-unknown",
+            "X did not return a playback URL for this broadcast; watchability cannot be verified.",
+        );
+        return;
+    };
+
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let published_at = std::time::Instant::now();
+        let emit_status = |status: &str, ms_after_publish: Option<u64>| {
+            state.emit_event(
+                "streamTargets.x.playback",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "broadcastId": broadcast_id,
+                    "shareUrl": share_url,
+                    "status": status,
+                    "msAfterPublish": ms_after_publish,
+                }),
+            );
+        };
+
+        if playable_before_publish == Some(true) {
+            log_x_lifecycle(
+                &state,
+                session_id.as_deref(),
+                protocol::HealthLevel::Info,
+                "x-playback-verified",
+                &format!(
+                    "Viewers can watch your X broadcast (verified before publish): {share_url}"
+                ),
+            );
+            emit_status("verified", Some(0));
+            record_x_playback_outcome(&state, &source_id, true);
+            return;
+        }
+
+        let mut warned_pending = false;
+        for _ in 0..X_PLAYBACK_WATCH_MAX_ATTEMPTS {
+            if x_live::x_playlist_playable(&client, &hls_url)
+                .await
+                .unwrap_or(false)
+            {
+                let elapsed = published_at.elapsed().as_millis() as u64;
+                log_x_lifecycle(
+                    &state,
+                    session_id.as_deref(),
+                    protocol::HealthLevel::Info,
+                    "x-playback-verified",
+                    &format!(
+                        "Viewers can watch your X broadcast ({}s after publish): {share_url}",
+                        elapsed / 1_000
+                    ),
+                );
+                emit_status("verified", Some(elapsed));
+                record_x_playback_outcome(&state, &source_id, true);
+                return;
+            }
+            if !warned_pending
+                && published_at.elapsed().as_millis() >= X_PLAYBACK_PENDING_WARN_AFTER_MS
+            {
+                warned_pending = true;
+                log_x_lifecycle(
+                    &state,
+                    session_id.as_deref(),
+                    protocol::HealthLevel::Warn,
+                    "x-playback-pending",
+                    "X is still provisioning playback — viewers may see a loading spinner. Keep streaming; this can take a few minutes.",
+                );
+                emit_status("pending", Some(published_at.elapsed().as_millis() as u64));
+            }
+            // Stop probing once this session is no longer the active one.
+            if let Some(session_id) = session_id.as_deref() {
+                let active = state
+                    .recording
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|active| active.session_id.clone());
+                if active.as_deref() != Some(session_id) {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(
+                X_PLAYBACK_WATCH_INTERVAL_MS,
+            ))
+            .await;
+        }
+
+        log_x_lifecycle(
+            &state,
+            session_id.as_deref(),
+            protocol::HealthLevel::Error,
+            "x-playback-unavailable",
+            "X never produced playback for this broadcast — viewers saw a loading spinner. Your local recording is unaffected.",
+        );
+        emit_status(
+            "unavailable",
+            Some(published_at.elapsed().as_millis() as u64),
+        );
+        record_x_playback_outcome(&state, &source_id, false);
+    });
 }
 
 fn upsert_validated_account(
@@ -2820,6 +3302,25 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             {
                 Ok(params) => match state.database.disconnect_platform_account(params.platform) {
                     Ok(account) => {
+                        if params.platform == StreamPlatform::X {
+                            // Disconnecting X revokes the local live authorization
+                            // too — the OAuth 1.0a token pair must not outlive the
+                            // account it belongs to.
+                            for secret_ref in [
+                                x_live::X_OAUTH1_ACCESS_TOKEN_SECRET_REF,
+                                x_live::X_OAUTH1_TOKEN_SECRET_SECRET_REF,
+                                x_live::X_OAUTH1_HANDLE_SECRET_REF,
+                            ] {
+                                if let Err(error) = secrets::delete_secret(secret_ref) {
+                                    state.emit_log(
+                                        "warn",
+                                        format!(
+                                            "Could not delete X live secret {secret_ref}: {error}"
+                                        ),
+                                    );
+                                }
+                            }
+                        }
                         if let Ok(accounts) = state.database.list_platform_accounts() {
                             state.emit_event("platformAccounts.changed", accounts);
                         }
@@ -3053,6 +3554,21 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 }
             }
         }
+        "streamTargets.twitch.applyMetadata" => {
+            match serde_json::from_value::<TwitchPrepareParams>(command.params) {
+                Ok(params) => match apply_twitch_stream_target_metadata(state, params).await {
+                    Ok(applied) => ServerResponse::ok(command.id, applied),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "twitch-apply-metadata-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
         "streamTargets.x.capability" => {
             match serde_json::from_value::<XNativeLiveCapabilityParams>(command.params) {
                 Ok(params) => match x_native_live_capability(state, params) {
@@ -3066,6 +3582,12 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 }
             }
         }
+        "streamTargets.x.startLiveAuthorization" => match start_x_live_authorization(state).await {
+            Ok(result) => ServerResponse::ok(command.id, result),
+            Err(error) => {
+                ServerResponse::error(command.id, "x-live-authorization-failed", error.to_string())
+            }
+        },
         "streamTargets.x.prepare" => {
             match serde_json::from_value::<XPrepareParams>(command.params) {
                 Ok(params) => match prepare_x_native_live(state, params).await {
@@ -3605,6 +4127,33 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tokio::sync::broadcast;
+
+    // Regression: OAuthCallbackQuery once carried rename_all = "camelCase",
+    // which silently dropped the snake_case params providers actually send
+    // (oauth_token/oauth_verifier from X's OAuth 1.0a redirect landed as None
+    // and every Authorize X Live ended in "state not found").
+    #[tokio::test]
+    async fn oauth_callback_query_parses_provider_snake_case_params() {
+        use axum::extract::FromRequestParts;
+
+        let request = axum::http::Request::builder()
+            .uri(
+                "/oauth/callback?oauth_token=req-token&oauth_verifier=verifier-1&denied=denied-token&error_description=denied%20by%20user",
+            )
+            .body(())
+            .unwrap();
+        let (mut parts, _) = request.into_parts();
+        let Query(query) = Query::<OAuthCallbackQuery>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+
+        assert_eq!(query.oauth_token.as_deref(), Some("req-token"));
+        assert_eq!(query.oauth_verifier.as_deref(), Some("verifier-1"));
+        assert_eq!(query.denied.as_deref(), Some("denied-token"));
+        assert_eq!(query.error_description.as_deref(), Some("denied by user"));
+        assert_eq!(query.state, None);
+        assert_eq!(query.code, None);
+    }
 
     #[test]
     fn response_shape_omits_empty_error() {
