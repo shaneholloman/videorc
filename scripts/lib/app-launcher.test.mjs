@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { resolve } from 'node:path'
 
-import { resolveSmokeAppDirs, smokeAppEnv, stopProcess } from './app-launcher.mjs'
+import {
+  devAppSpawnOptions,
+  resolveSmokeAppDirs,
+  smokeAppEnv,
+  stopProcess
+} from './app-launcher.mjs'
 
 const SMOKE_ENV_KEYS = [
   'VIDEORC_APP_DATA_DIR',
@@ -58,6 +63,12 @@ test('smokeAppEnv preserves explicit app dirs and reaper policy', () => {
     assert.equal(env.VIDEORC_DISABLE_BACKEND_REAP, '0')
     assert.equal(env.VIDEORC_SMOKE_PRINT_BACKEND_READY, '0')
   })
+})
+
+test('dev app launch uses a shell on Windows so Corepack pnpm shims resolve', () => {
+  assert.equal(devAppSpawnOptions({ platform: 'win32' }).shell, true)
+  assert.equal(devAppSpawnOptions({ platform: 'darwin' }).shell, false)
+  assert.equal(devAppSpawnOptions({ platform: 'linux' }).shell, false)
 })
 
 test('stopProcess reports a graceful process-group stop', async () => {

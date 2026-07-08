@@ -87,12 +87,7 @@ export function launchDevApp({
     let stopping = false
     const childEnv = smokeAppEnv(env)
 
-    const child = spawn('pnpm', ['dev'], {
-      cwd: repoRoot,
-      detached: true,
-      env: childEnv,
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
+    const child = spawn('pnpm', ['dev'], devAppSpawnOptions({ env: childEnv }))
 
     const stop = () => stopProcess(child, () => (stopping = true))
 
@@ -153,6 +148,16 @@ export function launchDevApp({
       )
     })
   })
+}
+
+export function devAppSpawnOptions({ env, platform = process.platform } = {}) {
+  return {
+    cwd: repoRoot,
+    detached: true,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: platform === 'win32'
+  }
 }
 
 /** SIGTERM the process tree, escalating to SIGKILL after bounded grace periods. */
