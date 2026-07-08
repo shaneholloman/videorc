@@ -29,8 +29,7 @@ try {
     defaultCaptureConfig,
     startButtonLabel,
     startButtonPendingLabel
-  } =
-    require(tempModule)
+  } = require(tempModule)
   assert.equal(startButtonLabel(true, false), 'Start Recording')
   assert.equal(startButtonLabel(false, true), 'Start Livestream')
   assert.equal(startButtonLabel(true, true), 'Start Livestream + Record')
@@ -38,7 +37,36 @@ try {
   assert.equal(startButtonPendingLabel(false), 'Starting Recording...')
   assert.equal(startButtonPendingLabel(true), 'Starting Livestream...')
 
-  const youtubeOauthEnabled = bridgeStreamingToLegacy({
+  const twitchOauthEnabled = bridgeStreamingToLegacy({
+    ...defaultCaptureConfig,
+    recordEnabled: false,
+    streaming: {
+      ...defaultCaptureConfig.streaming,
+      enabled: true,
+      mode: 'single',
+      enabledTargetIds: ['twitch'],
+      targets: defaultCaptureConfig.streaming.targets.map((target) =>
+        target.platform === 'twitch'
+          ? {
+              ...target,
+              enabled: true,
+              authMode: 'oauth',
+              serverUrl: '',
+              streamKey: '',
+              streamKeyPresent: false
+            }
+          : target
+      )
+    }
+  })
+  assert.equal(twitchOauthEnabled.streamEnabled, true)
+  assert.equal(areEnabledStreamTargetsStartReady(twitchOauthEnabled.streaming), true)
+  assert.equal(
+    startButtonLabel(twitchOauthEnabled.recordEnabled, twitchOauthEnabled.streamEnabled),
+    'Start Livestream'
+  )
+
+  const youtubeOauthPaused = bridgeStreamingToLegacy({
     ...defaultCaptureConfig,
     recordEnabled: false,
     streaming: {
@@ -60,9 +88,8 @@ try {
       )
     }
   })
-  assert.equal(youtubeOauthEnabled.streamEnabled, true)
-  assert.equal(areEnabledStreamTargetsStartReady(youtubeOauthEnabled.streaming), true)
-  assert.equal(startButtonLabel(youtubeOauthEnabled.recordEnabled, youtubeOauthEnabled.streamEnabled), 'Start Livestream')
+  assert.equal(youtubeOauthPaused.streamEnabled, false)
+  assert.equal(areEnabledStreamTargetsStartReady(youtubeOauthPaused.streaming), false)
 
   const manualMissingKey = bridgeStreamingToLegacy({
     ...defaultCaptureConfig,
@@ -89,7 +116,9 @@ try {
   assert.equal(manualMissingKey.streamEnabled, true)
   assert.equal(areEnabledStreamTargetsStartReady(manualMissingKey.streaming), false)
 
-  console.log('Start label smoke OK - record, livestream, dual-output, and pending labels verified.')
+  console.log(
+    'Start label smoke OK - record, livestream, dual-output, and pending labels verified.'
+  )
 } finally {
   await rm(tempDir, { recursive: true, force: true })
 }

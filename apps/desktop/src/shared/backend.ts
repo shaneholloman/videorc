@@ -776,7 +776,11 @@ export interface PreparedTwitchBroadcast {
   language?: string
 }
 
-export type XNativeLiveCapabilityState = 'partner-api-required'
+export type XNativeLiveCapabilityState =
+  | 'missing-credentials'
+  | 'ready'
+  | 'account-mismatch'
+  | 'api-error'
 
 export interface XNativeLiveCapabilityParams {
   accountId?: string
@@ -784,6 +788,30 @@ export interface XNativeLiveCapabilityParams {
 
 export interface XPrepareParams {
   accountId?: string
+}
+
+export interface XPublishParams {
+  accountId?: string
+  sourceId: string
+  region: string
+  isLowLatency: boolean
+  shouldNotTweet: boolean
+  locale?: string
+  chatOption?: number
+}
+
+export interface XEndParams {
+  accountId?: string
+  broadcastId: string
+}
+
+export interface XLiveChatStartParams {
+  sessionId: string
+  broadcastId: string
+  mediaKey: string
+  targetId?: string
+  statusBaseUrl?: string
+  accessUrl?: string
 }
 
 export interface XNativeLiveCapability {
@@ -794,10 +822,47 @@ export interface XNativeLiveCapability {
   oauthConnected: boolean
   accountId?: string
   accountLabel?: string
+  credentialSource?: string
   message: string
   evidence: string[]
   docsUrl: string
   apiOverviewUrl: string
+}
+
+export interface PreparedXStreamSource {
+  platform: 'x'
+  accountId: string
+  accountLabel: string
+  sourceId: string
+  region: string
+  serverUrl: string
+  streamKeySecretRef: string
+  streamKeyPresent: boolean
+  redactedUrl: string
+  isStreamActive: boolean
+  recommendedConfiguration?: unknown
+  compatibilityInfo?: unknown
+}
+
+export interface XPublishResult {
+  platform: 'x'
+  accountId: string
+  sourceId: string
+  broadcastId: string
+  mediaKey: string
+  mediaId?: string
+  shareUrl: string
+  state: string
+  tweetId?: string
+  tweetError?: string
+  message: string
+}
+
+export interface XEndResult {
+  platform: 'x'
+  accountId: string
+  broadcastId: string
+  message: string
 }
 
 export interface GoLivePreflightParams {

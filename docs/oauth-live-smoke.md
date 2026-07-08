@@ -1,18 +1,15 @@
 # OAuth Live Smoke Runbook
 
-Last official-docs check: 2026-06-13.
+Last official-docs check: 2026-07-07.
 
 This runbook is the release acceptance path for first-class OAuth/native livestream destinations. It covers the external checks that local mocked smokes cannot prove: real OAuth login, platform metadata mutation, ingest readiness, and live start/stop behavior.
 
-## Provider Assumptions Checked 2026-06-13
+## Provider Assumptions Checked 2026-07-07
 
-- **YouTube:** Live Streaming API requests must be authorized by the Google
-  account that owns the broadcasting channel. The channel must be verified,
-  free of live-streaming restrictions, and live streaming may take up to
-  24 hours to become available after first enablement. Videorc must keep
-  waiting for the bound stream to report active ingest before transitioning a
-  broadcast live, then transition the broadcast to complete when the session
-  ends.
+- **YouTube:** OAuth/native Live Streaming API support is paused while Videorc
+  awaits Google app approval. The product must expose YouTube as Manual RTMP
+  only, block stale YouTube OAuth settings with the approval message, and defer
+  native broadcast/channel acceptance until Google approval completes.
 - **Twitch:** The developer app must register the OAuth redirect URL(s), and
   broadcaster actions use user access tokens with scoped permissions. The
   existing Videorc scopes still map to the current docs:
@@ -20,12 +17,12 @@ This runbook is the release acceptance path for first-class OAuth/native livestr
   `channel:read:stream_key` for reading the stream key. Twitch still treats
   access tokens, refresh tokens, and client secrets as password-equivalent, so
   release evidence must never print their values.
-- **X:** The public X API overview still does not expose a self-serve
-  live-video source or broadcast creation endpoint. Media Studio Producer
-  remains the documented path for creating RTMP/HLS sources and broadcasts.
-  Therefore X native live stays blocked unless the release account has a
-  validated partner/API path; manual RTMP must remain explicit user choice, not
-  hidden fallback.
+- **X:** Videorc is allow-listed for the X Livestream API. Native source and
+  broadcast management requires backend OAuth 1.0a user-context credentials,
+  not the existing OAuth2 PKCE profile token. Videorc must prepare/reuse an X
+  RTMPS source, wait for `is_stream_active`, publish the broadcast, and end it
+  with a strict `{ "state": "END" }` body. Manual RTMP remains explicit user
+  choice, not a hidden fallback.
 
 ## Local Gates First
 
@@ -79,8 +76,8 @@ pnpm smoke:provider-readiness:evidence
 Set the OAuth credentials in the environment used to launch the app or build the backend.
 
 OAuth uses the backend's dedicated loopback callback listener, bound to the first free
-port of `17995`, `27995`, `37995`. Register ALL THREE callback URLs in every provider's
-developer portal so one busy port cannot break OAuth:
+port of `17995`, `27995`, `37995`. Register ALL THREE callback URLs in every active
+OAuth provider's developer portal so one busy port cannot break OAuth:
 
 ```text
 http://127.0.0.1:17995/oauth/callback
@@ -98,9 +95,9 @@ http://localhost:27995/oauth/callback
 http://localhost:37995/oauth/callback
 ```
 
-Exact-match providers (X, Twitch) reject unregistered ports; Google accepts any
-loopback port. If all three candidates are busy the backend logs a warning and falls
-back to its dynamic main port (Google keeps working, X/Twitch will not).
+Exact-match providers (X, Twitch) reject unregistered ports. If all three
+candidates are busy the backend logs a warning and falls back to its dynamic
+main port, which is not accepted by those exact-match providers.
 
 After the fixed callback URLs are registered or otherwise verified for the
 release provider apps, set this smoke flag:
@@ -125,15 +122,9 @@ without a user gesture and browsers block gestureless custom-scheme navigation,
 leaving x.com's consent page on an infinite spinner while the app never receives the
 callback.
 
-YouTube:
-
-```sh
-VIDEORC_YOUTUBE_CLIENT_ID=...
-VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID=...
-VIDEORC_SMOKE_YOUTUBE_CHANNEL_READY=1
-```
-
-YouTube uses PKCE in Videorc, so `VIDEORC_YOUTUBE_CLIENT_SECRET` is optional. The test account must own or be able to select a verified Live-enabled channel.
+YouTube OAuth is intentionally disabled until Google approval completes. Do not
+set Google OAuth readiness flags for release acceptance. Use Manual RTMP with a
+YouTube stream key for YouTube smoke coverage.
 
 Twitch:
 
@@ -161,34 +152,43 @@ X:
 ```sh
 VIDEORC_X_CLIENT_ID=...
 VIDEORC_BUNDLED_X_CLIENT_ID=...
+VIDEORC_X_OAUTH1_CONSUMER_KEY=...
+VIDEORC_X_OAUTH1_CONSUMER_SECRET=...
+VIDEORC_X_OAUTH1_ACCESS_TOKEN=...
+VIDEORC_X_OAUTH1_ACCESS_TOKEN_SECRET=...
+VIDEORC_X_OAUTH1_USER_ID=...
+VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY=1
 VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS=1
 ```
 
 The X developer app must register the three fixed loopback callback URLs listed above
 (X matches redirect URIs exactly, port included). X uses PKCE in Videorc, so
-`VIDEORC_X_CLIENT_SECRET` is optional. The X native live check should only be marked ready when the release account has a validated partner/API path for native live source or broadcast creation. If that path is not available, leave the flag unset and keep X OAuth/native blocked in the app with explicit manual RTMP fallback.
+`VIDEORC_X_CLIENT_SECRET` is optional for the existing OAuth2 profile flow. Native
+X Livestream source/broadcast management is separate: it requires the backend
+OAuth 1.0a credential set above. The native live check should only be marked
+ready when the allow-listed app and broadcast account have validated source,
+ingest, publish, end, and redacted-diagnostics behavior. If OAuth1 credentials
+are not configured, leave `VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY` unset and
+keep X OAuth/native blocked with explicit manual RTMP still available.
 
-## YouTube Acceptance
+## YouTube Manual RTMP Acceptance
 
-1. Launch the packaged release candidate with YouTube OAuth credentials.
-2. Open Streaming and connect YouTube through OAuth.
-3. Confirm the connected account identity appears and the credential source badge is `Bundled default` or the intended environment override.
-4. Select the intended YouTube channel or brand channel.
-5. Set global title and description. Use unlisted or private privacy for the test.
-6. Enable the YouTube OAuth destination.
+1. Launch the packaged release candidate without Google OAuth credentials.
+2. Open Streaming and expand YouTube.
+3. Confirm the auth mode is Manual RTMP and the OAuth pause message mentions Google approval.
+4. Paste a YouTube RTMP stream key and save it.
+5. Set global title and description in Videorc, then create/configure the YouTube live event in YouTube Studio.
+6. Enable the YouTube destination.
 7. Confirm Studio's primary button says `Start Livestream` or `Start Livestream + Record`.
 8. Click Start, review the Go Live confirmation, then confirm.
-9. Verify YouTube Studio shows the expected title, description, privacy, and fresh broadcast.
-10. Verify Videorc waits for active ingest before transitioning the broadcast live.
-11. Verify video and audio arrive on YouTube.
-12. Stop in Videorc and verify the YouTube broadcast transitions to complete.
+9. Verify video and audio arrive on the manually configured YouTube event.
+10. Stop in Videorc and end the event in YouTube Studio.
 
 Expected evidence:
 
-- YouTube OAuth account screenshot.
-- selected channel screenshot.
+- YouTube Manual RTMP auth-mode screenshot showing the Google approval pause message.
 - Go Live confirmation screenshot.
-- YouTube Studio screenshot showing matching metadata.
+- YouTube Studio screenshot for the manually configured event.
 - final platform URL or broadcast ID.
 
 ## Twitch Acceptance
@@ -215,25 +215,31 @@ Expected evidence:
 
 ## X Acceptance
 
-Current public X docs show Media Studio Producer support for RTMP/HLS sources and broadcasts, while the public X API overview does not expose a clear self-serve live-video source or broadcast creation endpoint. Videorc must not silently treat OAuth/native X as ready by falling back to manual RTMP.
+X native live now uses the allow-listed Livestream API path. Videorc must not
+silently treat OAuth/native X failures as manual RTMP; the native destination
+either prepares/publishes through the API or fails with diagnostics.
 
-If native partner/API access is available:
+If native X Livestream API access is available:
 
-1. Record the partner/API path, required scopes, and account eligibility.
-2. Launch the packaged release candidate with X OAuth credentials.
-3. Connect X through OAuth.
-4. Confirm `streamTargets.x.capability` reports native live availability.
-5. Set title and description.
-6. Enable the X OAuth destination.
-7. Start through the Go Live confirmation.
-8. Verify the native X broadcast/source uses the expected metadata.
-9. Verify video and audio arrive on X.
-10. Stop in Videorc and verify the X broadcast/source ends where supported.
+1. Record that the X app is allow-listed and the account can broadcast.
+2. Launch the packaged release candidate with the redacted `VIDEORC_X_OAUTH1_*`
+   values available to the backend.
+3. Confirm `streamTargets.x.capability` reports `ready`.
+4. Set title and description.
+5. Enable the X OAuth/native destination.
+6. Start through the Go Live confirmation.
+7. Verify Videorc prepares/reuses an X RTMPS source.
+8. Verify X reports `is_stream_active` before broadcast creation.
+9. Verify broadcast create and publish succeed, and the share URL opens.
+10. Verify video and audio arrive on X.
+11. Verify read-only X chat connects when chat is enabled and messages exist.
+12. Stop in Videorc and verify X receives a strict END request and reports ended.
 
 If native access is not available:
 
 1. Leave `VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS` unset.
-2. Verify X OAuth/native readiness remains blocked with the partner/API explanation.
+2. Verify X OAuth/native readiness remains blocked with the X Livestream API
+   credential/access explanation.
 3. Verify manual RTMP is still available only when explicitly selected by the user.
 4. Record the release as externally blocked for first-class X native live.
 
@@ -248,9 +254,9 @@ If native access is not available:
 - Run context: dev/packaged
 - Provider readiness: pass/fail, redacted output attached
 - Provider readiness evidence: paste `pnpm smoke:provider-readiness:evidence` output
-- YouTube: pass/fail, channel, broadcast ID/URL, notes
+- YouTube Manual RTMP: pass/fail, channel, broadcast ID/URL, notes
 - Twitch: pass/fail, channel URL, notes
-- X: pass/fail/blocked, partner/API evidence, notes
+- X: pass/fail/blocked, allow-list/OAuth1 evidence, broadcast URL, notes
 - Local smokes: pass/fail
 - Screenshots/logs:
 ```

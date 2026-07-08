@@ -38,7 +38,14 @@ export interface ObsImportPlanResult {
   outputDirectory?: string
   stream?:
     | { kind: 'rtmp-custom'; serverUrl: string; hasKey: boolean }
-    | { kind: 'oauth-suggest'; platform: 'youtube' | 'twitch' | 'other'; serviceLabel: string }
+    | {
+        kind: 'rtmp-platform'
+        platform: 'youtube'
+        serviceLabel: string
+        serverUrl: string
+        hasKey: boolean
+      }
+    | { kind: 'oauth-suggest'; platform: 'twitch' | 'other'; serviceLabel: string }
   backgroundImagePath?: string
   report: ObsImportReportLine[]
 }
@@ -399,16 +406,40 @@ export function mapObsSetup(setup: ObsSetup, devices: Device[]): ObsImportPlanRe
       })
     } else {
       const label = setup.service.service ?? 'streaming service'
-      result.stream = {
-        kind: 'oauth-suggest',
-        platform: detectPlatform(label),
-        serviceLabel: label
+      const platform = detectPlatform(label)
+      if (platform === 'youtube' && setup.service.server) {
+        result.stream = {
+          kind: 'rtmp-platform',
+          platform,
+          serviceLabel: label,
+          serverUrl: setup.service.server,
+          hasKey: setup.service.hasKey
+        }
+        report.push({
+          verdict: 'imported',
+          subject: label,
+          note: setup.service.hasKey
+            ? 'server and stream key imported to YouTube Manual RTMP'
+            : 'server imported to YouTube Manual RTMP (no key found)'
+        })
+      } else if (platform === 'youtube') {
+        report.push({
+          verdict: 'approximated',
+          subject: label,
+          note: 'set up YouTube Manual RTMP in Livestream — OBS did not include a server URL'
+        })
+      } else {
+        result.stream = {
+          kind: 'oauth-suggest',
+          platform,
+          serviceLabel: label
+        }
+        report.push({
+          verdict: 'approximated',
+          subject: label,
+          note: 'connect the account in Livestream instead — sign-in beats a pasted stream key'
+        })
       }
-      report.push({
-        verdict: 'approximated',
-        subject: label,
-        note: 'connect the account in Livestream instead — sign-in beats a pasted stream key'
-      })
     }
   }
 

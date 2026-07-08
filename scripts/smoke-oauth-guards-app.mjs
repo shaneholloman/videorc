@@ -22,6 +22,13 @@ try {
     const credentials = await request(ws, timeoutMs, 'platformAccounts.oauth.providerCredentials')
     assertProviderCredentials(credentials)
 
+    const youtubeStart = await requestRaw(ws, timeoutMs, 'platformAccounts.oauth.startProvider', {
+      platform: 'youtube'
+    })
+    if (youtubeStart.ok || !String(youtubeStart.error?.message).includes('Google approval')) {
+      throw new Error(`YouTube provider OAuth should be paused: ${JSON.stringify(youtubeStart)}`)
+    }
+
     const refreshedAccounts = await request(ws, timeoutMs, 'platformAccounts.refresh')
     if (!Array.isArray(refreshedAccounts)) {
       throw new Error(
@@ -72,12 +79,14 @@ function assertProviderCredentials(credentials) {
   }
   const byPlatform = new Map(credentials.map((credential) => [credential.platform, credential]))
 
-  const youtube = requireCredential(byPlatform, 'youtube')
-  // YouTube bundles a Google Desktop OAuth client, which ships a
-  // non-confidential client secret alongside PKCE (Google requires it at the
-  // token endpoint for installed apps), so the secret is expected present.
-  if (!youtube.ready || !youtube.pkce || !youtube.clientIdPresent || !youtube.clientSecretPresent) {
-    throw new Error(`YouTube PKCE readiness mismatch: ${JSON.stringify(youtube)}`)
+  const youtube = byPlatform.get('youtube')
+  if (
+    !youtube ||
+    youtube.ready ||
+    !youtube.pkce ||
+    !String(youtube.message).includes('Google approval')
+  ) {
+    throw new Error(`YouTube OAuth paused-state mismatch: ${JSON.stringify(youtube)}`)
   }
 
   // Twitch is a PUBLIC client type: ready with the client id alone, no
@@ -172,9 +181,9 @@ function assertPreflight(preflight) {
   if (!x || x.ready || x.authMode !== 'oauth') {
     throw new Error(`OAuth X preflight should be blocked: ${JSON.stringify(preflight)}`)
   }
-  if (!x.message.includes('connected account')) {
+  if (!x.message.includes('OAuth 1.0a')) {
     throw new Error(
-      `OAuth X preflight should explain missing connected account: ${JSON.stringify(x)}`
+      `OAuth X preflight should explain missing OAuth 1.0a live credentials: ${JSON.stringify(x)}`
     )
   }
 
@@ -265,20 +274,22 @@ function assertSecretRefPreflight(preflight) {
 function assertXCapability(capability) {
   if (
     capability?.platform !== 'x' ||
-    capability.state !== 'partner-api-required' ||
+    capability.state !== 'missing-credentials' ||
     capability.nativeAvailable !== false ||
     capability.manualRtmpAvailable !== true ||
     capability.oauthConnected !== false
   ) {
     throw new Error(`X native capability guard mismatch: ${JSON.stringify(capability)}`)
   }
-  if (!String(capability.message).includes('partner/API path')) {
+  if (!String(capability.message).includes('OAuth 1.0a')) {
     throw new Error(
-      `X capability message should explain the partner/API path: ${JSON.stringify(capability)}`
+      `X capability message should explain the OAuth 1.0a credential requirement: ${JSON.stringify(capability)}`
     )
   }
-  if (!String(capability.docsUrl).startsWith('https://help.x.com/')) {
-    throw new Error(`X capability should include Producer docs URL: ${JSON.stringify(capability)}`)
+  if (!String(capability.docsUrl).startsWith('https://github.com/xdevplatform/')) {
+    throw new Error(
+      `X capability should include Livestream API sample docs URL: ${JSON.stringify(capability)}`
+    )
   }
   if (!String(capability.apiOverviewUrl).startsWith('https://docs.x.com/')) {
     throw new Error(`X capability should include X API overview URL: ${JSON.stringify(capability)}`)
@@ -333,11 +344,6 @@ function launchAndReadConnection() {
           process.env.VIDEORC_DATABASE_PATH ?? join(stateRoot, 'videorc.sqlite'),
         VIDEORC_SECRETS_PATH:
           process.env.VIDEORC_SECRETS_PATH ?? join(stateRoot, 'videorc-secrets.json'),
-        VIDEORC_YOUTUBE_CLIENT_ID: 'smoke-youtube-client-id',
-        // Dev builds carry no bundled YouTube secret since it left source
-        // (release builds compile it in); the readiness assertion expects the
-        // shipped shape, so inject a fake runtime secret.
-        VIDEORC_YOUTUBE_CLIENT_SECRET: 'smoke-youtube-client-secret',
         VIDEORC_TWITCH_CLIENT_ID: 'smoke-twitch-client-id',
         VIDEORC_X_CLIENT_ID: 'smoke-x-client-id',
         VIDEORC_TWITCH_CLIENT_SECRET: ''

@@ -319,10 +319,13 @@ own feed/backend).
 
 Production builds should inject Videorc-owned OAuth client IDs at backend compile time. Development and self-hosted builds can override those IDs at runtime.
 
+YouTube OAuth is paused until Google approval completes. Keep YouTube available
+through Manual RTMP and do not require or bundle Google OAuth credentials for
+release candidates while this pause is active.
+
 Bundled production defaults:
 
 ```sh
-VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID=...
 VIDEORC_BUNDLED_TWITCH_CLIENT_ID=...
 VIDEORC_BUNDLED_X_CLIENT_ID=...
 pnpm package:backend
@@ -331,7 +334,6 @@ pnpm package:backend
 Runtime/self-host overrides:
 
 ```sh
-VIDEORC_YOUTUBE_CLIENT_ID=...
 VIDEORC_TWITCH_CLIENT_ID=...
 VIDEORC_X_CLIENT_ID=...
 ```
@@ -339,19 +341,33 @@ VIDEORC_X_CLIENT_ID=...
 Runtime values take precedence over bundled defaults. Client secrets, when used for provider flows, remain runtime-only:
 
 ```sh
-VIDEORC_YOUTUBE_CLIENT_SECRET=...
 VIDEORC_TWITCH_CLIENT_SECRET=...
 VIDEORC_X_CLIENT_SECRET=...
 ```
+
+Native X Livestream source/broadcast management is not covered by the X OAuth2
+PKCE token. Release and smoke environments that enable first-class X live must
+also provide the backend-only OAuth 1.0a values:
+
+```sh
+VIDEORC_X_OAUTH1_CONSUMER_KEY=...
+VIDEORC_X_OAUTH1_CONSUMER_SECRET=...
+VIDEORC_X_OAUTH1_ACCESS_TOKEN=...
+VIDEORC_X_OAUTH1_ACCESS_TOKEN_SECRET=...
+VIDEORC_X_OAUTH1_USER_ID=...
+```
+
+These values are secrets except the numeric user id. They must remain runtime
+configuration, must not be bundled into the renderer, and must not appear in
+support bundles or logs.
 
 OAuth callback URLs (all providers):
 
 - The backend binds a dedicated loopback listener for OAuth callbacks on the first free
   port of `17995`, `27995`, `37995`. Register ALL THREE as callback URLs in each
-  provider's developer portal: `http://127.0.0.1:17995/oauth/callback`,
+  active OAuth provider's developer portal: `http://127.0.0.1:17995/oauth/callback`,
   `http://127.0.0.1:27995/oauth/callback`, `http://127.0.0.1:37995/oauth/callback`.
-  Exact-match providers (X, Twitch) reject anything else; Google accepts any loopback
-  port but registering the fixed set keeps one contract everywhere.
+  Exact-match providers (X, Twitch) reject anything else.
 - `videorc://oauth/callback` is a legacy escape hatch for X only
   (`VIDEORC_OAUTH_X_CALLBACK=app-protocol`). Do not use it by default: X auto-approves
   re-authorization without a user gesture, and browsers block gestureless custom-scheme
@@ -369,7 +385,7 @@ Twitch release blocker:
 - Verify the app requests the scopes used by the backend:
   `channel:manage:broadcast`, `channel:read:stream_key`, and `user:read:chat`.
 
-The backend exposes credential source status to the renderer as `environment`, `bundled`, or `missing`; it never exposes actual client ID or secret values. Before release, open the packaged app's Streaming tab and confirm YouTube, Twitch, and X OAuth rows report either `Bundled default` or the intended runtime override.
+The backend exposes credential source status to the renderer as `environment`, `bundled`, or `missing`; it never exposes actual client ID or secret values. Before release, open the packaged app's Streaming tab and confirm YouTube shows Manual RTMP with the Google approval pause message, while Twitch and X OAuth rows report either `Bundled default` or the intended runtime override.
 
 Before a release candidate, run the redacted provider readiness check:
 
@@ -378,7 +394,10 @@ pnpm smoke:provider-readiness
 pnpm smoke:provider-readiness:strict
 ```
 
-The strict run requires OAuth client IDs, Twitch's runtime client secret, eligible YouTube/Twitch test accounts, and validated X native live partner/API access. See [OAuth Live Smoke Runbook](oauth-live-smoke.md) for the full external acceptance workflow.
+The strict run requires active-provider OAuth client IDs, Twitch's optional runtime client secret
+when using a confidential Twitch app, eligible Twitch test accounts, and
+validated X Livestream OAuth1/API access. See [OAuth Live Smoke Runbook](oauth-live-smoke.md)
+for the full external acceptance workflow.
 
 ## Credential Storage
 
@@ -527,7 +546,7 @@ The release process must make source for the exact FFmpeg archive available besi
 - Confirm the packaged native preview smoke reports `previewTransport = native-surface`
   and `previewSurfaceBacking = cametal-layer`
 - Confirm Streaming tab OAuth credential source badges show bundled defaults or intended overrides
-- Complete the OAuth live smoke runbook for YouTube, Twitch, and X, or record X native access as release-blocking if partner/API access is not available
+- Complete the OAuth live smoke runbook for YouTube, Twitch, and X, or record X native live as release-blocking if OAuth1 credentials or allow-listed API access are not available
 - Confirm FFmpeg unavailable states are visible and non-crashing
 - Record a short MKV using the bundled FFmpeg path
 - Stop recording and confirm the session appears in Library

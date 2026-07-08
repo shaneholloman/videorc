@@ -481,7 +481,7 @@ fn redact_url(text: &str) -> Option<String> {
             &tail[authority_end..]
         ));
     }
-    if text.starts_with("rtmp://") && !text.contains('•') {
+    if (text.starts_with("rtmp://") || text.starts_with("rtmps://")) && !text.contains('•') {
         return Some(format!("{}://<redacted:rtmp-url>", &text[..scheme_end]));
     }
     None
@@ -518,6 +518,8 @@ fn looks_like_inline_secret(token: &str) -> bool {
         || token.starts_with("xoxb-")
         || lower.starts_with("access_token=")
         || lower.starts_with("refresh_token=")
+        || lower.starts_with("token_secret=")
+        || lower.starts_with("chat_token=")
         || lower.starts_with("api_key=")
         || lower.starts_with("stream_key=")
         || lower.starts_with("streamkey=")
@@ -551,8 +553,10 @@ mod tests {
             "streamKey": "abc123",
             "oauthToken": "tok_live",
             "openaiApiKey": "sk-test",
+            "chatToken": "chat-token-value",
             "callbackUrl": "https://user:password@example.test/callback",
-            "streamUrl": "rtmp://127.0.0.1/live/plain-key"
+            "streamUrl": "rtmp://127.0.0.1/live/plain-key",
+            "secureStreamUrl": "rtmps://de.pscp.tv:443/x/plain-key"
         });
         let mut summary = SupportBundleRedactionSummary::default();
 
@@ -561,13 +565,15 @@ mod tests {
         assert_eq!(value["streamKey"], SECRET_REDACTION);
         assert_eq!(value["oauthToken"], SECRET_REDACTION);
         assert_eq!(value["openaiApiKey"], SECRET_REDACTION);
+        assert_eq!(value["chatToken"], SECRET_REDACTION);
         assert_eq!(
             value["callbackUrl"],
             "https://<redacted:credentials>@example.test/callback"
         );
         assert_eq!(value["streamUrl"], "rtmp://<redacted:rtmp-url>");
-        assert_eq!(summary.secret_values, 3);
-        assert_eq!(summary.url_credentials, 2);
+        assert_eq!(value["secureStreamUrl"], "rtmps://<redacted:rtmp-url>");
+        assert_eq!(summary.secret_values, 4);
+        assert_eq!(summary.url_credentials, 3);
     }
 
     #[test]

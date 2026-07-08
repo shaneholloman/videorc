@@ -6,7 +6,7 @@ use crate::streaming::{
     PlatformAccount, PlatformAccountStatus, StreamAuthMode, StreamMetadataDraft, StreamPlatform,
     StreamTargetSettings, StreamingSettings,
 };
-use crate::x_live;
+use crate::{oauth, x_live};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -159,12 +159,29 @@ fn destination_preflight(
         }
         StreamAuthMode::Oauth => {
             let account = account_for_target(target, accounts);
-            match account {
-                Some(account) if account.status == PlatformAccountStatus::Connected => {
+            if let Some(unavailable) = oauth::provider_oauth_unavailable_message(target.platform) {
+                if let Some(account) = account {
                     account_id = Some(account.account_id.clone());
                     account_label = Some(account.account_label.clone());
-                    if target.platform == StreamPlatform::X {
-                        let capability = x_live::x_native_live_capability(Some(account));
+                }
+                ready = false;
+                let issue = unavailable.to_string();
+                message = issue.clone();
+                issues.push(target_issue(
+                    target,
+                    GoLivePreflightIssueSeverity::Error,
+                    issue,
+                ));
+            } else if target.platform == StreamPlatform::X {
+                if let Some(account) = account {
+                    account_id = Some(account.account_id.clone());
+                    account_label = Some(account.account_label.clone());
+                }
+                match x_live::x_native_live_capability(account) {
+                    Ok(capability) if capability.native_available => {
+                        message = capability.message;
+                    }
+                    Ok(capability) => {
                         ready = false;
                         message = capability.message.clone();
                         issues.push(target_issue(
@@ -173,29 +190,47 @@ fn destination_preflight(
                             capability.message,
                         ));
                     }
+                    Err(error) => {
+                        ready = false;
+                        message = error.to_string();
+                        issues.push(target_issue(
+                            target,
+                            GoLivePreflightIssueSeverity::Error,
+                            error.to_string(),
+                        ));
+                    }
                 }
-                Some(account) => {
-                    ready = false;
-                    account_id = Some(account.account_id.clone());
-                    account_label = Some(account.account_label.clone());
-                    let issue = "Connected account needs reconnect before going live.".to_string();
-                    message = issue.clone();
-                    issues.push(target_issue(
-                        target,
-                        GoLivePreflightIssueSeverity::Error,
-                        issue,
-                    ));
-                }
-                None => {
-                    ready = false;
-                    let issue = "OAuth destination needs a connected account before going live."
-                        .to_string();
-                    message = issue.clone();
-                    issues.push(target_issue(
-                        target,
-                        GoLivePreflightIssueSeverity::Error,
-                        issue,
-                    ));
+            } else {
+                match account {
+                    Some(account) if account.status == PlatformAccountStatus::Connected => {
+                        account_id = Some(account.account_id.clone());
+                        account_label = Some(account.account_label.clone());
+                    }
+                    Some(account) => {
+                        ready = false;
+                        account_id = Some(account.account_id.clone());
+                        account_label = Some(account.account_label.clone());
+                        let issue =
+                            "Connected account needs reconnect before going live.".to_string();
+                        message = issue.clone();
+                        issues.push(target_issue(
+                            target,
+                            GoLivePreflightIssueSeverity::Error,
+                            issue,
+                        ));
+                    }
+                    None => {
+                        ready = false;
+                        let issue =
+                            "OAuth destination needs a connected account before going live."
+                                .to_string();
+                        message = issue.clone();
+                        issues.push(target_issue(
+                            target,
+                            GoLivePreflightIssueSeverity::Error,
+                            issue,
+                        ));
+                    }
                 }
             }
         }
@@ -288,7 +323,7 @@ mod tests {
     };
 
     #[test]
-    fn preflight_marks_youtube_twitch_ready_and_x_blocked() {
+    fn preflight_blocks_youtube_oauth_while_twitch_is_ready_and_x_is_blocked() {
         let mut targets = default_stream_targets();
         for target in &mut targets {
             match target.platform {
@@ -323,14 +358,13 @@ mod tests {
 
         assert!(!preflight.valid);
         assert_eq!(preflight.destinations.len(), 3);
-        assert!(
-            preflight
-                .destinations
-                .iter()
-                .find(|destination| destination.platform == StreamPlatform::Youtube)
-                .unwrap()
-                .ready
-        );
+        let youtube = preflight
+            .destinations
+            .iter()
+            .find(|destination| destination.platform == StreamPlatform::Youtube)
+            .unwrap();
+        assert!(!youtube.ready);
+        assert!(youtube.message.contains("Google approval"));
         assert!(
             preflight
                 .destinations
@@ -345,21 +379,23 @@ mod tests {
             .find(|destination| destination.platform == StreamPlatform::X)
             .unwrap();
         assert!(!x.ready);
-        assert!(x.message.contains("partner/API path"));
+        assert!(x.message.contains("OAuth 1.0a"));
         assert!(
             preflight
                 .issues
                 .iter()
                 .any(|issue| issue.platform == Some(StreamPlatform::X))
         );
-        // Chat readiness is reported independently of stream `ready`: X is never chat-capable.
+        assert!(
+            preflight
+                .issues
+                .iter()
+                .any(|issue| issue.platform == Some(StreamPlatform::Youtube))
+        );
+        // Chat readiness is reported independently of stream `ready`: X needs native live
+        // credentials and publish metadata before chat can connect.
         assert!(!x.chat_ready);
-        assert!(x.chat_message.to_lowercase().contains("x comments"));
-        let youtube = preflight
-            .destinations
-            .iter()
-            .find(|destination| destination.platform == StreamPlatform::Youtube)
-            .unwrap();
+        assert!(x.chat_message.to_lowercase().contains("x native live"));
         assert!(!youtube.chat_message.is_empty());
     }
 

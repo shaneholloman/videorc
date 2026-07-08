@@ -67,6 +67,7 @@ import type {
 } from '@/lib/backend'
 import {
   isStreamTargetReady,
+  oauthUnavailableReason,
   streamOutputVideoForTarget,
   streamOutputVideoSettings,
   videoProfileCompatibility
@@ -585,7 +586,8 @@ function DestinationCard({
   const ready = isStreamTargetReady(target)
   const fullUrl = target.urlMode === 'full-url'
   const nativeDestination = target.platform !== 'custom'
-  const oauthMode = nativeDestination && target.authMode === 'oauth'
+  const oauthUnavailableMessage = oauthUnavailableReason(target.platform)
+  const oauthMode = nativeDestination && target.authMode === 'oauth' && !oauthUnavailableMessage
   // While a session is live the runtime status (on air / stopped / skipped) takes
   // over the badge; otherwise it reflects the saved-credential readiness.
   const savedStatusBadge = target.status ? streamTargetStatusBadge(target.status.state) : null
@@ -614,6 +616,11 @@ function DestinationCard({
   useEffect(() => {
     setFullUrlDraft(target.serverUrl)
   }, [target.id, target.serverUrl])
+  useEffect(() => {
+    if (target.authMode === 'oauth' && oauthUnavailableMessage) {
+      onPatch(target.id, { authMode: 'manual-rtmp' })
+    }
+  }, [oauthUnavailableMessage, onPatch, target.authMode, target.id])
 
   const credentialLabel = fullUrl ? 'RTMP URL' : 'stream key'
 
@@ -770,19 +777,28 @@ function DestinationCard({
           {nativeDestination ? (
             <Field>
               <FieldLabel>Auth mode</FieldLabel>
-              <ToggleGroup
-                className="w-full"
-                disabled={disabled}
-                type="single"
-                value={target.authMode}
-                variant="outline"
-                onValueChange={(value) =>
-                  value && onPatch(target.id, { authMode: value as StreamAuthMode })
-                }
-              >
-                <ToggleGroupItem value="oauth">OAuth</ToggleGroupItem>
-                <ToggleGroupItem value="manual-rtmp">Manual RTMP</ToggleGroupItem>
-              </ToggleGroup>
+              {oauthUnavailableMessage ? (
+                <div className="flex flex-col gap-2 rounded-row border bg-muted/30 px-3 py-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                  <span>{oauthUnavailableMessage}</span>
+                  <Badge className="w-fit" variant="outline">
+                    Manual RTMP
+                  </Badge>
+                </div>
+              ) : (
+                <ToggleGroup
+                  className="w-full"
+                  disabled={disabled}
+                  type="single"
+                  value={target.authMode}
+                  variant="outline"
+                  onValueChange={(value) =>
+                    value && onPatch(target.id, { authMode: value as StreamAuthMode })
+                  }
+                >
+                  <ToggleGroupItem value="oauth">OAuth</ToggleGroupItem>
+                  <ToggleGroupItem value="manual-rtmp">Manual RTMP</ToggleGroupItem>
+                </ToggleGroup>
+              )}
             </Field>
           ) : null}
 
@@ -1208,7 +1224,13 @@ function OAuthAccountPanel({
               className="w-fit"
               variant={xNativeCapability?.nativeAvailable ? 'success' : 'warning'}
             >
-              {xNativeCapability?.nativeAvailable ? 'Native ready' : 'Partner API required'}
+              {xNativeCapability?.nativeAvailable
+                ? 'X API ready'
+                : xNativeCapability?.state === 'missing-credentials'
+                  ? 'Credentials needed'
+                  : xNativeCapability?.state === 'account-mismatch'
+                    ? 'Account mismatch'
+                    : 'X API check needed'}
             </Badge>
             <Button
               disabled={disabled || xNativeCapabilityLoading}
@@ -1257,8 +1279,8 @@ function OAuthAccountPanel({
                 Switch to Manual RTMP
               </Button>
               <span className="text-xs text-muted-foreground">
-                Going live on X works today via Media Studio Producer: create an RTMP source at
-                studio.x.com, then paste its RTMP URL and stream key here in Manual RTMP mode.
+                Manual RTMP is still available as an explicit fallback: create an RTMP source in X
+                Producer, then paste its URL and stream key here in Manual RTMP mode.
               </span>
             </div>
           ) : null}

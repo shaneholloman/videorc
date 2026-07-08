@@ -15,25 +15,6 @@ use crate::streaming::{
 };
 
 const OAUTH_STATE_TTL_MINUTES: i64 = 10;
-// The Videorc YouTube OAuth app (OrcDev's Google Cloud project, Desktop-app client).
-// OAuth client IDs are public identifiers — they appear in every consent URL — so
-// shipping one in source is standard for desktop apps. The client SECRET is NOT in
-// source (moved to build-time injection 2026-07-06 ahead of the public repo flip:
-// Google's installed-app docs treat Desktop-client secrets as non-confidential and
-// every shipped binary embeds it anyway, but a literal in a public repo trips
-// credential scanners and risks Google auto-disabling the client). Official release
-// builds compile it in via VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET — release
-// validation fails closed if the artifact lacks it. Dev builds and forks set the
-// runtime VIDEORC_YOUTUBE_CLIENT_SECRET (or bring their own client, per
-// TRADEMARK.md); without one, YouTube connect reports the missing secret instead
-// of failing the token exchange with a bare 401.
-const BUNDLED_YOUTUBE_CLIENT_ID: Option<&str> =
-    match option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID") {
-        Some(bundled) => Some(bundled),
-        None => Some("244529927041-oe9n13ur7lhd1k179ivbj2jfi05b3iia.apps.googleusercontent.com"),
-    };
-const BUNDLED_YOUTUBE_CLIENT_SECRET: Option<&str> =
-    option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET");
 const BUNDLED_TWITCH_CLIENT_ID: Option<&str> = option_env!("VIDEORC_BUNDLED_TWITCH_CLIENT_ID");
 // The Videorc X OAuth app (public Native App client, PKCE — no secret involved).
 // Client IDs are public identifiers; build-time/runtime env still override.
@@ -41,6 +22,14 @@ const BUNDLED_X_CLIENT_ID: Option<&str> = match option_env!("VIDEORC_BUNDLED_X_C
     Some(bundled) => Some(bundled),
     None => Some("S0NBMDhTQll6cGp1am5HUFRySE86MTpjaQ"),
 };
+pub const YOUTUBE_OAUTH_UNAVAILABLE_MESSAGE: &str = "YouTube OAuth is temporarily unavailable while Videorc awaits Google approval. Use Manual RTMP for YouTube for now.";
+
+pub fn provider_oauth_unavailable_message(platform: StreamPlatform) -> Option<&'static str> {
+    match platform {
+        StreamPlatform::Youtube => Some(YOUTUBE_OAUTH_UNAVAILABLE_MESSAGE),
+        StreamPlatform::Twitch | StreamPlatform::X | StreamPlatform::Custom => None,
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct OAuthSessions {
@@ -222,6 +211,9 @@ impl OAuthSessions {
     ) -> Result<OAuthStartResult> {
         if matches!(params.platform, StreamPlatform::Custom) {
             anyhow::bail!("Custom RTMP does not support OAuth.");
+        }
+        if let Some(message) = provider_oauth_unavailable_message(params.platform) {
+            anyhow::bail!("{message}");
         }
         let config = provider_config(params.platform)?;
         let state = Uuid::new_v4().to_string();
@@ -753,24 +745,7 @@ impl OAuthTokenResponse {
 
 fn provider_config(platform: StreamPlatform) -> Result<OAuthProviderConfig> {
     match platform {
-        StreamPlatform::Youtube => Ok(OAuthProviderConfig {
-            authorization_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
-            token_url: "https://oauth2.googleapis.com/token".to_string(),
-            profile_url: "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true"
-                .to_string(),
-            client_id: required_credential("VIDEORC_YOUTUBE_CLIENT_ID", BUNDLED_YOUTUBE_CLIENT_ID)?,
-            client_secret: optional_env("VIDEORC_YOUTUBE_CLIENT_SECRET")
-                .or_else(|| optional_static(BUNDLED_YOUTUBE_CLIENT_SECRET)),
-            scopes: vec![
-                "https://www.googleapis.com/auth/youtube".to_string(),
-                "https://www.googleapis.com/auth/youtube.force-ssl".to_string(),
-            ],
-            extra_params: HashMap::from([
-                ("access_type".to_string(), "offline".to_string()),
-                ("prompt".to_string(), "consent".to_string()),
-            ]),
-            pkce: true,
-        }),
+        StreamPlatform::Youtube => anyhow::bail!("{YOUTUBE_OAUTH_UNAVAILABLE_MESSAGE}"),
         StreamPlatform::Twitch => Ok(OAuthProviderConfig {
             authorization_url: "https://id.twitch.tv/oauth2/authorize".to_string(),
             token_url: "https://id.twitch.tv/oauth2/token".to_string(),
@@ -822,7 +797,7 @@ fn provider_redirect_uri(
             // protocol" rejects 127.0.0.1 forms). localhost resolves to the
             // same loopback listener — the string just has to match the
             // registered URL exactly. The other providers keep 127.0.0.1
-            // (X's registered URLs use it; Google accepts any loopback).
+            // (X's registered URLs use it).
             let host = if matches!(platform, StreamPlatform::Twitch) {
                 "localhost"
             } else {
@@ -860,14 +835,10 @@ pub fn provider_client_id(platform: StreamPlatform) -> Result<String> {
 
 pub fn provider_credential_statuses() -> Vec<OAuthProviderCredentialStatus> {
     vec![
-        provider_credential_status(
+        disabled_provider_credential_status(
             StreamPlatform::Youtube,
-            "VIDEORC_YOUTUBE_CLIENT_ID",
-            "VIDEORC_YOUTUBE_CLIENT_SECRET",
-            BUNDLED_YOUTUBE_CLIENT_ID,
-            BUNDLED_YOUTUBE_CLIENT_SECRET,
+            YOUTUBE_OAUTH_UNAVAILABLE_MESSAGE,
             true,
-            false,
         ),
         // Twitch ships as a PUBLIC client type (dev console setting): no
         // client secret exists, token exchange + refresh use the client id
@@ -892,6 +863,22 @@ pub fn provider_credential_statuses() -> Vec<OAuthProviderCredentialStatus> {
             false,
         ),
     ]
+}
+
+fn disabled_provider_credential_status(
+    platform: StreamPlatform,
+    message: &str,
+    pkce: bool,
+) -> OAuthProviderCredentialStatus {
+    OAuthProviderCredentialStatus {
+        platform,
+        ready: false,
+        client_id_present: false,
+        client_secret_present: false,
+        client_id_source: OAuthCredentialSource::Missing,
+        pkce,
+        message: message.to_string(),
+    }
 }
 
 fn provider_credential_status(
@@ -1168,6 +1155,24 @@ mod tests {
         assert!(!completed.code_present);
     }
 
+    #[tokio::test]
+    async fn youtube_provider_start_is_paused_until_google_approval() {
+        let sessions = OAuthSessions::default();
+
+        let error = sessions
+            .start_provider(
+                OAuthStartProviderParams {
+                    platform: StreamPlatform::Youtube,
+                    redirect_uri: None,
+                },
+                61234,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Google approval"));
+    }
+
     #[test]
     fn provider_redirect_uri_allows_loopback_and_app_protocol_callbacks() {
         assert_eq!(
@@ -1387,11 +1392,13 @@ mod tests {
         let statuses = provider_credential_statuses();
 
         assert_eq!(statuses.len(), 3);
-        assert!(
-            statuses
-                .iter()
-                .any(|status| status.platform == StreamPlatform::Youtube && status.pkce)
-        );
+        let youtube = statuses
+            .iter()
+            .find(|status| status.platform == StreamPlatform::Youtube)
+            .unwrap();
+        assert!(youtube.pkce);
+        assert!(!youtube.ready);
+        assert!(youtube.message.contains("Google approval"));
         assert!(
             statuses
                 .iter()
@@ -1513,10 +1520,10 @@ mod tests {
     #[test]
     fn pkce_provider_status_can_be_ready_without_client_secret() {
         let status = provider_credential_status(
-            StreamPlatform::Youtube,
-            "VIDEORC_TEST_YOUTUBE_CLIENT_ID",
-            "VIDEORC_TEST_YOUTUBE_CLIENT_SECRET",
-            Some("bundled-youtube-client"),
+            StreamPlatform::X,
+            "VIDEORC_TEST_X_CLIENT_ID",
+            "VIDEORC_TEST_X_CLIENT_SECRET",
+            Some("bundled-x-client"),
             None,
             true,
             false,
