@@ -122,6 +122,7 @@ export function StreamingTab(): ReactElement {
     xNativeCapability,
     xNativeCapabilityLoading,
     refreshXNativeCapability,
+    authorizeXLive,
     stopSession
   } = useStudio()
   const streaming = captureConfig.streaming
@@ -231,6 +232,7 @@ export function StreamingTab(): ReactElement {
             onRestorePreviousStreamKey={restorePreviousStreamKey}
             onRefreshYouTubeChannels={refreshYouTubeChannels}
             onRefreshXNativeCapability={refreshXNativeCapability}
+            onAuthorizeXLive={authorizeXLive}
             onSelectYouTubeChannel={selectYouTubeChannel}
           />
         ))}
@@ -561,6 +563,7 @@ function DestinationCard({
   onRestorePreviousStreamKey,
   onRefreshYouTubeChannels,
   onRefreshXNativeCapability,
+  onAuthorizeXLive,
   onSelectYouTubeChannel
 }: {
   target: StreamTargetSettings
@@ -581,6 +584,7 @@ function DestinationCard({
   onRestorePreviousStreamKey: (targetId: string) => Promise<void>
   onRefreshYouTubeChannels: (accountId?: string) => Promise<void>
   onRefreshXNativeCapability: (accountId?: string) => Promise<void>
+  onAuthorizeXLive: () => Promise<void>
   onSelectYouTubeChannel: (channelId: string, accountId?: string) => Promise<void>
 }): ReactElement {
   const ready = isStreamTargetReady(target)
@@ -817,6 +821,7 @@ function DestinationCard({
               onDisconnect={onDisconnect}
               onRefreshYouTubeChannels={onRefreshYouTubeChannels}
               onRefreshXNativeCapability={onRefreshXNativeCapability}
+              onAuthorizeXLive={onAuthorizeXLive}
               onSelectYouTubeChannel={onSelectYouTubeChannel}
               onUseManualRtmp={() => onPatch(target.id, { authMode: 'manual-rtmp' })}
             />
@@ -1082,6 +1087,7 @@ function OAuthAccountPanel({
   onDisconnect,
   onRefreshYouTubeChannels,
   onRefreshXNativeCapability,
+  onAuthorizeXLive,
   onSelectYouTubeChannel,
   onUseManualRtmp
 }: {
@@ -1098,6 +1104,7 @@ function OAuthAccountPanel({
   onDisconnect: (platform: StreamPlatform) => void
   onRefreshYouTubeChannels: (accountId?: string) => Promise<void>
   onRefreshXNativeCapability: (accountId?: string) => Promise<void>
+  onAuthorizeXLive: () => Promise<void>
   onSelectYouTubeChannel: (channelId: string, accountId?: string) => Promise<void>
   onUseManualRtmp: () => void
 }): ReactElement {
@@ -1226,11 +1233,13 @@ function OAuthAccountPanel({
             >
               {xNativeCapability?.nativeAvailable
                 ? 'X API ready'
-                : xNativeCapability?.state === 'missing-credentials'
-                  ? 'Credentials needed'
-                  : xNativeCapability?.state === 'account-mismatch'
-                    ? 'Account mismatch'
-                    : 'X API check needed'}
+                : xNativeCapability?.state === 'needs-authorization'
+                  ? 'Authorization needed'
+                  : xNativeCapability?.state === 'missing-credentials'
+                    ? 'Credentials needed'
+                    : xNativeCapability?.state === 'account-mismatch'
+                      ? 'Account mismatch'
+                      : 'X API check needed'}
             </Badge>
             <Button
               disabled={disabled || xNativeCapabilityLoading}
@@ -1269,6 +1278,23 @@ function OAuthAccountPanel({
           ) : null}
           {xNativeCapability && !xNativeCapability.nativeAvailable ? (
             <div className="flex flex-col gap-1.5">
+              {xNativeCapability.state === 'needs-authorization' ||
+              xNativeCapability.state === 'account-mismatch' ? (
+                <div className="flex flex-col gap-1">
+                  <Button
+                    className="w-fit"
+                    disabled={disabled}
+                    size="sm"
+                    onClick={() => void onAuthorizeXLive()}
+                  >
+                    Authorize X Live
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Opens x.com in the browser to approve live broadcasting for this account. The
+                    token stays in the local secret store.
+                  </span>
+                </div>
+              ) : null}
               <Button
                 className="w-fit"
                 disabled={disabled}

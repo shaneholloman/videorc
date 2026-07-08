@@ -216,7 +216,7 @@ export function formatProviderReadinessMarkdown(result) {
       `- OAuth 1.0a credentials: ${
         oauth1?.ready
           ? 'ready - backend live credential set configured'
-          : `missing - set ${oauth1?.env ?? 'VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY'}=1 only after the redacted VIDEORC_X_OAUTH1_* values are configured`
+          : `missing - set ${oauth1?.env ?? 'VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY'}=1 only after the bundled consumer pair is baked (or VIDEORC_X_OAUTH1_* env values are configured) and Authorize X Live minted a user token`
       }`
     )
     lines.push('')

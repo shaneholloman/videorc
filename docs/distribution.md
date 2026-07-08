@@ -346,20 +346,43 @@ VIDEORC_X_CLIENT_SECRET=...
 ```
 
 Native X Livestream source/broadcast management is not covered by the X OAuth2
-PKCE token. Release and smoke environments that enable first-class X live must
-also provide the backend-only OAuth 1.0a values:
+PKCE token — it signs every request with OAuth 1.0a (consumer pair + per-user
+access token). The credential model has two halves:
 
-```sh
-VIDEORC_X_OAUTH1_CONSUMER_KEY=...
-VIDEORC_X_OAUTH1_CONSUMER_SECRET=...
-VIDEORC_X_OAUTH1_ACCESS_TOKEN=...
-VIDEORC_X_OAUTH1_ACCESS_TOKEN_SECRET=...
-VIDEORC_X_OAUTH1_USER_ID=...
-```
+- **Consumer pair (app-level)**: the allow-listed Videorc X app's API key and
+  secret. Release builds bake them into the backend binary from
+  `~/.videorc-release.env` — the same mechanism as the bundled YouTube client
+  secret:
 
-These values are secrets except the numeric user id. They must remain runtime
-configuration, must not be bundled into the renderer, and must not appear in
-support bundles or logs.
+  ```sh
+  VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_KEY=...
+  VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_SECRET=...
+  pnpm package:backend
+  ```
+
+  Self-hosted builds without baked values set the runtime overrides
+  `VIDEORC_X_OAUTH1_CONSUMER_KEY` / `VIDEORC_X_OAUTH1_CONSUMER_SECRET` instead
+  (both or neither — a partial pair is a hard error).
+
+- **User access token (per-user)**: minted in-app. The Streaming tab's
+  **Authorize X Live** button runs the 3-legged OAuth 1.0a flow (request token
+  → x.com approval in the browser → loopback callback → access token) and
+  stores the token pair in the backend secret store
+  (`platform:x:oauth1:*` refs). Disconnecting the X account deletes it.
+  Smoke rigs and self-hosting can bypass the browser flow with the runtime-only
+  env override (takes precedence over the stored token):
+
+  ```sh
+  VIDEORC_X_OAUTH1_ACCESS_TOKEN=...
+  VIDEORC_X_OAUTH1_ACCESS_TOKEN_SECRET=...
+  VIDEORC_X_OAUTH1_USER_ID=...   # optional; defaults to the token's numeric prefix
+  ```
+
+All of these values are secrets except the numeric user id. They must not be
+bundled into the renderer and must not appear in support bundles or logs; the
+backend surfaces only source labels (`bundled`, `environment`,
+`user-authorized`), never values. The OAuth 1.0a authorize flow uses the same
+loopback callback listener and registered callback URLs as OAuth2 (below).
 
 OAuth callback URLs (all providers):
 

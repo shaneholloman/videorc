@@ -143,6 +143,7 @@ import type {
   VideorcAccountSnapshot,
   XNativeLiveCapability,
   XEndResult,
+  XLiveAuthorizationStart,
   XLiveChatStartParams,
   XPublishResult,
   YouTubeBroadcastTransitionResult,
@@ -521,6 +522,7 @@ export type StudioContextValue = {
   selectYouTubeChannel: (channelId: string, accountId?: string) => Promise<void>
   searchTwitchCategories: (query: string) => Promise<void>
   refreshXNativeCapability: (accountId?: string) => Promise<void>
+  authorizeXLive: () => Promise<void>
   refreshStreamMetadata: () => Promise<void>
   saveStreamMetadataDraft: () => Promise<void>
   cancelGoLiveConfirmation: () => void
@@ -2153,6 +2155,29 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     void refreshXNativeCapability(account.accountId)
   }, [platformAccounts, refreshXNativeCapability])
 
+  const authorizeXLive = useCallback(async () => {
+    if (!client || wsStatus !== 'connected') {
+      toast.error('Backend socket is not connected.')
+      return
+    }
+    if (!window.videorc?.openOAuthUrl) {
+      toast.error('OAuth browser launch is unavailable outside Electron.')
+      return
+    }
+
+    try {
+      setLastError(null)
+      const result = await client.request<XLiveAuthorizationStart>(
+        'streamTargets.x.startLiveAuthorization',
+        {}
+      )
+      await window.videorc.openOAuthUrl(result.authUrl)
+      toast.success('Approve Videorc on x.com to enable X Live.')
+    } catch (error) {
+      reportError(error)
+    }
+  }, [client, reportError, wsStatus])
+
   const refreshStreamMetadataForClient = useCallback(async (activeClient: BackendClient | null) => {
     if (!activeClient) {
       setStreamMetadataDraft(null)
@@ -2532,14 +2557,24 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }),
       nextClient.on('platformAccounts.oauth.callback', (payload) => {
         const result = payload as {
+          platform?: string
           status?: string
           message?: string
           accountConnected?: boolean
+          tokenStored?: boolean
         }
         if (result.status === 'success' && result.accountConnected) {
           void refreshPlatformAccountsForClient(nextClient)
           void validatePlatformAccountsForClient(nextClient)
           toast.success('Account connected.')
+        } else if (result.status === 'success' && result.platform === 'x' && result.tokenStored) {
+          // Authorize X Live (OAuth 1.0a) landed a token in the secret store;
+          // re-check the capability so Ready appears without a manual refresh.
+          toast.success(result.message ?? 'X live authorization complete.')
+          void nextClient
+            .request<XNativeLiveCapability>('streamTargets.x.capability', {})
+            .then(setXNativeCapability)
+            .catch(() => undefined)
         } else if (result.status === 'success') {
           toast.success('OAuth callback received.')
         } else {
@@ -4460,20 +4495,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           params
         )
         await window.videorc.openOAuthUrl(result.authUrl)
-        // Exact-match providers reject unregistered callback URLs with a vague
-        // page ("Something went wrong"); surface the exact URI to register so
-        // the user can fix the portal without guessing.
-        if (platform === 'x' && result.redirectUri.startsWith('http://127.0.0.1')) {
-          toast.success('OAuth browser opened.', {
-            description:
-              `If X shows "Something went wrong", add ${result.redirectUri} ` +
-              '(plus the 27995 and 37995 port variants) to the callback URLs of ' +
-              'the X developer app — X requires an exact match, so use http and 127.0.0.1, not localhost.',
-            duration: 15000
-          })
-        } else {
-          toast.success('OAuth browser opened.')
-        }
+        // Callback-URL registration hints live in docs/distribution.md — they
+        // are developer-portal instructions, not something an end user can act
+        // on, so the toast stays quiet.
+        toast.success('OAuth browser opened.')
       } catch (error) {
         reportError(error)
       }
@@ -6107,6 +6132,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       selectYouTubeChannel,
       searchTwitchCategories,
       refreshXNativeCapability,
+      authorizeXLive,
       refreshStreamMetadata,
       saveStreamMetadataDraft,
       cancelGoLiveConfirmation,
@@ -6280,6 +6306,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       selectYouTubeChannel,
       searchTwitchCategories,
       refreshXNativeCapability,
+      authorizeXLive,
       refreshStreamMetadata,
       saveStreamMetadataDraft,
       cancelGoLiveConfirmation,

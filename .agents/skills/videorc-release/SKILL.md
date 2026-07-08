@@ -20,6 +20,11 @@ Keep this skill thin: point there, don't duplicate it.
   compiled into videorc-backend at build time (the secret is NOT in source since
   the repo went public). `release:validate:macos` fails closed if the built
   binary lacks it.
+- `~/.videorc-release.env` also holds `VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_KEY` +
+  `VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_SECRET` — the allow-listed X Livestream
+  app's OAuth 1.0a consumer pair, compiled into videorc-backend at build time.
+  Without them, users see "Credentials needed" instead of Authorize X Live and
+  native X live is dead in the release.
 - Developer ID cert in the keychain (`security find-identity -v -p codesigning`
   → "Uros Miric (C2PA37RB58)"). It signs directly; no `CSC_LINK` needed.
 - R2 write creds in `~/projects/videorcweb/.env` (`VIDEORC_DOWNLOAD_S3_*`).

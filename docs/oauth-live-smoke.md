@@ -162,14 +162,19 @@ VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS=1
 ```
 
 The X developer app must register the three fixed loopback callback URLs listed above
-(X matches redirect URIs exactly, port included). X uses PKCE in Videorc, so
-`VIDEORC_X_CLIENT_SECRET` is optional for the existing OAuth2 profile flow. Native
-X Livestream source/broadcast management is separate: it requires the backend
-OAuth 1.0a credential set above. The native live check should only be marked
-ready when the allow-listed app and broadcast account have validated source,
-ingest, publish, end, and redacted-diagnostics behavior. If OAuth1 credentials
-are not configured, leave `VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY` unset and
-keep X OAuth/native blocked with explicit manual RTMP still available.
+(X matches redirect URIs exactly, port included) — the OAuth 1.0a "Authorize X
+Live" flow and the OAuth2 profile flow share the same callback list. X uses PKCE
+in Videorc, so `VIDEORC_X_CLIENT_SECRET` is optional for the existing OAuth2
+profile flow. Native X Livestream source/broadcast management is separate: it
+signs with OAuth 1.0a. End users mint their own token through Authorize X Live
+(Streaming tab) against the consumer pair bundled into release builds; the
+`VIDEORC_X_OAUTH1_ACCESS_TOKEN*` env values above are a smoke/self-host
+override that bypasses the in-app flow. The native live check should only be
+marked ready when the allow-listed app and broadcast account have validated
+source, ingest, publish, end, and redacted-diagnostics behavior. If neither a
+bundled consumer pair nor OAuth1 env credentials are configured, leave
+`VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY` unset and keep X OAuth/native blocked
+with explicit manual RTMP still available.
 
 ## YouTube Manual RTMP Acceptance
 
@@ -222,8 +227,11 @@ either prepares/publishes through the API or fails with diagnostics.
 If native X Livestream API access is available:
 
 1. Record that the X app is allow-listed and the account can broadcast.
-2. Launch the packaged release candidate with the redacted `VIDEORC_X_OAUTH1_*`
-   values available to the backend.
+2. Launch the packaged release candidate (consumer pair bundled at build time).
+   Confirm `streamTargets.x.capability` reports `needs-authorization`, run
+   Authorize X Live from the Streaming tab, and approve in the browser.
+   (Smoke override: exporting the redacted `VIDEORC_X_OAUTH1_*` env values
+   skips the browser flow.)
 3. Confirm `streamTargets.x.capability` reports `ready`.
 4. Set title and description.
 5. Enable the X OAuth/native destination.

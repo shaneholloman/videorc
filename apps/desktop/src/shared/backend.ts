@@ -778,9 +778,17 @@ export interface PreparedTwitchBroadcast {
 
 export type XNativeLiveCapabilityState =
   | 'missing-credentials'
+  | 'needs-authorization'
   | 'ready'
   | 'account-mismatch'
   | 'api-error'
+
+/** Result of `streamTargets.x.startLiveAuthorization` — the 3-legged OAuth 1.0a browser flow. */
+export interface XLiveAuthorizationStart {
+  authUrl: string
+  redirectUri: string
+  expiresAt: string
+}
 
 export interface XNativeLiveCapabilityParams {
   accountId?: string

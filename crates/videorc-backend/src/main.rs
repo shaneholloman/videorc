@@ -53,6 +53,7 @@ mod videorc_api;
 mod viewer_stats;
 mod x_chat;
 mod x_live;
+mod x_oauth1;
 mod youtube;
 mod youtube_chat;
 
@@ -399,13 +400,21 @@ struct WsQuery {
     max_width: Option<u32>,
 }
 
+// No rename_all here: these are the providers' own wire names. OAuth
+// providers send snake_case query params (`error_description`,
+// `oauth_token`, `oauth_verifier`) — camelCasing them silently drops the
+// values to None.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct OAuthCallbackQuery {
-    state: String,
+    // OAuth2 providers echo `state`; OAuth 1.0a (X Live) callbacks instead
+    // carry `oauth_token` + `oauth_verifier` (or `denied` on cancel).
+    state: Option<String>,
     code: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
+    oauth_token: Option<String>,
+    oauth_verifier: Option<String>,
+    denied: Option<String>,
 }
 
 async fn health_handler(State(state): State<AppState>) -> Json<BackendHealth> {
@@ -588,16 +597,26 @@ async fn oauth_callback_handler(
     State(state): State<AppState>,
     Query(query): Query<OAuthCallbackQuery>,
 ) -> impl IntoResponse {
-    let result = complete_oauth_callback(
-        &state,
-        OAuthCompleteParams {
-            state: query.state,
-            code: query.code,
-            error: query.error,
-            error_description: query.error_description,
-        },
-    )
-    .await;
+    let result = if let Some(state_param) = query.state {
+        complete_oauth_callback(
+            &state,
+            OAuthCompleteParams {
+                state: state_param,
+                code: query.code,
+                error: query.error,
+                error_description: query.error_description,
+            },
+        )
+        .await
+    } else {
+        complete_x_oauth1_callback(
+            &state,
+            query.oauth_token,
+            query.oauth_verifier,
+            query.denied,
+        )
+        .await
+    };
     state.emit_event("platformAccounts.oauth.callback", result.clone());
 
     let title = match result.status {
@@ -649,6 +668,96 @@ async fn complete_oauth_callback(
         Err(error) => {
             result.status = oauth::OAuthCallbackStatus::Failed;
             result.message = Some(format!("OAuth token exchange failed: {error}"));
+        }
+    }
+
+    result
+}
+
+/// Completes the X Live 3-legged OAuth 1.0a callback: exchanges the verifier
+/// for the user's access token pair and stores it in the secret store. The
+/// result rides the same `platformAccounts.oauth.callback` event as OAuth2 so
+/// the renderer refresh path is shared.
+async fn complete_x_oauth1_callback(
+    state: &AppState,
+    oauth_token: Option<String>,
+    oauth_verifier: Option<String>,
+    denied: Option<String>,
+) -> oauth::OAuthCallbackResult {
+    let received_at = chrono::Utc::now().to_rfc3339();
+    let mut result = oauth::OAuthCallbackResult {
+        platform: Some(StreamPlatform::X),
+        state: String::new(),
+        status: oauth::OAuthCallbackStatus::Failed,
+        code_present: false,
+        error: None,
+        message: None,
+        token_stored: false,
+        account_connected: false,
+        received_at,
+    };
+
+    if let Some(denied_token) = denied {
+        state.x_oauth1.deny(&denied_token).await;
+        result.error = Some("access_denied".to_string());
+        result.message = Some("X live authorization was denied.".to_string());
+        return result;
+    }
+    let (Some(oauth_token), Some(oauth_verifier)) = (oauth_token, oauth_verifier) else {
+        result.status = oauth::OAuthCallbackStatus::UnknownState;
+        result.message =
+            Some("OAuth callback did not include a state or an X OAuth 1.0a token.".to_string());
+        return result;
+    };
+    result.code_present = true;
+
+    match state
+        .x_oauth1
+        .complete(&oauth_token, &oauth_verifier, &reqwest::Client::new())
+        .await
+    {
+        Ok(token) => {
+            let stored = secrets::put_secret(
+                x_live::X_OAUTH1_ACCESS_TOKEN_SECRET_REF,
+                &token.access_token,
+            )
+            .and_then(|()| {
+                secrets::put_secret(
+                    x_live::X_OAUTH1_TOKEN_SECRET_SECRET_REF,
+                    &token.access_token_secret,
+                )
+            })
+            .and_then(|()| match token.screen_name.as_deref() {
+                Some(handle) => secrets::put_secret(x_live::X_OAUTH1_HANDLE_SECRET_REF, handle),
+                None => secrets::delete_secret(x_live::X_OAUTH1_HANDLE_SECRET_REF),
+            });
+            match stored {
+                Ok(()) => {
+                    result.status = oauth::OAuthCallbackStatus::Success;
+                    result.token_stored = true;
+                    result.message = Some(format!(
+                        "X live authorization complete{}.",
+                        token
+                            .screen_name
+                            .as_deref()
+                            .map(|handle| format!(" for {handle}"))
+                            .unwrap_or_default()
+                    ));
+                }
+                Err(error) => {
+                    result.message =
+                        Some(format!("Could not store the X live access token: {error}"));
+                }
+            }
+        }
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("expired") {
+                result.status = oauth::OAuthCallbackStatus::Expired;
+            } else if message.contains("not pending") {
+                result.status = oauth::OAuthCallbackStatus::UnknownState;
+            }
+            result.message = Some(format!("X live authorization failed: {message}"));
         }
     }
 
@@ -1566,6 +1675,24 @@ fn x_native_live_capability(
     x_live::x_native_live_capability(account)
 }
 
+/// Kicks off the in-app "Authorize X Live" browser flow (3-legged OAuth
+/// 1.0a). The callback lands on the shared loopback OAuth listener.
+async fn start_x_live_authorization(
+    state: &AppState,
+) -> anyhow::Result<x_oauth1::XOauth1StartResult> {
+    let consumer = x_live::x_oauth1_consumer()?.context(
+        "This build has no X Livestream consumer credentials. Release builds bundle them; self-hosted builds set VIDEORC_X_OAUTH1_CONSUMER_KEY and VIDEORC_X_OAUTH1_CONSUMER_SECRET.",
+    )?;
+    let callback_url = format!(
+        "http://127.0.0.1:{}/oauth/callback",
+        state.oauth_redirect_port()
+    );
+    state
+        .x_oauth1
+        .start(consumer, &callback_url, &reqwest::Client::new(), None)
+        .await
+}
+
 async fn prepare_x_native_live(
     state: &AppState,
     params: XPrepareParams,
@@ -1579,8 +1706,8 @@ async fn prepare_x_native_live(
         },
     )?;
     x_live::ensure_x_native_live_available(&capability)?;
-    let credentials = x_live::x_livestream_credentials_from_env()?
-        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
+    let credentials = x_live::x_livestream_credentials()?
+        .context("X Livestream OAuth 1.0a credentials are not available. Run Authorize X Live from the Streaming tab.")?;
     let prepared = x_live::prepare_x_stream_source(
         XPrepareSourceRequest {
             credentials: credentials.clone(),
@@ -1642,8 +1769,8 @@ async fn publish_x_native_live(
     let capability = x_live::x_native_live_capability(account)?;
     x_live::ensure_x_native_live_available(&capability)?;
     let metadata = state.database.stream_metadata_draft()?;
-    let credentials = x_live::x_livestream_credentials_from_env()?
-        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
+    let credentials = x_live::x_livestream_credentials()?
+        .context("X Livestream OAuth 1.0a credentials are not available. Run Authorize X Live from the Streaming tab.")?;
     x_live::publish_x_broadcast(
         XPublishRequest {
             credentials,
@@ -1668,8 +1795,8 @@ async fn end_x_native_live(state: &AppState, params: XEndParams) -> anyhow::Resu
     let account = x_live::select_x_account(&accounts, params.account_id.as_deref())?;
     let capability = x_live::x_native_live_capability(account)?;
     x_live::ensure_x_native_live_available(&capability)?;
-    let credentials = x_live::x_livestream_credentials_from_env()?
-        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
+    let credentials = x_live::x_livestream_credentials()?
+        .context("X Livestream OAuth 1.0a credentials are not available. Run Authorize X Live from the Streaming tab.")?;
     x_live::end_x_broadcast(
         XEndRequest {
             credentials,
@@ -2818,6 +2945,25 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             {
                 Ok(params) => match state.database.disconnect_platform_account(params.platform) {
                     Ok(account) => {
+                        if params.platform == StreamPlatform::X {
+                            // Disconnecting X revokes the local live authorization
+                            // too — the OAuth 1.0a token pair must not outlive the
+                            // account it belongs to.
+                            for secret_ref in [
+                                x_live::X_OAUTH1_ACCESS_TOKEN_SECRET_REF,
+                                x_live::X_OAUTH1_TOKEN_SECRET_SECRET_REF,
+                                x_live::X_OAUTH1_HANDLE_SECRET_REF,
+                            ] {
+                                if let Err(error) = secrets::delete_secret(secret_ref) {
+                                    state.emit_log(
+                                        "warn",
+                                        format!(
+                                            "Could not delete X live secret {secret_ref}: {error}"
+                                        ),
+                                    );
+                                }
+                            }
+                        }
                         if let Ok(accounts) = state.database.list_platform_accounts() {
                             state.emit_event("platformAccounts.changed", accounts);
                         }
@@ -3064,6 +3210,12 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 }
             }
         }
+        "streamTargets.x.startLiveAuthorization" => match start_x_live_authorization(state).await {
+            Ok(result) => ServerResponse::ok(command.id, result),
+            Err(error) => {
+                ServerResponse::error(command.id, "x-live-authorization-failed", error.to_string())
+            }
+        },
         "streamTargets.x.prepare" => {
             match serde_json::from_value::<XPrepareParams>(command.params) {
                 Ok(params) => match prepare_x_native_live(state, params).await {
@@ -3605,6 +3757,33 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tokio::sync::broadcast;
+
+    // Regression: OAuthCallbackQuery once carried rename_all = "camelCase",
+    // which silently dropped the snake_case params providers actually send
+    // (oauth_token/oauth_verifier from X's OAuth 1.0a redirect landed as None
+    // and every Authorize X Live ended in "state not found").
+    #[tokio::test]
+    async fn oauth_callback_query_parses_provider_snake_case_params() {
+        use axum::extract::FromRequestParts;
+
+        let request = axum::http::Request::builder()
+            .uri(
+                "/oauth/callback?oauth_token=req-token&oauth_verifier=verifier-1&denied=denied-token&error_description=denied%20by%20user",
+            )
+            .body(())
+            .unwrap();
+        let (mut parts, _) = request.into_parts();
+        let Query(query) = Query::<OAuthCallbackQuery>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+
+        assert_eq!(query.oauth_token.as_deref(), Some("req-token"));
+        assert_eq!(query.oauth_verifier.as_deref(), Some("verifier-1"));
+        assert_eq!(query.denied.as_deref(), Some("denied-token"));
+        assert_eq!(query.error_description.as_deref(), Some("denied by user"));
+        assert_eq!(query.state, None);
+        assert_eq!(query.code, None);
+    }
 
     #[test]
     fn response_shape_omits_empty_error() {

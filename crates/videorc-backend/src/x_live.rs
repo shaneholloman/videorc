@@ -23,6 +23,27 @@ const DEFAULT_SOURCE_NAME: &str = "Videorc Primary Encoder";
 const DEFAULT_LOCALE: &str = "en";
 const DEFAULT_CHAT_OPTION: u8 = 2;
 
+// Build-time defaults for the Videorc X OAuth 1.0a consumer pair (the
+// allow-listed Livestream app's API key + secret). Injected from
+// ~/.videorc-release.env at release build time — the same mechanism as the
+// bundled YouTube client secret — never hardcoded in source. Runtime env
+// values still override for self-hosted apps.
+const BUNDLED_X_OAUTH1_CONSUMER_KEY: Option<&str> =
+    option_env!("VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_KEY");
+const BUNDLED_X_OAUTH1_CONSUMER_SECRET: Option<&str> =
+    option_env!("VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_SECRET");
+
+// Secret-store refs for the per-user OAuth 1.0a token minted by the in-app
+// "Authorize X Live" flow. The handle ref is display metadata (@screen_name),
+// kept beside the token so disconnect wipes all three together.
+pub const X_OAUTH1_ACCESS_TOKEN_SECRET_REF: &str = "platform:x:oauth1:access-token";
+pub const X_OAUTH1_TOKEN_SECRET_SECRET_REF: &str = "platform:x:oauth1:token-secret";
+pub const X_OAUTH1_HANDLE_SECRET_REF: &str = "platform:x:oauth1:handle";
+
+/// Reads a stored secret; `Ok(None)` means "not stored". Injected so unit
+/// tests never touch the real secret store.
+pub type SecretReader<'a> = &'a dyn Fn(&str) -> Result<Option<String>>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct XNativeLiveCapabilityParams {
@@ -69,7 +90,12 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum XNativeLiveCapabilityState {
+    /// This build has no OAuth 1.0a consumer credentials at all (self-hosted
+    /// build without env configuration).
     MissingCredentials,
+    /// The consumer pair is present but no user has authorized X Live yet —
+    /// the renderer offers the "Authorize X Live" browser flow.
+    NeedsAuthorization,
     Ready,
     AccountMismatch,
     ApiError,
@@ -248,32 +274,69 @@ struct XBroadcast {
     tweet_error: Option<String>,
 }
 
-pub fn x_livestream_credentials_from_env() -> Result<Option<XLivestreamCredentials>> {
-    let consumer_key = optional_env_any(&["VIDEORC_X_OAUTH1_CONSUMER_KEY", "X_CONSUMER_KEY"]);
-    let consumer_secret =
-        optional_env_any(&["VIDEORC_X_OAUTH1_CONSUMER_SECRET", "X_CONSUMER_SECRET"]);
+/// The application-level OAuth 1.0a consumer pair. Runtime env wins, then the
+/// bundled release default. `Ok(None)` means this build cannot sign X
+/// Livestream requests at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XOauth1Consumer {
+    pub key: String,
+    pub secret: String,
+    /// "environment" or "bundled" — surfaced in diagnostics, never the values.
+    pub source: &'static str,
+}
+
+pub fn x_oauth1_consumer() -> Result<Option<XOauth1Consumer>> {
+    let key = optional_env_any(&["VIDEORC_X_OAUTH1_CONSUMER_KEY", "X_CONSUMER_KEY"]);
+    let secret = optional_env_any(&["VIDEORC_X_OAUTH1_CONSUMER_SECRET", "X_CONSUMER_SECRET"]);
+    match (key, secret) {
+        (Some(key), Some(secret)) => Ok(Some(XOauth1Consumer {
+            key,
+            secret,
+            source: "environment",
+        })),
+        (None, None) => Ok(bundled_x_oauth1_consumer()),
+        _ => anyhow::bail!(
+            "X Livestream OAuth 1.0a consumer configuration is incomplete. Set both VIDEORC_X_OAUTH1_CONSUMER_KEY and VIDEORC_X_OAUTH1_CONSUMER_SECRET, or neither."
+        ),
+    }
+}
+
+fn bundled_x_oauth1_consumer() -> Option<XOauth1Consumer> {
+    let key = BUNDLED_X_OAUTH1_CONSUMER_KEY
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let secret = BUNDLED_X_OAUTH1_CONSUMER_SECRET
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(XOauth1Consumer {
+        key: key.to_string(),
+        secret: secret.to_string(),
+        source: "bundled",
+    })
+}
+
+/// Full env-token override (smoke rigs and self-hosting): the user access
+/// token pair comes straight from env. Setting either token var claims this
+/// path, so a partial set is an explicit error instead of a silent fallback
+/// to the in-app authorization token.
+fn x_livestream_env_token_credentials() -> Result<Option<XLivestreamCredentials>> {
     let access_token = optional_env_any(&["VIDEORC_X_OAUTH1_ACCESS_TOKEN", "X_ACCESS_TOKEN"]);
     let access_token_secret = optional_env_any(&[
         "VIDEORC_X_OAUTH1_ACCESS_TOKEN_SECRET",
         "X_ACCESS_TOKEN_SECRET",
     ]);
-
-    let present = [
-        consumer_key.is_some(),
-        consumer_secret.is_some(),
-        access_token.is_some(),
-        access_token_secret.is_some(),
-    ];
-    if present.iter().all(|value| !*value) {
+    if access_token.is_none() && access_token_secret.is_none() {
         return Ok(None);
     }
-    if !present.iter().all(|value| *value) {
+    let (Some(access_token), Some(access_token_secret)) = (access_token, access_token_secret)
+    else {
         anyhow::bail!(
-            "X Livestream OAuth 1.0a credentials are incomplete. Set VIDEORC_X_OAUTH1_CONSUMER_KEY, VIDEORC_X_OAUTH1_CONSUMER_SECRET, VIDEORC_X_OAUTH1_ACCESS_TOKEN, and VIDEORC_X_OAUTH1_ACCESS_TOKEN_SECRET."
+            "X Livestream OAuth 1.0a env credentials are incomplete. Set both VIDEORC_X_OAUTH1_ACCESS_TOKEN and VIDEORC_X_OAUTH1_ACCESS_TOKEN_SECRET."
         );
-    }
-
-    let access_token = access_token.expect("presence checked above");
+    };
+    let consumer = x_oauth1_consumer()?.context(
+        "X Livestream OAuth 1.0a access token env vars are set, but no consumer key/secret is configured. Set VIDEORC_X_OAUTH1_CONSUMER_KEY and VIDEORC_X_OAUTH1_CONSUMER_SECRET.",
+    )?;
     let user_id = optional_env_any(&["VIDEORC_X_OAUTH1_USER_ID", "X_USER_ID"])
         .or_else(|| access_token.split_once('-').map(|(prefix, _)| prefix.to_string()))
         .map(|value| value.trim().to_string())
@@ -286,13 +349,13 @@ pub fn x_livestream_credentials_from_env() -> Result<Option<XLivestreamCredentia
     }
 
     Ok(Some(XLivestreamCredentials {
-        consumer_key: consumer_key.expect("presence checked above"),
-        consumer_secret: consumer_secret.expect("presence checked above"),
+        consumer_key: consumer.key,
+        consumer_secret: consumer.secret,
         access_token,
-        access_token_secret: access_token_secret.expect("presence checked above"),
+        access_token_secret,
         user_id,
         account_label: optional_env_any(&["VIDEORC_X_ACCOUNT_LABEL", "X_ACCOUNT_LABEL"]),
-        credential_source: if std::env::var("VIDEORC_X_OAUTH1_CONSUMER_KEY").is_ok() {
+        credential_source: if std::env::var("VIDEORC_X_OAUTH1_ACCESS_TOKEN").is_ok() {
             "videorc-env".to_string()
         } else {
             "x-env".to_string()
@@ -300,11 +363,84 @@ pub fn x_livestream_credentials_from_env() -> Result<Option<XLivestreamCredentia
     }))
 }
 
+/// Resolves the signing credentials for X Livestream calls: env token
+/// override first, then the per-user token minted by the in-app "Authorize X
+/// Live" flow (consumer from env/bundled + token from the secret store).
+pub fn x_livestream_credentials() -> Result<Option<XLivestreamCredentials>> {
+    x_livestream_credentials_with(&crate::secrets::try_get_secret)
+}
+
+pub fn x_livestream_credentials_with(
+    read_secret: SecretReader<'_>,
+) -> Result<Option<XLivestreamCredentials>> {
+    if let Some(credentials) = x_livestream_env_token_credentials()? {
+        return Ok(Some(credentials));
+    }
+    let Some(consumer) = x_oauth1_consumer()? else {
+        return Ok(None);
+    };
+    let Some(access_token) = read_secret(X_OAUTH1_ACCESS_TOKEN_SECRET_REF)? else {
+        return Ok(None);
+    };
+    let Some(access_token_secret) = read_secret(X_OAUTH1_TOKEN_SECRET_SECRET_REF)? else {
+        return Ok(None);
+    };
+    // X access tokens are "<numeric user id>-<random>"; the Livestream paths
+    // need that user id and reject mismatches with HTTP 400.
+    let user_id = access_token
+        .split_once('-')
+        .map(|(prefix, _)| prefix.trim().to_string())
+        .filter(|value| {
+            !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+        })
+        .context(
+            "The stored X Live access token is malformed (expected a numeric user id prefix). Re-run Authorize X Live.",
+        )?;
+    let account_label = read_secret(X_OAUTH1_HANDLE_SECRET_REF)?;
+    Ok(Some(XLivestreamCredentials {
+        consumer_key: consumer.key,
+        consumer_secret: consumer.secret,
+        access_token,
+        access_token_secret,
+        user_id,
+        account_label,
+        credential_source: "user-authorized".to_string(),
+    }))
+}
+
 pub fn x_native_live_capability(
     account: Option<&PlatformAccount>,
 ) -> Result<XNativeLiveCapability> {
-    let credentials = x_livestream_credentials_from_env()?;
+    x_native_live_capability_with(account, &crate::secrets::try_get_secret)
+}
+
+pub fn x_native_live_capability_with(
+    account: Option<&PlatformAccount>,
+    read_secret: SecretReader<'_>,
+) -> Result<XNativeLiveCapability> {
+    let consumer = x_oauth1_consumer()?;
+    let credentials = x_livestream_credentials_with(read_secret)?;
     let Some(credentials) = credentials else {
+        if let Some(consumer) = consumer {
+            return Ok(XNativeLiveCapability {
+                platform: StreamPlatform::X,
+                state: XNativeLiveCapabilityState::NeedsAuthorization,
+                native_available: false,
+                manual_rtmp_available: true,
+                oauth_connected: account.is_some(),
+                account_id: account.map(|account| account.account_id.clone()),
+                account_label: account.map(|account| account.account_label.clone()),
+                credential_source: Some(format!("consumer-{}", consumer.source)),
+                message: "Authorize X Live to let Videorc create stream sources and broadcasts on your X account.".to_string(),
+                evidence: vec![
+                    "X Livestream management endpoints need a per-user OAuth 1.0a token; the OAuth2 sign-in used for chat cannot mint one.".to_string(),
+                    "Authorize X Live opens x.com in the browser; the resulting token is stored only in the local secret store.".to_string(),
+                    "Manual RTMP remains available only when the user explicitly chooses Manual RTMP.".to_string(),
+                ],
+                docs_url: X_LIVESTREAM_DOCS_URL.to_string(),
+                api_overview_url: X_API_OVERVIEW_URL.to_string(),
+            });
+        }
         return Ok(XNativeLiveCapability {
             platform: StreamPlatform::X,
             state: XNativeLiveCapabilityState::MissingCredentials,
@@ -314,10 +450,10 @@ pub fn x_native_live_capability(
             account_id: account.map(|account| account.account_id.clone()),
             account_label: account.map(|account| account.account_label.clone()),
             credential_source: None,
-            message: "X Livestream API access is approved, but OAuth 1.0a live credentials are not configured on this build.".to_string(),
+            message: "X Livestream API access is approved, but this build has no X OAuth 1.0a consumer credentials.".to_string(),
             evidence: vec![
+                "Release builds bundle the Videorc consumer key/secret at build time; self-hosted builds set VIDEORC_X_OAUTH1_CONSUMER_KEY and VIDEORC_X_OAUTH1_CONSUMER_SECRET.".to_string(),
                 "X Livestream management endpoints require OAuth 1.0a user-context credentials, not the existing OAuth2 PKCE token.".to_string(),
-                "Set the VIDEORC_X_OAUTH1_* environment variables in the release/smoke environment to enable native source and broadcast creation.".to_string(),
                 "Manual RTMP remains available only when the user explicitly chooses Manual RTMP.".to_string(),
             ],
             docs_url: X_LIVESTREAM_DOCS_URL.to_string(),
@@ -338,10 +474,10 @@ pub fn x_native_live_capability(
             account_id: Some(account.account_id.clone()),
             account_label: Some(account.account_label.clone()),
             credential_source: Some(credentials.credential_source),
-            message: "Connected X account does not match the configured X Livestream OAuth 1.0a user id.".to_string(),
+            message: "Connected X account does not match the account that authorized X Live.".to_string(),
             evidence: vec![
                 "X rejects Livestream requests when the OAuth 1.0a token user id differs from the :user_id path.".to_string(),
-                "Reconnect the matching X account or update the configured OAuth 1.0a credentials.".to_string(),
+                "Re-run Authorize X Live signed in as the connected X account, or reconnect the matching account.".to_string(),
             ],
             docs_url: X_LIVESTREAM_DOCS_URL.to_string(),
             api_overview_url: X_API_OVERVIEW_URL.to_string(),
@@ -785,57 +921,81 @@ pub fn oauth1_authorization_header(
     nonce: &str,
     timestamp: u64,
 ) -> Result<String> {
-    let parsed = Url::parse(url).context("OAuth 1.0a request URL is invalid.")?;
+    oauth1_signed_header(&Oauth1SigningInputs {
+        method,
+        url,
+        consumer_key: &credentials.consumer_key,
+        consumer_secret: &credentials.consumer_secret,
+        token: Some((&credentials.access_token, &credentials.access_token_secret)),
+        extra_oauth_params: &[],
+        nonce,
+        timestamp,
+    })
+}
+
+/// One OAuth 1.0a HMAC-SHA1 signature. `token` is absent for the
+/// request-token leg of the 3-legged flow (the signing key then ends in a
+/// bare `&`); `extra_oauth_params` carries protocol params such as
+/// `oauth_callback` and `oauth_verifier` that belong in both the signature
+/// base string and the Authorization header.
+pub(crate) struct Oauth1SigningInputs<'a> {
+    pub method: &'a str,
+    pub url: &'a str,
+    pub consumer_key: &'a str,
+    pub consumer_secret: &'a str,
+    pub token: Option<(&'a str, &'a str)>,
+    pub extra_oauth_params: &'a [(&'a str, &'a str)],
+    pub nonce: &'a str,
+    pub timestamp: u64,
+}
+
+pub(crate) fn oauth1_signed_header(inputs: &Oauth1SigningInputs<'_>) -> Result<String> {
+    let parsed = Url::parse(inputs.url).context("OAuth 1.0a request URL is invalid.")?;
     let base_url = oauth_base_url(&parsed);
-    let mut params = vec![
+    let mut oauth_params = vec![
         (
             "oauth_consumer_key".to_string(),
-            credentials.consumer_key.clone(),
+            inputs.consumer_key.to_string(),
         ),
-        ("oauth_nonce".to_string(), nonce.to_string()),
+        ("oauth_nonce".to_string(), inputs.nonce.to_string()),
         (
             "oauth_signature_method".to_string(),
             "HMAC-SHA1".to_string(),
         ),
-        ("oauth_timestamp".to_string(), timestamp.to_string()),
-        ("oauth_token".to_string(), credentials.access_token.clone()),
+        ("oauth_timestamp".to_string(), inputs.timestamp.to_string()),
         ("oauth_version".to_string(), "1.0".to_string()),
     ];
-    for (key, value) in parsed.query_pairs() {
-        params.push((key.into_owned(), value.into_owned()));
+    if let Some((token, _)) = inputs.token {
+        oauth_params.push(("oauth_token".to_string(), token.to_string()));
     }
-    let param_string = normalized_oauth_params(&params);
+    for (key, value) in inputs.extra_oauth_params {
+        oauth_params.push(((*key).to_string(), (*value).to_string()));
+    }
+
+    let mut signature_params = oauth_params.clone();
+    for (key, value) in parsed.query_pairs() {
+        signature_params.push((key.into_owned(), value.into_owned()));
+    }
+    let param_string = normalized_oauth_params(&signature_params);
     let base_string = format!(
         "{}&{}&{}",
-        method.to_ascii_uppercase(),
+        inputs.method.to_ascii_uppercase(),
         oauth_percent_encode(&base_url),
         oauth_percent_encode(&param_string)
     );
+    let token_secret = inputs.token.map(|(_, secret)| secret).unwrap_or("");
     let signing_key = format!(
         "{}&{}",
-        oauth_percent_encode(&credentials.consumer_secret),
-        oauth_percent_encode(&credentials.access_token_secret)
+        oauth_percent_encode(inputs.consumer_secret),
+        oauth_percent_encode(token_secret)
     );
     let mut mac = HmacSha1::new_from_slice(signing_key.as_bytes())
         .context("Could not initialize OAuth 1.0a signer.")?;
     mac.update(base_string.as_bytes());
     let signature = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
 
-    let mut header_params = vec![
-        (
-            "oauth_consumer_key".to_string(),
-            credentials.consumer_key.clone(),
-        ),
-        ("oauth_nonce".to_string(), nonce.to_string()),
-        (
-            "oauth_signature_method".to_string(),
-            "HMAC-SHA1".to_string(),
-        ),
-        ("oauth_timestamp".to_string(), timestamp.to_string()),
-        ("oauth_token".to_string(), credentials.access_token.clone()),
-        ("oauth_version".to_string(), "1.0".to_string()),
-        ("oauth_signature".to_string(), signature),
-    ];
+    let mut header_params = oauth_params;
+    header_params.push(("oauth_signature".to_string(), signature));
     header_params.sort_by(|(left, _), (right, _)| left.cmp(right));
     let header = header_params
         .into_iter()
@@ -880,11 +1040,11 @@ pub fn oauth_percent_encode(value: &str) -> String {
         .collect()
 }
 
-fn oauth_nonce() -> String {
+pub(crate) fn oauth_nonce() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-fn oauth_timestamp() -> u64 {
+pub(crate) fn oauth_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1034,9 +1194,16 @@ mod tests {
         );
     }
 
+    fn no_stored_secrets(_secret_ref: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    // These capability tests exercise the no-consumer build shape: test builds
+    // never set the VIDEORC_BUNDLED_X_OAUTH1_* compile-time env, and the CI/dev
+    // environment does not export the consumer env vars.
     #[test]
     fn capability_reports_missing_oauth1_credentials_without_hiding_manual_rtmp() {
-        let capability = x_native_live_capability(None).unwrap();
+        let capability = x_native_live_capability_with(None, &no_stored_secrets).unwrap();
 
         assert_eq!(capability.platform, StreamPlatform::X);
         assert_eq!(
@@ -1046,6 +1213,95 @@ mod tests {
         assert!(!capability.native_available);
         assert!(capability.manual_rtmp_available);
         assert!(capability.message.contains("OAuth 1.0a"));
+    }
+
+    #[test]
+    fn stored_user_token_resolves_credentials_with_user_id_from_token_prefix() {
+        let read_secret = |secret_ref: &str| -> Result<Option<String>> {
+            Ok(match secret_ref {
+                X_OAUTH1_ACCESS_TOKEN_SECRET_REF => Some("172483972-abcDEF".to_string()),
+                X_OAUTH1_TOKEN_SECRET_SECRET_REF => Some("stored token secret".to_string()),
+                X_OAUTH1_HANDLE_SECRET_REF => Some("@videorc".to_string()),
+                _ => None,
+            })
+        };
+
+        // Without a consumer (test build), the stored token alone cannot sign.
+        let resolved = x_livestream_credentials_with(&read_secret).unwrap();
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn stored_token_without_numeric_prefix_is_rejected_when_consumer_present() {
+        // Exercise the prefix parser directly: a token without the numeric
+        // user id prefix must not silently produce a bogus user id.
+        let malformed = "not-numeric-token";
+        let user_id = malformed
+            .split_once('-')
+            .map(|(prefix, _)| prefix.trim().to_string())
+            .filter(|value| {
+                !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+            });
+        assert!(user_id.is_none());
+
+        let wellformed = "172483972-xxxxx";
+        let user_id = wellformed
+            .split_once('-')
+            .map(|(prefix, _)| prefix.trim().to_string())
+            .filter(|value| {
+                !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+            });
+        assert_eq!(user_id.as_deref(), Some("172483972"));
+    }
+
+    #[test]
+    fn request_token_header_omits_oauth_token_and_signs_callback() {
+        let header = oauth1_signed_header(&Oauth1SigningInputs {
+            method: "POST",
+            url: "https://api.x.com/oauth/request_token",
+            consumer_key: "consumer",
+            consumer_secret: "consumer secret",
+            token: None,
+            extra_oauth_params: &[("oauth_callback", "http://127.0.0.1:17995/oauth/callback")],
+            nonce: "nonce",
+            timestamp: 1772031973,
+        })
+        .unwrap();
+
+        assert!(header.starts_with("OAuth "));
+        assert!(!header.contains("oauth_token="));
+        assert!(
+            header
+                .contains(r#"oauth_callback="http%3A%2F%2F127.0.0.1%3A17995%2Foauth%2Fcallback""#)
+        );
+        assert!(header.contains("oauth_signature="));
+        assert!(!header.contains("consumer secret"));
+    }
+
+    #[test]
+    fn generalized_signer_matches_livestream_header_shape() {
+        let credentials = credentials();
+        let direct = oauth1_authorization_header(
+            "POST",
+            "https://api.x.com/2/users/12345/sources?pagination_token=a b",
+            &credentials,
+            "nonce",
+            1772031973,
+        )
+        .unwrap();
+        let general = oauth1_signed_header(&Oauth1SigningInputs {
+            method: "POST",
+            url: "https://api.x.com/2/users/12345/sources?pagination_token=a b",
+            consumer_key: &credentials.consumer_key,
+            consumer_secret: &credentials.consumer_secret,
+            token: Some((&credentials.access_token, &credentials.access_token_secret)),
+            extra_oauth_params: &[],
+            nonce: "nonce",
+            timestamp: 1772031973,
+        })
+        .unwrap();
+
+        assert_eq!(direct, general);
     }
 
     #[test]

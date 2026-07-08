@@ -41,6 +41,25 @@ export function captureEntitlementCheckTargets(appPath) {
   ]
 }
 
+// Native X Live is dead in a release whose backend lacks the baked OAuth 1.0a
+// consumer pair (users would see "Credentials needed" instead of Authorize X
+// Live), so the validator fails closed on both halves — same mechanism the
+// baked YouTube secret used before Google approval paused that flow.
+export const BUNDLED_X_OAUTH1_CONSUMER_ENVS = [
+  'VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_KEY',
+  'VIDEORC_BUNDLED_X_OAUTH1_CONSUMER_SECRET'
+]
+
+export function bundledXOauth1ConsumerCheckTargets(appPath) {
+  return BUNDLED_X_OAUTH1_CONSUMER_ENVS.map((envName) => ({
+    id: `bundled-x-oauth1-${envName.endsWith('KEY') ? 'consumer-key' : 'consumer-secret'}`,
+    label: `bundled X OAuth1 ${envName.endsWith('KEY') ? 'consumer key' : 'consumer secret'} (videorc-backend)`,
+    type: 'binary-contains-env-secret',
+    envName,
+    path: `${appPath}/Contents/Resources/videorc-backend`
+  }))
+}
+
 export function evaluateBinaryContainsEnvSecretCheck(
   check,
   { env = process.env, readFile = readFileSync } = {}
@@ -114,7 +133,8 @@ export function buildMacosReleaseArtifactChecks(path) {
         command: 'codesign',
         args: ['-d', '--entitlements', ':-', target.path],
         expectOutputIncludes: REQUIRED_CAPTURE_ENTITLEMENTS
-      }))
+      })),
+      ...bundledXOauth1ConsumerCheckTargets(path)
     ]
   }
 
