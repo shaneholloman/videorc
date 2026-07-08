@@ -4987,6 +4987,105 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     [client]
   )
 
+  // X's documented broadcast lifecycle is END first, THEN stop the encoder
+  // ("After ending, stop your encoder"). Videorc used to do the opposite —
+  // SIGKILL the RTMP leg mid-RUNNING, then send a posthumous END — which is
+  // the prime suspect for sources going playback-dead on reuse (plan 031).
+  // Returns the streaming settings with ended targets patched so a later
+  // cleanup pass does not END the same broadcast twice.
+  const endPreparedXBroadcasts = useCallback(
+    async (
+      streamingForCleanup: StreamingSettings,
+      sessionId?: string,
+      timeoutMs?: number
+    ): Promise<StreamingSettings> => {
+      if (!client) {
+        return streamingForCleanup
+      }
+      let nextStreaming = streamingForCleanup
+      const xTargets = preparedXCompletionTargets(streamingForCleanup)
+      for (const target of xTargets) {
+        const broadcastId = target.platformBroadcastId
+        if (!broadcastId) {
+          continue
+        }
+        try {
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'connecting',
+                  message: 'Ending X broadcast.'
+                }
+              })
+            })
+          )
+          const endRequest = client.request<XEndResult>('streamTargets.x.end', {
+            accountId: target.accountId,
+            broadcastId,
+            sessionId
+          })
+          // Never hold the encoder stop hostage to a slow END: on timeout the
+          // target stays 'live' so the post-stop cleanup pass retries it.
+          const result = timeoutMs
+            ? await Promise.race([
+                endRequest,
+                new Promise<never>((_, reject) =>
+                  setTimeout(() => reject(new Error('x-end-timeout')), timeoutMs)
+                )
+              ])
+            : await endRequest
+          nextStreaming = patchPreparedStreamTarget(nextStreaming, target.id, {
+            status: {
+              state: 'stopped',
+              message: result.message
+            }
+          })
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'stopped',
+                  message: result.message
+                }
+              })
+            })
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (message === 'x-end-timeout') {
+            // Leave the target 'live'; the post-stop pass retries the END.
+            continue
+          }
+          nextStreaming = patchPreparedStreamTarget(nextStreaming, target.id, {
+            status: {
+              state: 'warning',
+              message: `X cleanup needs review: ${message}`
+            }
+          })
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'warning',
+                  message: `X cleanup needs review: ${message}`
+                }
+              })
+            })
+          )
+          toast.warning(`Could not end ${target.label} on X.`, {
+            description: message
+          })
+        }
+      }
+      return nextStreaming
+    },
+    [client]
+  )
+
   const completePreparedPlatformBroadcasts = useCallback(
     async (streamingForCleanup: StreamingSettings = captureConfig.streaming) => {
       if (!client) {
@@ -5050,59 +5149,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         }
       }
 
-      const xTargets = preparedXCompletionTargets(streamingForCleanup)
-      for (const target of xTargets) {
-        const broadcastId = target.platformBroadcastId
-        if (!broadcastId) {
-          continue
-        }
-        try {
-          setCaptureConfig((current) =>
-            bridgeStreamingToLegacy({
-              ...current,
-              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
-                status: {
-                  state: 'connecting',
-                  message: 'Ending X broadcast.'
-                }
-              })
-            })
-          )
-          const result = await client.request<XEndResult>('streamTargets.x.end', {
-            accountId: target.accountId,
-            broadcastId
-          })
-          setCaptureConfig((current) =>
-            bridgeStreamingToLegacy({
-              ...current,
-              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
-                status: {
-                  state: 'stopped',
-                  message: result.message
-                }
-              })
-            })
-          )
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          setCaptureConfig((current) =>
-            bridgeStreamingToLegacy({
-              ...current,
-              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
-                status: {
-                  state: 'warning',
-                  message: `X cleanup needs review: ${message}`
-                }
-              })
-            })
-          )
-          toast.warning(`Could not end ${target.label} on X.`, {
-            description: message
-          })
-        }
-      }
+      await endPreparedXBroadcasts(streamingForCleanup)
     },
-    [captureConfig.streaming, client]
+    [captureConfig.streaming, client, endPreparedXBroadcasts]
   )
 
   const runStartSession = useCallback(
@@ -5502,9 +5551,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setLastError(null)
       platformLifecycleRun.current += 1
       setStopRequestPending(true)
+      // Docs order: END the X broadcast while the feed is still up, THEN stop
+      // the encoder. Bounded so a slow END can never hold the stop hostage.
+      const cleaned = await endPreparedXBroadcasts(
+        captureConfig.streaming,
+        recordingRef.current.sessionId,
+        4000
+      )
       const status = await client.request<RecordingStatus>('session.stop')
       applyRecordingStatus(status)
-      await completePreparedPlatformBroadcasts()
+      await completePreparedPlatformBroadcasts(cleaned)
     } catch (error) {
       reportError(error)
     } finally {
@@ -5512,8 +5568,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [
     applyRecordingStatus,
+    captureConfig.streaming,
     client,
     completePreparedPlatformBroadcasts,
+    endPreparedXBroadcasts,
     reportError,
     stopRequestPending
   ])

@@ -120,9 +120,16 @@ const IDLE_PREVIEW_FPS: u32 = 10;
 const IDLE_PREVIEW_JPEG_QUALITY: u32 = 4;
 const CAMERA_REFERENCE_WIDTH: u32 = 1280;
 const CAMERA_REFERENCE_HEIGHT: u32 = 720;
-const STOP_FINALIZE_TIMEOUT: Duration = Duration::from_secs(12);
+const STOP_FINALIZE_TIMEOUT: Duration = Duration::from_secs(20);
 const STOP_TERM_DELAY: Duration = Duration::from_secs(3);
 const STOP_KILL_DELAY: Duration = Duration::from_secs(3);
+// Sessions with a live RTMP leg get a longer quit grace: the tee/fifo leg
+// must drain its queue and close the connection so the platform sees an
+// RTMP-level goodbye instead of a dead socket. Every session before plan 031
+// ended in SIGKILL (quit -> 3s -> TERM -> 3s -> KILL), which is the prime
+// suspect for X sources going playback-dead on reuse (2026-07-08 incident).
+const STOP_TERM_DELAY_STREAMING: Duration = Duration::from_secs(8);
+const STOP_KILL_DELAY_STREAMING: Duration = Duration::from_secs(5);
 const SHUTDOWN_GRACE_DELAY: Duration = Duration::from_millis(1200);
 const CAPTURE_AUDIO_FILTER: &str = "aresample=async=1:first_pts=0";
 const MONO_TO_STEREO_FILTER: &str = "pan=stereo|c0=c0|c1=c0";
@@ -1407,6 +1414,7 @@ pub async fn stop_recording(state: AppState) -> Result<RecordingStatus> {
             pid,
             session_id,
             output_path,
+            false,
         ));
     } else {
         tokio::spawn(stop_fallback(state.clone(), pid, session_id, output_path));
@@ -2294,7 +2302,18 @@ async fn stop_fallback(
         return;
     }
 
-    sleep(STOP_TERM_DELAY).await;
+    let streaming = state
+        .recording
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|active| active.pid == pid && active.stream_url.is_some());
+    sleep(if streaming {
+        STOP_TERM_DELAY_STREAMING
+    } else {
+        STOP_TERM_DELAY
+    })
+    .await;
 
     if !recording_matches(&state, pid, &session_id, &output_path).await {
         return;
@@ -2305,7 +2324,7 @@ async fn stop_fallback(
         "FFmpeg did not stop promptly after stdin quit command; sending SIGTERM.",
     );
     let _ = send_process_signal(pid, "TERM").await;
-    stop_kill_fallback(state, pid, session_id, output_path).await;
+    stop_kill_fallback(state, pid, session_id, output_path, streaming).await;
 }
 
 async fn stop_kill_fallback(
@@ -2313,8 +2332,14 @@ async fn stop_kill_fallback(
     pid: u32,
     session_id: String,
     output_path: Option<PathBuf>,
+    streaming: bool,
 ) {
-    sleep(STOP_KILL_DELAY).await;
+    sleep(if streaming {
+        STOP_KILL_DELAY_STREAMING
+    } else {
+        STOP_KILL_DELAY
+    })
+    .await;
 
     if !recording_matches(&state, pid, &session_id, &output_path).await {
         return;

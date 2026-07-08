@@ -208,12 +208,14 @@ pub struct XPrepareSourceRequest {
 }
 
 /// How prepare arrived at the source it returns (session-log evidence).
+/// `Created` is the plan-031 default — a fresh source per session is the
+/// only condition that has ever produced instantly-watchable playback;
+/// `ReusedNameMatch` happens only when X refuses to create (e.g. quota).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum XSourceSelection {
     EnvOverride,
     ReusedNameMatch,
-    AdoptedMeasured,
     Created,
 }
 
@@ -311,20 +313,6 @@ struct XStreamSource {
     recommended_configuration: Option<serde_json::Value>,
     #[serde(default)]
     compatibility_info: Option<serde_json::Value>,
-    // X's measurement of the LAST stream this source received; present only
-    // once it has ever streamed. Nonzero video_bitrate = proven-real source.
-    #[serde(default)]
-    stream_attributes: Option<serde_json::Value>,
-}
-
-impl XStreamSource {
-    fn has_measured_stream(&self) -> bool {
-        self.stream_attributes
-            .as_ref()
-            .and_then(|attributes| attributes.get("video_bitrate"))
-            .and_then(serde_json::Value::as_f64)
-            .is_some_and(|bitrate| bitrate > 0.0)
-    }
 }
 
 /// Persisted per-source playback record (app_settings key `xSourceHealth`,
@@ -666,55 +654,65 @@ where
         let sources = list_sources(client, &credentials, &base_url)
             .await
             .unwrap_or_default();
-        let retired = |source: &XStreamSource| {
-            request
-                .retired_source_ids
-                .iter()
-                .any(|retired_id| retired_id == &source.id)
-        };
-        // Best-effort cleanup: retired sources are dead weight against the
-        // per-user source quota. Never delete one that is actively receiving.
-        for source in sources.iter().filter(|s| retired(s) && !s.is_stream_active) {
-            if delete_source(client, &credentials, &base_url, &source.id)
-                .await
-                .is_ok()
-            {
-                deleted_retired_source_ids.push(source.id.clone());
-            }
-        }
-        let selected = sources
-            .iter()
-            .find(|source| {
-                !retired(source)
-                    && source.name.as_deref() == Some(request.source_name.as_str())
-                    && source.rtmp_region.as_deref() == Some(region.as_str())
-            })
-            .map(|source| (source.clone(), XSourceSelection::ReusedNameMatch))
-            .or_else(|| {
-                // Adopt any proven source in the region (e.g. one created in
-                // X Media Studio) before minting a fresh unproven one.
-                sources
-                    .iter()
-                    .find(|source| {
-                        !retired(source)
-                            && source.rtmp_region.as_deref() == Some(region.as_str())
-                            && source.has_measured_stream()
-                    })
-                    .map(|source| (source.clone(), XSourceSelection::AdoptedMeasured))
-            });
-        match selected {
-            Some(selected) => selected,
-            None => (
-                create_source(
-                    client,
-                    &credentials,
-                    &base_url,
+        // Fresh source per session (plan 031): the only condition that has
+        // EVER produced instantly-watchable playback is a source's FIRST
+        // broadcast — the 2026-07-08 incident source played from second one
+        // on first use, then spun viewers on every reuse after a hard
+        // teardown. Create first; reuse is only a fallback when X refuses
+        // (e.g. per-user source quota).
+        match create_source(
+            client,
+            &credentials,
+            &base_url,
+            &request.source_name,
+            &region,
+        )
+        .await
+        {
+            Ok(created) => {
+                // Quota hygiene: yesterday's Videorc sources and retired ones
+                // are dead weight. Delete everything idle that we own by name
+                // plus explicit retirees — never the source just created, and
+                // never one actively receiving a stream.
+                for source_id in x_source_cleanup_ids(
+                    &sources,
                     &request.source_name,
-                    &region,
-                )
-                .await?,
-                XSourceSelection::Created,
-            ),
+                    &request.retired_source_ids,
+                    &created.id,
+                ) {
+                    if delete_source(client, &credentials, &base_url, &source_id)
+                        .await
+                        .is_ok()
+                    {
+                        deleted_retired_source_ids.push(source_id);
+                    }
+                }
+                (created, XSourceSelection::Created)
+            }
+            Err(create_error) => {
+                let retired = |source: &&XStreamSource| {
+                    request
+                        .retired_source_ids
+                        .iter()
+                        .any(|retired_id| retired_id == &source.id)
+                };
+                let fallback = sources
+                    .iter()
+                    .filter(|source| !retired(source))
+                    .find(|source| {
+                        source.name.as_deref() == Some(request.source_name.as_str())
+                            && source.rtmp_region.as_deref() == Some(region.as_str())
+                    })
+                    .cloned();
+                match fallback {
+                    Some(fallback) => (fallback, XSourceSelection::ReusedNameMatch),
+                    None => {
+                        return Err(create_error.context(
+                            "Could not create a fresh X stream source and no reusable one exists.",
+                        ));
+                    }
+                }
+            }
         }
     };
 
@@ -1049,6 +1047,25 @@ async fn create_source(
     let response: XSourceEnvelope =
         send_x_request(client, credentials, Method::POST, url, Some(body)).await?;
     Ok(response.source)
+}
+
+/// Which existing sources to delete after a fresh one is created: idle
+/// Videorc-named sources (previous sessions' leftovers) plus explicitly
+/// retired ids. Never the fresh source, never one actively receiving.
+fn x_source_cleanup_ids(
+    sources: &[XStreamSource],
+    source_name: &str,
+    retired_source_ids: &[String],
+    keep_source_id: &str,
+) -> Vec<String> {
+    sources
+        .iter()
+        .filter(|source| source.id != keep_source_id && !source.is_stream_active)
+        .filter(|source| {
+            source.name.as_deref() == Some(source_name) || retired_source_ids.contains(&source.id)
+        })
+        .map(|source| source.id.clone())
+        .collect()
 }
 
 async fn delete_source(
@@ -1685,25 +1702,44 @@ mod tests {
         assert!(!one_bad.retired);
     }
 
-    #[test]
-    fn measured_stream_requires_nonzero_video_bitrate() {
-        let mut source = XStreamSource {
-            id: "s1".to_string(),
-            name: None,
-            rtmp_region: None,
+    fn test_source(id: &str, name: Option<&str>, active: bool) -> XStreamSource {
+        XStreamSource {
+            id: id.to_string(),
+            name: name.map(str::to_string),
+            rtmp_region: Some("eu-west-3".to_string()),
             rtmps_url: None,
             rtmp_url: None,
             rtmp_stream_key: None,
-            is_stream_active: false,
+            is_stream_active: active,
             recommended_configuration: None,
             compatibility_info: None,
-            stream_attributes: None,
-        };
-        assert!(!source.has_measured_stream());
-        source.stream_attributes = Some(serde_json::json!({ "video_bitrate": 0.0 }));
-        assert!(!source.has_measured_stream());
-        source.stream_attributes = Some(serde_json::json!({ "video_bitrate": 5980074.0 }));
-        assert!(source.has_measured_stream());
+        }
+    }
+
+    // Plan 031 S2: fresh-source-per-session cleanup. The only condition that
+    // ever produced instant playback is a source's first broadcast, so every
+    // session creates one and prior leftovers must be reaped — but never the
+    // fresh source, never an actively-receiving one, and never a source we
+    // don't own by name (e.g. Media Studio or StreamYard sources).
+    #[test]
+    fn source_cleanup_reaps_idle_videorc_and_retired_sources_only() {
+        let sources = vec![
+            test_source("fresh1", Some("Videorc Primary Encoder"), false),
+            test_source("old1", Some("Videorc Primary Encoder"), false),
+            test_source("active1", Some("Videorc Primary Encoder"), true),
+            test_source("studio1", Some("Videorc"), false),
+            test_source("streamyard", Some("StreamYardApp"), false),
+            test_source("retired1", Some("Other Name"), false),
+        ];
+
+        let cleanup = x_source_cleanup_ids(
+            &sources,
+            "Videorc Primary Encoder",
+            &["retired1".to_string()],
+            "fresh1",
+        );
+
+        assert_eq!(cleanup, vec!["old1".to_string(), "retired1".to_string()]);
     }
 
     #[test]
