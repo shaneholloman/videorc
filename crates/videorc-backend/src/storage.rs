@@ -615,6 +615,20 @@ impl Database {
         Ok(SessionStorageTotals { count, total_bytes })
     }
 
+    pub fn load_setting<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        let conn = self.lock()?;
+        let value_json: Option<String> = conn
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        value_json
+            .map(|value_json| serde_json::from_str(&value_json).map_err(Into::into))
+            .transpose()
+    }
+
     pub fn save_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
         let conn = self.lock()?;
         conn.execute(

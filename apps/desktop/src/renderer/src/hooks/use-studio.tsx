@@ -145,6 +145,7 @@ import type {
   XEndResult,
   XLiveAuthorizationStart,
   XLiveChatStartParams,
+  XPlaybackEvent,
   XPublishResult,
   YouTubeBroadcastTransitionResult,
   YouTubeChannel,
@@ -1329,6 +1330,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const automaticSourceFallbacks = useRef<AutomaticSourceFallbackEvent[]>([])
   const toastedFailedTargets = useRef<Set<string>>(new Set())
   const platformLifecycleRun = useRef(0)
+  // One-shot playback toasts per broadcast+status (probe events may repeat).
+  const xPlaybackToastsRef = useRef(new Set<string>())
   const [previewRefreshNonce, setPreviewRefreshNonce] = useState(0)
   const nativePreviewSurfaceEnabled = Boolean(runtimeInfo?.nativePreviewSurfaceProofEnabled)
 
@@ -2581,6 +2584,63 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           toast.error('OAuth callback failed.', {
             description: result.message ?? result.status ?? 'Connection could not be completed.'
           })
+        }
+      }),
+      nextClient.on('streamTargets.x.playback', (payload) => {
+        const event = payload as XPlaybackEvent
+        // One toast per broadcast+status; the probe may re-emit while polling.
+        const toastKey = `${event.broadcastId}:${event.status}`
+        const alreadyToasted = xPlaybackToastsRef.current.has(toastKey)
+        xPlaybackToastsRef.current.add(toastKey)
+        const patch =
+          event.status === 'verified'
+            ? {
+                state: 'live' as const,
+                message: `Viewers can watch your X broadcast: ${event.shareUrl}`,
+                redactedUrl: event.shareUrl
+              }
+            : event.status === 'pending'
+              ? {
+                  state: 'warning' as const,
+                  message:
+                    'X is still provisioning playback — viewers may see a loading spinner. Keep streaming; this can take a few minutes.',
+                  redactedUrl: event.shareUrl
+                }
+              : {
+                  state: 'warning' as const,
+                  message:
+                    'X never produced playback for this broadcast — viewers saw a loading spinner. Your local recording is unaffected.',
+                  redactedUrl: event.shareUrl
+                }
+        setCaptureConfig((current) => {
+          const target = current.streaming.targets.find(
+            (candidate) =>
+              candidate.platform === 'x' && candidate.enabled && candidate.authMode === 'oauth'
+          )
+          if (!target) {
+            return current
+          }
+          return bridgeStreamingToLegacy({
+            ...current,
+            streaming: patchPreparedStreamTarget(current.streaming, target.id, { status: patch })
+          })
+        })
+        if (!alreadyToasted) {
+          if (event.status === 'verified') {
+            toast.success('Viewers can watch your X broadcast.', {
+              description: event.shareUrl
+            })
+          } else if (event.status === 'pending') {
+            toast.warning('X is still provisioning playback.', {
+              description:
+                'Viewers may see a loading spinner for a few minutes. Keep streaming — Videorc keeps checking.'
+            })
+          } else {
+            toast.error('X never produced playback for this broadcast.', {
+              description:
+                'Viewers saw a loading spinner. Your local recording is unaffected; the next Go Live uses a replacement source if this repeats.'
+            })
+          }
         }
       }),
       nextClient.on('ai.artifacts.changed', () => {
@@ -4863,7 +4923,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             isLowLatency: true,
             shouldNotTweet: false,
             locale: 'en',
-            chatOption: 2
+            chatOption: 2,
+            sessionId
           })
 
           if (platformLifecycleRun.current !== runId) {
