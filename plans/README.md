@@ -380,7 +380,8 @@ Windows."
   MediaFoundation camera/microphone discovery, Windows device-list exposure, and
   renderer selection for Windows screen IDs now cover display, camera, and mic
   variants. Backend Job Object wrappers now cover capture and media-maintenance
-  FFmpeg/FFprobe children; preview capture pipelines, dshow symbolic-link
+  FFmpeg/FFprobe children, and preview source selection now recognizes Windows
+  DXGI/gdigrab/dshow IDs. Preview frame production, dshow symbolic-link
   behavior, on-box recording evidence, and process-tree cleanup proof are still
   pending.
 - **P7-S4 Windows package recording acceptance**: Execute Plan 019 Step 4 on a

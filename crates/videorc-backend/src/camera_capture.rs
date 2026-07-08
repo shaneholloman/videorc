@@ -68,6 +68,13 @@ pub fn native_camera_name_for_id(camera_id: &str) -> Option<String> {
 pub fn camera_capability_matrix_for_id(
     camera_id: &str,
 ) -> Result<Vec<CameraFormatSummary>, String> {
+    if parse_windows_dshow_camera_id(camera_id).is_some() {
+        return Err(
+            "Windows camera capability diagnostics are pending the FFmpeg dshow preview pipeline."
+                .to_string(),
+        );
+    }
+
     let unique_id = parse_native_camera_id(camera_id)
         .ok_or_else(|| "Selected camera is not a native AVFoundation camera.".to_string())?;
 
@@ -669,6 +676,17 @@ mod tests {
             None
         );
         assert_eq!(parse_windows_dshow_camera_id("camera:avfoundation:0"), None);
+    }
+
+    #[test]
+    fn windows_dshow_camera_capabilities_report_pending_preview_pipeline() {
+        let error = camera_capability_matrix_for_id("camera:windows-dshow:5553422043616d657261")
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Windows camera capability diagnostics are pending the FFmpeg dshow preview pipeline."
+        );
     }
 
     #[test]

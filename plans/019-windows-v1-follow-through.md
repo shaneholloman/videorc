@@ -171,9 +171,11 @@ renderer now treats DXGI and gdigrab screen IDs as selectable native screen
 sources. Backend Job Object wrappers now own the FFmpeg/FFprobe children used by
 recording capture, live preview, remux, poster extraction, import duration
 probes, screen-image optimization, repair analysis, health checks, and
-AI/audio extraction. Preview capture pipelines, dshow symbolic-link behavior,
-selection from real Windows device rows, and process-tree cleanup proof still
-need the Windows box slice before this step is done.
+AI/audio extraction. Preview source selection now recognizes Windows DXGI,
+gdigrab, and dshow IDs instead of misclassifying them as absent macOS-native
+sources. Preview frame production, dshow symbolic-link behavior, selection from
+real Windows device rows, and process-tree cleanup proof still need the Windows
+box slice before this step is done.
 
 **Verify**:
 

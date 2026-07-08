@@ -48,8 +48,11 @@ The completed work is packaging and platform-seam preparation:
 - **Windows capture is not done.** Preview capture pipelines, renderer-driven
   selection from real enumerated Windows devices, and dated on-box recording
   artifacts are still pending for display, camera, microphone, streaming, and
-  packaged cleanup. Phase 2 remains the product proof. The Windows local gate now
-  routes its packaged test-pattern
+  packaged cleanup. Preview source selection now recognizes Windows DXGI,
+  gdigrab, and dshow IDs instead of reporting them as missing macOS-native
+  sources, but Windows FFmpeg preview frame production still needs the on-box
+  slice. Phase 2 remains the product proof. The Windows local gate now routes its
+  packaged test-pattern
   smoke output to the ignored acceptance artifact directory so on-box runs can
   be copied into the dated acceptance note instead of disappearing into a temp
   folder.

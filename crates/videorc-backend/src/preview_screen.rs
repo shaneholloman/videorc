@@ -19,7 +19,10 @@ use crate::protocol::{
     PreviewScreenSourceKind, PreviewScreenStartParams, PreviewScreenState, PreviewScreenStatus,
     VideoSettings,
 };
-use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
+use crate::screen_capture::{
+    is_windows_gdigrab_desktop_screen_id, parse_screencapturekit_display_id,
+    parse_screencapturekit_window_id, parse_windows_dxgi_output_index,
+};
 use crate::source_registry::{SourceConsumerReason, SourceIdentityConfidence, SourceKey};
 use crate::source_status::SourceLifecycleStatus;
 use crate::state::AppState;
@@ -909,14 +912,30 @@ fn selected_screen_source(params: &PreviewScreenStartParams) -> Option<SelectedS
     }
 
     if let Some(screen_id) = params.sources.screen_id.clone() {
-        return parse_screencapturekit_display_id(&screen_id).map(|native_display_id| {
-            SelectedScreenSource {
+        if let Some(native_display_id) = parse_screencapturekit_display_id(&screen_id) {
+            return Some(SelectedScreenSource {
                 source_id: screen_id,
                 source_kind: PreviewScreenSourceKind::Screen,
                 display_id: Some(native_display_id),
                 window_id: None,
-            }
-        });
+            });
+        }
+        if let Some(output_index) = parse_windows_dxgi_output_index(&screen_id) {
+            return Some(SelectedScreenSource {
+                source_id: screen_id,
+                source_kind: PreviewScreenSourceKind::Screen,
+                display_id: Some(output_index),
+                window_id: None,
+            });
+        }
+        if is_windows_gdigrab_desktop_screen_id(&screen_id) {
+            return Some(SelectedScreenSource {
+                source_id: screen_id,
+                source_kind: PreviewScreenSourceKind::Screen,
+                display_id: None,
+                window_id: None,
+            });
+        }
     }
 
     None
@@ -1343,7 +1362,17 @@ fn run_native_screen_preview(
     #[cfg(target_os = "macos")]
     macos::run_native_screen_preview(config, shared, stop_rx, startup_tx);
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = config;
+        let _ = shared;
+        let _ = stop_rx;
+        let _ = startup_tx.send(NativeScreenStartup::Failed(
+            "Windows FFmpeg screen preview is not wired yet; recording falls back to the Windows capture-input seam until the on-box preview slice lands.".to_string(),
+        ));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = config;
         let _ = shared;
@@ -2404,6 +2433,36 @@ mod tests {
 
         assert_eq!(selected.source_kind, PreviewScreenSourceKind::Screen);
         assert_eq!(selected.display_id, Some(5));
+    }
+
+    #[test]
+    fn selects_windows_dxgi_screen_source() {
+        let params = screen_params(Some("screen:dxgi:00000000000003f1:2"), None);
+
+        let selected = selected_screen_source(&params).unwrap();
+
+        assert_eq!(selected.source_kind, PreviewScreenSourceKind::Screen);
+        assert_eq!(selected.source_id, "screen:dxgi:00000000000003f1:2");
+        assert_eq!(selected.display_id, Some(2));
+        assert_eq!(
+            source_key_for_source(&selected),
+            SourceKey::screen(selected.source_id.clone())
+        );
+    }
+
+    #[test]
+    fn selects_windows_gdigrab_screen_source() {
+        let params = screen_params(Some("screen:gdigrab:desktop"), None);
+
+        let selected = selected_screen_source(&params).unwrap();
+
+        assert_eq!(selected.source_kind, PreviewScreenSourceKind::Screen);
+        assert_eq!(selected.source_id, "screen:gdigrab:desktop");
+        assert_eq!(selected.display_id, None);
+        assert_eq!(
+            source_key_for_source(&selected),
+            SourceKey::screen(selected.source_id.clone())
+        );
     }
 
     #[test]

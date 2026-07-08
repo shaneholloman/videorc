@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::camera_capture::{
     CameraFormatSummary, camera_capability_matrix_for_id, parse_native_camera_id,
+    parse_windows_dshow_camera_id,
 };
 use crate::diagnostics::{
     PreviewCameraCaptureTimingStats, apply_preview_camera_capability_stats,
@@ -290,16 +291,17 @@ pub async fn start_preview_camera(
         set_camera_status(&state, status.clone()).await;
         return status;
     };
-    let Some(unique_id) = parse_native_camera_id(&camera_id) else {
+    let Some(camera_source) = selected_camera_source(&camera_id) else {
         stop_preview_camera(&state).await;
         refresh_camera_capability_diagnostics(&state, Some(camera_id.clone())).await;
         let status = status_for_missing_camera(
             Some(camera_id),
-            "Selected camera is not a native AVFoundation camera.",
+            "Selected camera is not a supported Videorc camera source.",
         );
         set_camera_status(&state, status.clone()).await;
         return status;
     };
+    let unique_id = camera_source.device_unique_id().to_string();
     refresh_camera_capability_diagnostics(&state, Some(camera_id.clone())).await;
 
     let target_fps = params.video.fps.clamp(1, 120);
@@ -1049,6 +1051,30 @@ struct NativeCameraPreviewConfig {
     layout: LayoutSettings,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SelectedCameraSource {
+    MacAvFoundation { unique_id: String },
+    WindowsDshow { device_name: String },
+}
+
+impl SelectedCameraSource {
+    fn device_unique_id(&self) -> &str {
+        match self {
+            SelectedCameraSource::MacAvFoundation { unique_id } => unique_id,
+            SelectedCameraSource::WindowsDshow { device_name } => device_name,
+        }
+    }
+}
+
+fn selected_camera_source(camera_id: &str) -> Option<SelectedCameraSource> {
+    parse_native_camera_id(camera_id)
+        .map(|unique_id| SelectedCameraSource::MacAvFoundation { unique_id })
+        .or_else(|| {
+            parse_windows_dshow_camera_id(camera_id)
+                .map(|device_name| SelectedCameraSource::WindowsDshow { device_name })
+        })
+}
+
 fn camera_capture_target_dimensions(layout: &LayoutSettings, video: &VideoSettings) -> (u32, u32) {
     if layout.layout_preset != LayoutPreset::ScreenCamera {
         return (video.width, video.height);
@@ -1150,7 +1176,17 @@ fn run_native_camera_preview(
     #[cfg(target_os = "macos")]
     macos::run_native_camera_preview(config, shared, stop_rx, startup_tx);
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = config;
+        let _ = shared;
+        let _ = stop_rx;
+        let _ = startup_tx.send(NativeCameraStartup::Failed(
+            "Windows FFmpeg camera preview is not wired yet; recording falls back to the Windows capture-input seam until the on-box preview slice lands.".to_string(),
+        ));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = config;
         let _ = shared;
@@ -2135,6 +2171,32 @@ mod tests {
 
         assert_eq!(params.video.fps, 60);
         assert!(params.layout.camera_mirror);
+    }
+
+    #[test]
+    fn selects_avfoundation_camera_source() {
+        assert_eq!(
+            selected_camera_source("camera:avfoundation-native:616263").unwrap(),
+            SelectedCameraSource::MacAvFoundation {
+                unique_id: "abc".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn selects_windows_dshow_camera_source() {
+        assert_eq!(
+            selected_camera_source("camera:windows-dshow:5553422043616d657261").unwrap(),
+            SelectedCameraSource::WindowsDshow {
+                device_name: "USB Camera".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_camera_source_ids() {
+        assert!(selected_camera_source("camera:avfoundation:0").is_none());
+        assert!(selected_camera_source("camera:windows-dshow:not-hex").is_none());
     }
 
     #[cfg(target_os = "macos")]
