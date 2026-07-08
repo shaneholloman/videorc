@@ -60,6 +60,24 @@ The completed work is packaging and platform-seam preparation:
   be copied into the dated acceptance note instead of disappearing into a temp
   folder. Its manifest also prints the strict support-bundle verifier command:
   `pnpm support-bundle:verify -- <support-bundle.json> --windows-acceptance`.
+- **The FIFO output transport is ported (2026-07-08).** `fifo.rs` now has a
+  named-pipe arm (`\\.\pipe\` namespace) behind the same
+  create/open_writer/cleanup contract, so the encoder-bridge FIFO, per-leg
+  stream FIFOs, and the screen-overlay FIFO no longer bail `Unsupported` at
+  session start on Windows. Windows writes are always blocking after the
+  reader attaches (PIPE_NOWAIT reports full buffers as zero-byte successes).
+  Compile-checked by `pnpm check:windows`; end-to-end write→ffmpeg-read proof
+  needs the Windows box. The same slice made the dshow microphone honour
+  gain/mute through a `volume=` filter leg (the in-process CoreAudio path is
+  unchanged), bundled `ffprobe.exe` next to the Windows ffmpeg, and gave the
+  package preflight a fail-closed on-box capability probe (rtmp/rtmps/tls +
+  h264_mf/aac — the 0.9.23 TLS-less-ffmpeg lesson applied to Windows).
+- **Crash-orphan ownership is closed in code (2026-07-08).** The backend now
+  waits on a `VIDEORC_SUPERVISOR_PID` process handle on Windows and exits when
+  Electron dies (including crash/force-kill), which drops the backend-owned
+  Job Object and its ffmpeg children. `OwnedProcessRegistry.reapStale` also
+  reaps stale ledger PIDs on win32 (single hard kill — Windows has no graceful
+  signal). On-box process-tree proof still pending.
 - **Windows child-process ownership has a backend slice.** `process_job.rs`
   wraps backend FFmpeg/FFprobe children used for capture, media maintenance,
   imports, health checks, and AI/audio extraction. On Windows, those children

@@ -194,6 +194,20 @@ Windows device rows, first-frame/smoothness proof, process-tree cleanup proof,
 and encoder probe proof still need the Windows box slice before this step is
 done.
 
+**2026-07-08 progress (second batch)**: The FIFO output transport is ported —
+`fifo.rs` gained a Windows named-pipe arm behind the existing
+create/open_writer/cleanup contract, unblocking the encoder-bridge FIFO,
+per-leg stream FIFOs, and the screen-overlay FIFO at session start. The
+backend now exits when the Electron supervisor dies on Windows (process-handle
+watchdog on `VIDEORC_SUPERVISOR_PID`), and `OwnedProcessRegistry.reapStale`
+reaps stale ledger PIDs on win32 with a single hard kill. The dshow microphone
+honours gain/mute via a `volume=` filter leg (native CoreAudio path
+unchanged). `ffprobe.exe` is fetched and bundled next to the Windows ffmpeg,
+and the package preflight fails closed on the Windows host unless the bundled
+ffmpeg exposes rtmp/rtmps/tls and h264_mf/aac (the 0.9.23 TLS lesson).
+On-box proof for all of it (pipe write→ffmpeg read, crash-orphan teardown,
+mic mute artifact, capability probe run) still needs the Windows box.
+
 **Verify**:
 
 ```sh
