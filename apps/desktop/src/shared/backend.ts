@@ -806,11 +806,14 @@ export interface XPublishParams {
   shouldNotTweet: boolean
   locale?: string
   chatOption?: number
+  /** Active capture session — X lifecycle events land in its session log. */
+  sessionId?: string
 }
 
 export interface XEndParams {
   accountId?: string
   broadcastId: string
+  sessionId?: string
 }
 
 export interface XLiveChatStartParams {
@@ -850,6 +853,9 @@ export interface PreparedXStreamSource {
   isStreamActive: boolean
   recommendedConfiguration?: unknown
   compatibilityInfo?: unknown
+  /** How prepare picked the source (env-override | reused-name-match | adopted-measured | created). */
+  selection: string
+  deletedRetiredSourceIds: string[]
 }
 
 export interface XPublishResult {
@@ -863,7 +869,20 @@ export interface XPublishResult {
   state: string
   tweetId?: string
   tweetError?: string
+  hlsUrl?: string
+  playableBeforePublish?: boolean
+  prePublishWaitMs?: number
+  compatibilityInfo?: unknown
   message: string
+}
+
+/** `streamTargets.x.playback` event — the post-publish watchability probe. */
+export interface XPlaybackEvent {
+  sessionId?: string | null
+  broadcastId: string
+  shareUrl: string
+  status: 'verified' | 'pending' | 'unavailable'
+  msAfterPublish?: number
 }
 
 export interface XEndResult {

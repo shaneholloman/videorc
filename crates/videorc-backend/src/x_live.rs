@@ -73,6 +73,9 @@ pub struct XPublishParams {
     pub locale: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_option: Option<u8>,
+    /// Active capture session — X lifecycle events land in its session log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,6 +84,8 @@ pub struct XEndParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
     pub broadcast_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -138,6 +143,10 @@ pub struct PreparedXStreamSource {
     pub recommended_configuration: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compatibility_info: Option<serde_json::Value>,
+    pub selection: XSourceSelection,
+    /// Retired sources deleted during this prepare (best-effort cleanup).
+    #[serde(default)]
+    pub deleted_retired_source_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,6 +165,14 @@ pub struct XPublishResult {
     pub tweet_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tweet_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hls_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playable_before_publish: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_publish_wait_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_info: Option<serde_json::Value>,
     pub message: String,
 }
 
@@ -185,6 +202,19 @@ pub struct XPrepareSourceRequest {
     pub account: Option<PlatformAccount>,
     pub source_name: String,
     pub api_base_url: Option<String>,
+    /// Sources retired by the playback health model — never selected, and
+    /// deleted best-effort when idle.
+    pub retired_source_ids: Vec<String>,
+}
+
+/// How prepare arrived at the source it returns (session-log evidence).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum XSourceSelection {
+    EnvOverride,
+    ReusedNameMatch,
+    AdoptedMeasured,
+    Created,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +230,13 @@ pub struct XPublishRequest {
     pub api_base_url: Option<String>,
     pub poll_attempts: usize,
     pub poll_interval_ms: u64,
+    // Pre-publish playback gate: after CREATE, wait for the HLS playlist to
+    // carry real segments before the PUBLISH that posts the announcement —
+    // so the tweet points at working video whenever X provisions in time.
+    // 0 attempts disables the gate. Publish proceeds either way (X may only
+    // provision on publish; never deadlock on the gate).
+    pub pre_publish_probe_attempts: usize,
+    pub pre_publish_probe_interval_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +268,28 @@ struct XBroadcastEnvelope {
     broadcast: XBroadcast,
     #[serde(default)]
     share_url: Option<String>,
+    // Playback URLs exist from CREATE (before publish) — the watchability
+    // probe uses them to verify X is actually transcoding.
+    #[serde(default)]
+    video_access: Option<XVideoAccess>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct XVideoAccess {
+    #[serde(default)]
+    hls_url: Option<String>,
+    #[serde(default)]
+    https_hls_url: Option<String>,
+}
+
+impl XVideoAccess {
+    fn best_hls_url(&self) -> Option<String> {
+        self.https_hls_url
+            .clone()
+            .or_else(|| self.hls_url.clone())
+            .map(|url| url.trim().to_string())
+            .filter(|url| !url.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -252,6 +311,56 @@ struct XStreamSource {
     recommended_configuration: Option<serde_json::Value>,
     #[serde(default)]
     compatibility_info: Option<serde_json::Value>,
+    // X's measurement of the LAST stream this source received; present only
+    // once it has ever streamed. Nonzero video_bitrate = proven-real source.
+    #[serde(default)]
+    stream_attributes: Option<serde_json::Value>,
+}
+
+impl XStreamSource {
+    fn has_measured_stream(&self) -> bool {
+        self.stream_attributes
+            .as_ref()
+            .and_then(|attributes| attributes.get("video_bitrate"))
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|bitrate| bitrate > 0.0)
+    }
+}
+
+/// Persisted per-source playback record (app_settings key `xSourceHealth`,
+/// a `{source_id: XSourceHealth}` map). Retirement is conservative — the
+/// 2026-07-08 incident proved a source can transcode one hour and not the
+/// next, so one bad probe only counts, it does not retire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct XSourceHealth {
+    #[serde(default)]
+    pub last_verified_at: Option<String>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    #[serde(default)]
+    pub retired: bool,
+}
+
+pub const X_SOURCE_HEALTH_SETTING: &str = "xSourceHealth";
+pub const X_SOURCE_RETIRE_FAILURES: u32 = 2;
+
+pub fn apply_x_playback_outcome(
+    mut health: XSourceHealth,
+    verified: bool,
+    now_rfc3339: &str,
+) -> XSourceHealth {
+    if verified {
+        health.last_verified_at = Some(now_rfc3339.to_string());
+        health.consecutive_failures = 0;
+        health.retired = false;
+    } else {
+        health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+        if health.consecutive_failures >= X_SOURCE_RETIRE_FAILURES {
+            health.retired = true;
+        }
+    }
+    health
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -545,28 +654,67 @@ where
         Some(region) => region,
         None => get_region(client, &credentials, &base_url).await?,
     };
-    let source = if let Some(source_id) =
+    let mut deleted_retired_source_ids = Vec::new();
+    let (source, selection) = if let Some(source_id) =
         optional_env_any(&["VIDEORC_X_LIVESTREAM_SOURCE_ID", "X_LIVESTREAM_SOURCE_ID"])
     {
-        get_source(client, &credentials, &base_url, &source_id).await?
+        (
+            get_source(client, &credentials, &base_url, &source_id).await?,
+            XSourceSelection::EnvOverride,
+        )
     } else {
         let sources = list_sources(client, &credentials, &base_url)
             .await
             .unwrap_or_default();
-        if let Some(source) = sources.into_iter().find(|source| {
-            source.name.as_deref() == Some(request.source_name.as_str())
-                && source.rtmp_region.as_deref() == Some(region.as_str())
-        }) {
-            source
-        } else {
-            create_source(
-                client,
-                &credentials,
-                &base_url,
-                &request.source_name,
-                &region,
-            )
-            .await?
+        let retired = |source: &XStreamSource| {
+            request
+                .retired_source_ids
+                .iter()
+                .any(|retired_id| retired_id == &source.id)
+        };
+        // Best-effort cleanup: retired sources are dead weight against the
+        // per-user source quota. Never delete one that is actively receiving.
+        for source in sources.iter().filter(|s| retired(s) && !s.is_stream_active) {
+            if delete_source(client, &credentials, &base_url, &source.id)
+                .await
+                .is_ok()
+            {
+                deleted_retired_source_ids.push(source.id.clone());
+            }
+        }
+        let selected = sources
+            .iter()
+            .find(|source| {
+                !retired(source)
+                    && source.name.as_deref() == Some(request.source_name.as_str())
+                    && source.rtmp_region.as_deref() == Some(region.as_str())
+            })
+            .map(|source| (source.clone(), XSourceSelection::ReusedNameMatch))
+            .or_else(|| {
+                // Adopt any proven source in the region (e.g. one created in
+                // X Media Studio) before minting a fresh unproven one.
+                sources
+                    .iter()
+                    .find(|source| {
+                        !retired(source)
+                            && source.rtmp_region.as_deref() == Some(region.as_str())
+                            && source.has_measured_stream()
+                    })
+                    .map(|source| (source.clone(), XSourceSelection::AdoptedMeasured))
+            });
+        match selected {
+            Some(selected) => selected,
+            None => (
+                create_source(
+                    client,
+                    &credentials,
+                    &base_url,
+                    &request.source_name,
+                    &region,
+                )
+                .await?,
+                XSourceSelection::Created,
+            ),
         }
     };
 
@@ -618,6 +766,8 @@ where
         is_stream_active: source.is_stream_active,
         recommended_configuration: source.recommended_configuration,
         compatibility_info: source.compatibility_info,
+        selection,
+        deleted_retired_source_ids,
     })
 }
 
@@ -646,6 +796,9 @@ pub async fn publish_x_broadcast(
     {
         anyhow::bail!("X RTMPS source did not become active before publish.");
     }
+    let compatibility_info = last_source
+        .as_ref()
+        .and_then(|source| source.compatibility_info.clone());
 
     let created = create_broadcast(
         client,
@@ -672,6 +825,33 @@ pub async fn publish_x_broadcast(
         .clone()
         .or(created.broadcast.share_url.clone())
         .unwrap_or_else(|| format!("https://x.com/i/broadcasts/{broadcast_id}"));
+    let hls_url = created
+        .video_access
+        .as_ref()
+        .and_then(XVideoAccess::best_hls_url);
+
+    // Pre-publish playback gate: give X a bounded window to bring up the
+    // transcode BEFORE the announcement post goes out. Never fails publish.
+    let mut playable_before_publish = None;
+    let mut pre_publish_wait_ms = None;
+    if let Some(hls_url) = hls_url.as_deref()
+        && request.pre_publish_probe_attempts > 0
+    {
+        let started = std::time::Instant::now();
+        let mut playable = false;
+        for attempt in 0..request.pre_publish_probe_attempts {
+            if x_playlist_playable(client, hls_url).await.unwrap_or(false) {
+                playable = true;
+                break;
+            }
+            if attempt + 1 < request.pre_publish_probe_attempts {
+                sleep(Duration::from_millis(request.pre_publish_probe_interval_ms)).await;
+            }
+        }
+        playable_before_publish = Some(playable);
+        pre_publish_wait_ms = Some(started.elapsed().as_millis() as u64);
+    }
+
     let title = x_title(&request.metadata);
     let published = publish_broadcast(
         client,
@@ -701,8 +881,86 @@ pub async fn publish_x_broadcast(
             .unwrap_or_else(|| "RUNNING".to_string()),
         tweet_id: published.broadcast.tweet_id,
         tweet_error: published.broadcast.tweet_error,
+        hls_url,
+        playable_before_publish,
+        pre_publish_wait_ms,
+        compatibility_info,
         message: "X broadcast is live.".to_string(),
     })
+}
+
+/// One playback probe: does the HLS playlist behind `url` currently carry
+/// real media segments? Text-only fetches — never downloads video. A master
+/// playlist is followed one level to its first variant. `Ok(false)` covers
+/// every not-ready shape (HTTP errors, empty playlists) so callers can poll.
+pub async fn x_playlist_playable(client: &reqwest::Client, url: &str) -> Result<bool> {
+    let body = match fetch_playlist_text(client, url).await? {
+        Some(body) => body,
+        None => return Ok(false),
+    };
+    match playlist_verdict(&body) {
+        PlaylistVerdict::Playable => Ok(true),
+        PlaylistVerdict::NotReady => Ok(false),
+        PlaylistVerdict::Variant(variant) => {
+            let variant_url = resolve_playlist_url(url, &variant)?;
+            let Some(body) = fetch_playlist_text(client, &variant_url).await? else {
+                return Ok(false);
+            };
+            Ok(matches!(playlist_verdict(&body), PlaylistVerdict::Playable))
+        }
+    }
+}
+
+async fn fetch_playlist_text(client: &reqwest::Client, url: &str) -> Result<Option<String>> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .context("Could not reach the X playback playlist.")?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    Ok(Some(response.text().await.unwrap_or_default()))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PlaylistVerdict {
+    Playable,
+    /// Master playlist: the first variant URI to follow.
+    Variant(String),
+    NotReady,
+}
+
+fn playlist_verdict(body: &str) -> PlaylistVerdict {
+    let mut variant = None;
+    let mut saw_stream_inf = false;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.starts_with("#EXTINF") {
+            return PlaylistVerdict::Playable;
+        }
+        if saw_stream_inf && !line.is_empty() && !line.starts_with('#') && variant.is_none() {
+            variant = Some(line.to_string());
+        }
+        if line.starts_with("#EXT-X-STREAM-INF") {
+            saw_stream_inf = true;
+        }
+    }
+    match variant {
+        Some(variant) => PlaylistVerdict::Variant(variant),
+        None => PlaylistVerdict::NotReady,
+    }
+}
+
+fn resolve_playlist_url(playlist_url: &str, reference: &str) -> Result<String> {
+    if reference.starts_with("http://") || reference.starts_with("https://") {
+        return Ok(reference.to_string());
+    }
+    let base = Url::parse(playlist_url).context("X playback playlist URL is invalid.")?;
+    Ok(base
+        .join(reference)
+        .context("Could not resolve the X playback variant URL.")?
+        .to_string())
 }
 
 pub async fn end_x_broadcast(request: XEndRequest, client: &reqwest::Client) -> Result<XEndResult> {
@@ -791,6 +1049,21 @@ async fn create_source(
     let response: XSourceEnvelope =
         send_x_request(client, credentials, Method::POST, url, Some(body)).await?;
     Ok(response.source)
+}
+
+async fn delete_source(
+    client: &reqwest::Client,
+    credentials: &XLivestreamCredentials,
+    base_url: &str,
+    source_id: &str,
+) -> Result<()> {
+    let url = endpoint(
+        base_url,
+        &format!("/2/users/{}/sources/{}", credentials.user_id, source_id),
+    )?;
+    let _: serde_json::Value =
+        send_x_request(client, credentials, Method::DELETE, url, None).await?;
+    Ok(())
 }
 
 async fn get_source(
@@ -1302,6 +1575,135 @@ mod tests {
         .unwrap();
 
         assert_eq!(direct, general);
+    }
+
+    #[test]
+    fn playlist_verdict_detects_segments_variants_and_not_ready() {
+        assert_eq!(
+            playlist_verdict("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nseg0.ts\n"),
+            PlaylistVerdict::Playable
+        );
+        assert_eq!(
+            playlist_verdict(
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nvariant/playlist.m3u8\n"
+            ),
+            PlaylistVerdict::Variant("variant/playlist.m3u8".to_string())
+        );
+        assert_eq!(
+            playlist_verdict("#EXTM3U\n#EXT-X-TARGETDURATION:2\n"),
+            PlaylistVerdict::NotReady
+        );
+        assert_eq!(playlist_verdict(""), PlaylistVerdict::NotReady);
+    }
+
+    #[test]
+    fn playlist_variant_urls_resolve_relative_and_absolute() {
+        assert_eq!(
+            resolve_playlist_url(
+                "https://video.pscp.tv/x/master.m3u8?type=live",
+                "variant/playlist.m3u8"
+            )
+            .unwrap(),
+            "https://video.pscp.tv/x/variant/playlist.m3u8"
+        );
+        assert_eq!(
+            resolve_playlist_url(
+                "https://video.pscp.tv/x/master.m3u8",
+                "https://other.pscp.tv/v.m3u8"
+            )
+            .unwrap(),
+            "https://other.pscp.tv/v.m3u8"
+        );
+    }
+
+    #[tokio::test]
+    async fn playlist_probe_follows_master_to_variant() {
+        use axum::Router;
+        use axum::routing::get;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route(
+                        "/master.m3u8",
+                        get(|| async {
+                            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nmedia.m3u8\n"
+                        }),
+                    )
+                    .route(
+                        "/media.m3u8",
+                        get(|| async { "#EXTM3U\n#EXTINF:2.0,\nseg0.ts\n" }),
+                    )
+                    .route("/empty.m3u8", get(|| async { "#EXTM3U\n" })),
+            )
+            .await
+            .unwrap();
+        });
+        let client = reqwest::Client::new();
+        assert!(
+            x_playlist_playable(&client, &format!("http://{address}/master.m3u8"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !x_playlist_playable(&client, &format!("http://{address}/empty.m3u8"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !x_playlist_playable(&client, &format!("http://{address}/missing.m3u8"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn playback_outcomes_retire_only_after_consecutive_failures() {
+        let health = XSourceHealth::default();
+        let after_one = apply_x_playback_outcome(health, false, "2026-07-08T12:00:00Z");
+        assert_eq!(after_one.consecutive_failures, 1);
+        assert!(!after_one.retired);
+
+        let after_two = apply_x_playback_outcome(after_one.clone(), false, "2026-07-08T13:00:00Z");
+        assert_eq!(after_two.consecutive_failures, 2);
+        assert!(after_two.retired);
+
+        // A verified playback fully rehabilitates the source.
+        let recovered = apply_x_playback_outcome(after_two, true, "2026-07-08T14:00:00Z");
+        assert_eq!(recovered.consecutive_failures, 0);
+        assert!(!recovered.retired);
+        assert_eq!(
+            recovered.last_verified_at.as_deref(),
+            Some("2026-07-08T14:00:00Z")
+        );
+
+        // One failure after a success does NOT retire (the 2026-07-08
+        // incident source worked at 7 min and failed at 2 min same day).
+        let one_bad = apply_x_playback_outcome(recovered, false, "2026-07-08T15:00:00Z");
+        assert!(!one_bad.retired);
+    }
+
+    #[test]
+    fn measured_stream_requires_nonzero_video_bitrate() {
+        let mut source = XStreamSource {
+            id: "s1".to_string(),
+            name: None,
+            rtmp_region: None,
+            rtmps_url: None,
+            rtmp_url: None,
+            rtmp_stream_key: None,
+            is_stream_active: false,
+            recommended_configuration: None,
+            compatibility_info: None,
+            stream_attributes: None,
+        };
+        assert!(!source.has_measured_stream());
+        source.stream_attributes = Some(serde_json::json!({ "video_bitrate": 0.0 }));
+        assert!(!source.has_measured_stream());
+        source.stream_attributes = Some(serde_json::json!({ "video_bitrate": 5980074.0 }));
+        assert!(source.has_measured_stream());
     }
 
     #[test]

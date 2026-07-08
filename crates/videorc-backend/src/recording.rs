@@ -1088,7 +1088,14 @@ pub async fn start_session(
                     continue;
                 }
 
-                log_state.emit_log("warn", trimmed);
+                // Progress/stat spam must not reach the bounded log ring —
+                // it evicted every useful entry within ~60s during the
+                // 2026-07-08 X incident. Stats still feed stream health.
+                if is_ffmpeg_progress_noise(trimmed) {
+                    tracing::debug!("{trimmed}");
+                } else {
+                    log_state.emit_log("warn", trimmed);
+                }
                 if let Some(stream_health) = parse_ffmpeg_stream_health(&log_session_id, trimmed) {
                     let scene_revision = current_compositor_scene_revision(&log_state).await;
                     let diagnostic_stats = {
@@ -7098,6 +7105,35 @@ fn emit_session_log(
     Ok(())
 }
 
+/// FFmpeg `-progress`/stats output: either the combined `frame= ... speed=`
+/// status line or a single `key=value` counter. These arrive multiple times
+/// per second and must stay out of the bounded log ring buffer.
+pub(crate) fn is_ffmpeg_progress_noise(line: &str) -> bool {
+    const PROGRESS_KEYS: [&str; 12] = [
+        "frame",
+        "fps",
+        "bitrate",
+        "total_size",
+        "out_time_us",
+        "out_time_ms",
+        "out_time",
+        "dup_frames",
+        "drop_frames",
+        "speed",
+        "progress",
+        "elapsed",
+    ];
+    let line = line.trim();
+    if line.starts_with("frame=") && line.contains("speed=") {
+        return true;
+    }
+    let Some((key, _)) = line.split_once('=') else {
+        return false;
+    };
+    let key = key.trim();
+    PROGRESS_KEYS.contains(&key) || key.starts_with("stream_") && key.ends_with("_q")
+}
+
 fn looks_like_ffmpeg_health_event(line: &str) -> bool {
     let normalized = line.to_lowercase();
     normalized.contains("dropped")
@@ -7163,6 +7199,41 @@ mod tests {
         StreamTargetState, default_stream_targets,
     };
     use tokio::sync::broadcast;
+
+    // Plan 030 S1: progress spam flooded the 200-entry log ring during the
+    // 2026-07-08 X incident, evicting every useful entry in ~60s. The filter
+    // must catch both the combined status line and per-key counters while
+    // letting real FFmpeg errors through.
+    #[test]
+    fn ffmpeg_progress_noise_filter_catches_stats_but_not_errors() {
+        assert!(is_ffmpeg_progress_noise(
+            "frame= 2224 fps= 29 q=-1.0 q=-1.0 size=   73984KiB time=00:01:16.00 bitrate=7974.7kbits/s speed=0.998x elapsed=0:01:16.12    frame=2224"
+        ));
+        for line in [
+            "fps=29.21",
+            "stream_0_0_q=-1.0",
+            "stream_1_0_q=-1.0",
+            "bitrate=7974.7kbits/s",
+            "total_size=75759616",
+            "out_time_us=76000011",
+            "out_time=00:01:16.000011",
+            "dup_frames=0",
+            "drop_frames=0",
+            "speed=0.998x",
+            "progress=continue",
+        ] {
+            assert!(is_ffmpeg_progress_noise(line), "should filter: {line}");
+        }
+        for line in [
+            "FFmpeg did not stop promptly after stdin quit command; sending SIGTERM.",
+            "[rtmp @ 0x7f8] Connection refused",
+            "Error writing trailer: Broken pipe",
+            "Conversion failed!",
+            "x=1", // unknown key=value stays visible
+        ] {
+            assert!(!is_ffmpeg_progress_noise(line), "should keep: {line}");
+        }
+    }
 
     // Plan 021 F3 (external tester: "gave it mic permissions but it's not
     // recording audio"): the silent-mic verdict must catch BOTH failure shapes —
