@@ -13,6 +13,12 @@ import { runBackendRecordingSmoke } from './smoke-recording-session.mjs'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 assertPackagedSmokePlatform()
+// Prefer a CLI flag over `VAR=1 node …` so the script works under Windows cmd
+// (pnpm runs package scripts through cmd.exe, which does not understand Unix env
+// prefixes). Env still works on POSIX shells and when gates inject it via spawn.
+if (process.argv.includes('--require-bundled-ffmpeg')) {
+  process.env.VIDEORC_SMOKE_REQUIRE_BUNDLED_FFMPEG = '1'
+}
 const appExecutable = process.env.VIDEORC_PACKAGED_APP_EXECUTABLE
   ? resolve(repoRoot, process.env.VIDEORC_PACKAGED_APP_EXECUTABLE)
   : defaultPackagedAppExecutable({ repoRoot })

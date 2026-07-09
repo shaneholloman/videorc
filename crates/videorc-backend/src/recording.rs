@@ -3682,7 +3682,21 @@ const MICROPHONE_WARMUP_TIMEOUT: Duration = Duration::from_millis(1500);
 const RECORDING_STARTUP_BARRIER_TIMEOUT: Duration = Duration::from_millis(2500);
 /// Consecutive target-resolution real-source compositor frames required before encoding.
 const RECORDING_STARTUP_BARRIER_MIN_FRAMES: u32 = 3;
+/// How many frame intervals the startup barrier allows between consecutive
+/// accepted compositor publishes. macOS Metal stays near the interval; Windows
+/// CPU compose + dshow delivery routinely lands 100–180ms gaps at session start
+/// (on-box: 130ms then 172ms over earlier 71ms/150ms budgets), so non-macOS uses
+/// a looser factor (~200ms at 30fps) plus a floor. Stalled pipelines still fail
+/// at multi-hundred-ms.
+#[cfg(target_os = "macos")]
 const RECORDING_STARTUP_CADENCE_FRAME_INTERVAL_FACTOR: f64 = 2.1;
+#[cfg(not(target_os = "macos"))]
+const RECORDING_STARTUP_CADENCE_FRAME_INTERVAL_FACTOR: f64 = 6.0;
+/// Windows compose/dshow startup gaps are often wall-clock-bound rather than
+/// pure multiples of the target frame interval; keep a hard floor so 60fps
+/// sessions do not inherit an unrealistically tight cadence budget.
+#[cfg(not(target_os = "macos"))]
+const RECORDING_STARTUP_CADENCE_MIN_FRAME_GAP: Duration = Duration::from_millis(200);
 const RECORDING_CAMERA_CADENCE_READY_TIMEOUT: Duration = Duration::from_millis(3000);
 const RECORDING_CAMERA_CADENCE_READY_POLL: Duration = Duration::from_millis(25);
 const RECORDING_CAMERA_CADENCE_FRAME_INTERVAL_FACTOR: f64 = 2.1;
@@ -3899,7 +3913,15 @@ fn camera_cadence_ready_threshold_ms(target_fps: u32) -> f64 {
 fn recording_startup_frame_gap_budget(target_fps: u32) -> Duration {
     let frame_interval_ms =
         1000.0 / f64::from(target_fps.max(1)) * RECORDING_STARTUP_CADENCE_FRAME_INTERVAL_FACTOR;
-    Duration::from_millis(frame_interval_ms.ceil() as u64)
+    let budget = Duration::from_millis(frame_interval_ms.ceil() as u64);
+    #[cfg(not(target_os = "macos"))]
+    {
+        return budget.max(RECORDING_STARTUP_CADENCE_MIN_FRAME_GAP);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        budget
+    }
 }
 
 fn optional_ms(value: Option<f64>) -> String {
@@ -4073,7 +4095,18 @@ fn append_h264_encoding_args_for_platform(
                 "1".to_string(),
             ]);
         }
-        FfmpegH264Platform::Windows => {}
+        FfmpegH264Platform::Windows => {
+            // Keep the low-delay Media Foundation profile, but let the encoder
+            // select an available implementation. Forcing hardware encoding
+            // makes h264_mf fail outright on systems without a compatible
+            // hardware MFT.
+            args.extend([
+                "-rate_control".to_string(),
+                "ld_vbr".to_string(),
+                "-scenario".to_string(),
+                "live_streaming".to_string(),
+            ]);
+        }
         FfmpegH264Platform::Other => {
             args.extend([
                 "-preset".to_string(),
@@ -4871,6 +4904,11 @@ fn append_bridge_recording_input_args(
     let video_input_index = next_input_index;
     match video_output {
         EncoderBridgeVideoOutput::RawYuv420p => {
+            // rawvideo carries pixels only—there are no per-frame timestamps to
+            // preserve. `-use_wallclock_as_timestamps` therefore collapses or
+            // otherwise retimes FIFO input on Windows. Keep the declared CFR
+            // timestamps and require the selected encoder to sustain the output
+            // cadence instead.
             args.extend([
                 "-f".to_string(),
                 "rawvideo".to_string(),
@@ -7700,14 +7738,33 @@ mod tests {
 
     #[test]
     fn recording_startup_frame_gap_budget_scales_with_target_fps() {
-        assert_eq!(
-            recording_startup_frame_gap_budget(30),
-            Duration::from_millis(71)
-        );
-        assert_eq!(
-            recording_startup_frame_gap_budget(60),
-            Duration::from_millis(36)
-        );
+        #[cfg(target_os = "macos")]
+        {
+            // 2.1 × 33.3ms ≈ 70 → 71ms ceil
+            assert_eq!(
+                recording_startup_frame_gap_budget(30),
+                Duration::from_millis(71)
+            );
+            assert_eq!(
+                recording_startup_frame_gap_budget(60),
+                Duration::from_millis(36)
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // 6.0 × 33.3ms = 200ms — covers on-box Windows 172ms compose gaps
+            assert_eq!(
+                recording_startup_frame_gap_budget(30),
+                Duration::from_millis(200)
+            );
+            // 6.0 × 16.7ms ≈ 100ms, but the 200ms floor wins (gaps are wall-clock).
+            assert_eq!(
+                recording_startup_frame_gap_budget(60),
+                Duration::from_millis(200)
+            );
+            // The exact tester numbers that used to fail under the 71ms/150ms budgets.
+            assert!(recording_startup_frame_gap_budget(30) > Duration::from_millis(172));
+        }
     }
 
     fn base_params(record_enabled: bool, stream_enabled: bool) -> StartSessionParams {
@@ -8848,6 +8905,15 @@ mod tests {
             input_arg_value(&args, &fifo_path.display().to_string(), "-framerate"),
             Some("30")
         );
+        assert_eq!(
+            input_arg_value(
+                &args,
+                &fifo_path.display().to_string(),
+                "-use_wallclock_as_timestamps"
+            ),
+            None,
+            "rawvideo carries no per-frame timestamps, so it must retain its declared CFR timeline"
+        );
         assert!(!input_has_arg(
             &args,
             "sine=frequency=880:sample_rate=48000",
@@ -8911,6 +8977,7 @@ mod tests {
             input_arg_value(&args, &fifo_path.display().to_string(), "-framerate"),
             Some("30")
         );
+
         assert!(!input_has_arg(
             &args,
             &fifo_path.display().to_string(),

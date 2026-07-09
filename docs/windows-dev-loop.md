@@ -104,6 +104,37 @@ Learned on-box 2026-07-08; encoded in `scripts/lib/app-launcher.mjs`:
 - Derive `ffprobe` from a configured ffmpeg path with `.exe` awareness
   (`resolveSiblingFfprobe` in `scripts/smoke-recording-session.mjs`), and use
   `basename()` instead of `split('/')` for path math (`recording-analyzer.mjs`).
+- Do **not** write package scripts as `VAR=1 node script.mjs` — pnpm on Windows
+  runs those through `cmd.exe`, which treats `VAR=1` as a command name
+  (`'VAR' is not recognized…`). Prefer CLI flags (e.g.
+  `node scripts/smoke-packaged-app.mjs --require-bundled-ffmpeg`) or set env in
+  the parent Node `spawn({ env })`.
+
+## electron-builder winCodeSign / symlink privilege
+
+Packaging used to pull the legacy `winCodeSign` tool bundle (for rcedit /
+signtool). That archive contains macOS dylib **symlinks**. On Windows without
+**Developer Mode** (or an elevated shell), 7-Zip fails with:
+
+```text
+ERROR: Cannot create symbolic link : A required privilege is not held by the client.
+... winCodeSign\...\darwin\10.12\lib\libcrypto.dylib
+```
+
+Unsigned local packages set `win.signAndEditExecutable: false` in
+`apps/desktop/electron-builder.yml` so packaging never downloads that bundle.
+When Authenticode signing / exe resource editing is re-enabled, either:
+
+1. Turn on **Settings → System → For developers → Developer Mode**, then clear
+   the broken cache and rebuild:
+
+   ```powershell
+   Remove-Item "$env:LOCALAPPDATA\electron-builder\Cache\winCodeSign" -Recurse -Force -ErrorAction SilentlyContinue
+   pnpm --filter @videorc/desktop package
+   ```
+
+2. Or run the first package once from an **Administrator** PowerShell so the
+   extract can create those links.
 
 ## FFmpeg pin rot
 

@@ -87,7 +87,15 @@ mac:
 # Windows 11 x64. Unsigned for now (internal testing); Authenticode signing is
 # Phase 5. The .exe backend and the windows-x64 ffmpeg dir override the
 # top-level (macOS) extraResources paths. See docs/windows-port-plan.md.
+#
+# signAndEditExecutable:false skips winCodeSign/rcedit. On Windows without
+# Developer Mode (or admin), extracting winCodeSign fails on unused macOS
+# dylib symlinks ("Cannot create symbolic link : A required privilege is not
+# held by the client"). Safe while we ship unsigned; re-enable for Authenticode
+# / icon resource editing and require Developer Mode or an elevated extract.
+# https://github.com/electron-userland/electron-builder/issues/8149
 win:
+  signAndEditExecutable: false
   icon: build-resources/icon.ico
   extraResources:
     # Host-target build: `pnpm package:backend` on the Windows box puts the

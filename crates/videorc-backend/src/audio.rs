@@ -998,12 +998,21 @@ mod windows_native {
     fn device_from_activate(activate: &IMFActivate, index: u32) -> Device {
         let friendly_name = mf_string(activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
             .unwrap_or_else(|| format!("Microphone {}", index + 1));
-        let capture_name = mf_string(
+        let symbolic_link = mf_string(
             activate,
             &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_AUDCAP_SYMBOLIC_LINK,
-        )
-        .map(|symbolic_link| format!("@{symbolic_link}"))
-        .unwrap_or_else(|| friendly_name.clone());
+        );
+        // Same trap as the Windows camera path (camera_capture.rs): dshow's
+        // selector is the DirectShow FRIENDLY NAME (`audio=Microphone (...)`),
+        // not the MediaFoundation MMDEVAPI symbolic link. Encoding
+        // `@\\?\SWD#MMDEVAPI#...` into the device id made FFmpeg exit
+        // immediately at session start with:
+        //   Could not find audio only device with name [@\\?\SWD#MMDEVAPI#...]
+        //   Error opening input files: I/O error
+        //   FFmpeg exited with exit code: 0xfffffffb
+        // which the user sees as "recording starts then stops". Keep the
+        // symbolic link in detail for support bundles only.
+        let capture_name = friendly_name.clone();
         Device {
             id: windows_dshow_microphone_device_id(&capture_name),
             name: friendly_name.clone(),
@@ -1011,7 +1020,11 @@ mod windows_native {
             status: DeviceStatus::Available,
             detail: Some(windows_media_foundation_microphone_detail(
                 &friendly_name,
-                &capture_name,
+                symbolic_link
+                    .as_deref()
+                    .map(|link| format!("@{link}"))
+                    .as_deref()
+                    .unwrap_or(&capture_name),
             )),
             width: None,
             height: None,
@@ -1444,6 +1457,8 @@ mod tests {
 
     #[test]
     fn describes_windows_mediafoundation_microphone_detail() {
+        // Detail may still mention a symbolic link for support triage; the
+        // dshow capture name (device id payload) is the friendly name.
         assert_eq!(
             windows_media_foundation_microphone_detail(
                 "Microphone Array",
@@ -1454,6 +1469,14 @@ mod tests {
         assert_eq!(
             windows_media_foundation_microphone_detail("Microphone Array", "Microphone Array"),
             "Windows MediaFoundation microphone. Recording uses dshow device `Microphone Array`."
+        );
+        // Round-trip the id with the friendly name FFmpeg dshow accepts.
+        assert_eq!(
+            parse_windows_dshow_microphone_id(&windows_dshow_microphone_device_id(
+                "Microphone (HD Pro Webcam C920)"
+            ))
+            .as_deref(),
+            Some("Microphone (HD Pro Webcam C920)")
         );
     }
 

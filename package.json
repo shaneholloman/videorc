@@ -121,7 +121,7 @@
     "smoke:screens": "node scripts/smoke-screens-app.mjs",
     "smoke:multistream": "node scripts/smoke-multistream-app.mjs",
     "smoke:packaged": "node scripts/smoke-packaged-app.mjs",
-    "smoke:packaged:bundled": "VIDEORC_SMOKE_REQUIRE_BUNDLED_FFMPEG=1 node scripts/smoke-packaged-app.mjs",
+    "smoke:packaged:bundled": "node scripts/smoke-packaged-app.mjs --require-bundled-ffmpeg",
     "smoke:packaged:native-preview": "VIDEORC_SMOKE_PACKAGED_APP=1 VIDEORC_EXPECT_NATIVE_METAL_PREVIEW=1 node scripts/smoke-preview-surface-app.mjs",
     "smoke:packaged:release": "pnpm smoke:packaged:bundled && pnpm smoke:packaged:native-preview",
     "smoke:local-gates:windows": "node scripts/smoke-local-gates-windows.mjs",
