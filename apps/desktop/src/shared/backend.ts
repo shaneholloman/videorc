@@ -2160,6 +2160,10 @@ export interface RuntimeInfo {
   arch: string
   osRelease: string
   gpuDevices: RuntimeGpuDevice[]
+  /** True when Videorc is running with hardware acceleration disabled — via
+   * VIDEORC_DISABLE_GPU=1 or the persisted GPU-crash fallback. Surfaced so
+   * support bundles name the active graphics mode. */
+  hardwareAccelerationDisabled: boolean
   isPackaged: boolean
   permissionTargetName: string
   permissionTargetPath: string
