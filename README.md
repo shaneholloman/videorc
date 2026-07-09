@@ -135,10 +135,11 @@ verification gates.
 ## Contributors
 
 - **[TheOrcDev](https://github.com/TheOrcDev)** — Warchief
+- **[Jay](https://github.com/radiumcoders)** — Grunt
 
 <p align="center">
   <a href="https://github.com/TheOrcDev/videorc/graphs/contributors">
-    <img src="https://contrib.rocks/image?repo=TheOrcDev/videorc" alt="Contributors" />
+    <img src="https://contrib.rocks/image?repo=TheOrcDev/videorc" alt="Contributors" /> 
   </a>
 </p>
 
